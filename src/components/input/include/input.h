@@ -1,0 +1,54 @@
+#pragma once
+
+#include "esp_err.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+/* A pen sample produced by input_poll() (touch task) and consumed by the CPU
+ * task. Coordinates are in Palm screen space (0..159). pen_up == true marks a
+ * release; for an "up" event x/y are (-1,-1). */
+typedef struct {
+    int16_t x, y;
+    bool    pen_up;
+} input_pen_event_t;
+
+esp_err_t input_init(void);
+void input_poll(void);
+
+/* Non-blocking: pop one queued pen event into *out. Returns true if one was
+ * available. Safe to call from a different task than input_poll(). */
+bool input_pop_pen_event(input_pen_event_t *out);
+
+/* Non-blocking: returns true once per Power-button press while AWAKE (consumes
+ * the latch). Consumed by the CPU task, which injects vchrHardPower via
+ * EvtEnqueueKey to trigger sleep. (Waking from sleep uses the matrix POWER key
+ * directly, not this latch — see input.c.) */
+bool input_pop_power_key(void);
+
+/* Backup/restore request, latched once per >=1s hold of a side button while
+ * awake: UP (PIN_BTN_L) = backup, DOWN (PIN_BTN_R) = restore. A short tap of the
+ * same button instead pages up/down (deferred tap; see input.c). Drained once by
+ * the CPU task, which runs the confirm-countdown + engine. */
+typedef enum { INPUT_BR_NONE = 0, INPUT_BR_BACKUP, INPUT_BR_RESTORE } input_br_req_t;
+int input_pop_br_request(void);
+
+/* Live state of a side button (active-low, sampled directly): which==0 -> UP
+ * (PIN_BTN_L), which==1 -> DOWN (PIN_BTN_R). Lets the CPU task poll "is the
+ * triggering button still held" during the backup/restore confirm countdown
+ * while the input task is parked. Returns true while pressed. */
+bool input_button_held(int which);
+
+/* A key event queued for injection via the ROM's EvtEnqueueKey trap. ascii is
+ * the WChar (or vchr* virtual code); modifiers carries e.g. commandKeyMask for
+ * virtual keys. Drained by the CPU task (the sole writer of CPU state). */
+typedef struct {
+    uint16_t ascii, keycode, modifiers;
+} input_key_event_t;
+
+/* --- Injection API (used by the physical input task AND the debug console) ---
+ * All three enqueue onto the same queues the CPU task already drains, so input
+ * from any source flows through one race-free path and never touches CPU state
+ * off the CPU task. */
+void input_inject_pen(int16_t x, int16_t y, bool pen_up);
+void input_inject_key(uint16_t ascii, uint16_t keycode, uint16_t modifiers);
+bool input_pop_key(input_key_event_t *out);

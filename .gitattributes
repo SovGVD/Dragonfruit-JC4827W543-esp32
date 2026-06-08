@@ -1,0 +1,21 @@
+# Normalize line endings. Text files are stored and checked out as LF;
+# Windows-only scripts keep CRLF; binary assets are never munged.
+* text=auto eol=lf
+
+# PowerShell / Windows shell scripts
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary assets (don't let git apply EOL/diff filters)
+*.png   binary
+*.rom   binary
+*.prc   binary
+*.pdb   binary
+*.pqa   binary
+*.i64   binary
+*.id0   binary
+*.id1   binary
+*.id2   binary

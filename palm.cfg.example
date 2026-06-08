@@ -1,0 +1,93 @@
+# palm.cfg — optional screen-layout config for the M5Paper Palm IIIx emulator.
+#
+# Copy this to the ROOT of the SD card as  palm.cfg  (the exact name, next to
+# palm.rom) to customize how the Palm interface is placed on the e-ink panel.
+# WITHOUT this file the emulator uses the stock centered-portrait layout, so
+# this file is purely opt-in and deleting it always restores the default.
+#
+# Lines are `key = value`. `#` and `;` begin comments. Sections in [brackets]
+# select which ELEMENT the following keys apply to. If ANYTHING in the file is
+# invalid (a region off the 960x540 panel, an unknown preset, ...) the WHOLE
+# file is rejected and the default layout is used — a typo can never brick the
+# device, but it also means a broken config looks exactly like "no config".
+#
+# ---------------------------------------------------------------------------
+# Quickest start: pick a preset. This file ships set to landscape-right, which
+# is an obvious change from the default — a full-size screen on the left and a
+# silkscreen column (the four buttons stacked above the Graffiti area) on the
+# right. Try the others by changing this one line:
+#
+#   preset = default           # stock centered portrait (same as no file)
+#   preset = landscape-right   # screen left, silkscreen column on the right
+#   preset = landscape-left    # screen right, silkscreen column on the left
+#   preset = buttons-top       # buttons row on top, screen below, Graffiti a
+#                              # full-width strip along the bottom
+#   preset = custom            # stock positions, but every element overridable
+
+preset = landscape-right
+
+# ---------------------------------------------------------------------------
+# Coordinate model (for hand-tuning below)
+#
+# The Palm is one 160 x 220 "surface": rows 0..159 are the LCD screen, rows
+# 160..219 are the silkscreen (Graffiti + four buttons). What each area MEANS
+# (button functions, the Graffiti recognizer) is fixed by the ROM in Palm
+# coordinates — this file only changes WHERE on the panel each piece is drawn
+# and touched. Move a button and a tap there still does what that button does;
+# its icon moves with it.
+#
+# Elements:  screen  graffiti  btn-top-left  btn-bottom-left  btn-top-right
+#            btn-bottom-right  divider
+#   (buttons are named by POSITION, not function — the icon/keycode at each
+#    cell differs between devices. `divider` is the thin rule drawn under the
+#    LCD in the stock layout; it is a normal element you can place or hide
+#    (hide = true). The landscape presets hide it; buttons-top keeps it, drawn
+#    between the screen and the button row.)
+#
+# Per-element keys:
+#   place   = X,Y     top-left on the 960x540 panel (X snapped to a multiple
+#                     of 4 for the e-ink hardware)
+#   rotate  = 0|90|180|270   counter-clockwise rotation of that element
+#   scale   = N       integer magnification, both axes
+#   scale_x = N       magnify the Palm-X axis only  } under rotate=90/270 the
+#   scale_y = N       magnify the Palm-Y axis only  } Palm axes are turned, so
+#                     scale_x can grow an element VERTICALLY — use rotate=0 when
+#                     you want scale_x to mean panel-horizontal ("full width").
+#   hide    = true    drop this element
+#
+# A region's size is its Palm source size x scale: the screen is 160x160, the
+# Graffiti area 104x56, each button cell 28x28 (Palm px). At scale 3 the screen
+# is 480x480 — so at scale 3 it only fits one screen-height (480) in the 540
+# panel. Keep every region inside 960x540 or the file is rejected.
+#
+# ---------------------------------------------------------------------------
+# Hand-built example (a landscape layout equivalent to landscape-right, spelled
+# out). Uncomment `preset = custom` above and these sections to use it.
+#
+# [screen]
+# place  = 4,30
+# rotate = 0
+# scale  = 3            # 480x480 on the left
+#
+# [btn-top-left]
+# place  = 500,30
+# rotate = 0
+# scale  = 4
+# [btn-top-right]
+# place  = 640,30
+# rotate = 0
+# scale  = 4
+# [btn-bottom-left]
+# place  = 500,170
+# rotate = 0
+# scale  = 4
+# [btn-bottom-right]
+# place  = 640,170
+# rotate = 0
+# scale  = 4
+#
+# [graffiti]
+# place   = 500,300
+# rotate  = 0
+# scale_x = 4
+# scale_y = 3

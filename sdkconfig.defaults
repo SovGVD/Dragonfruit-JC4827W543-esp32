@@ -1,0 +1,51 @@
+CONFIG_IDF_TARGET="esp32"
+
+# CPU
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Target silicon rev 3 (this board is ESP32-D0WDQ6-V3). Rev 3 fixed the PSRAM
+# cache bug, so the cache workaround (MEMW barriers on every PSRAM access) is
+# disabled automatically — a real speedup for our PSRAM-bound 68k interpreter.
+CONFIG_ESP32_REV_MIN_3=y
+
+# Compiler — build for performance (-O2), not debug (-Og). The 68k interpreter
+# is dominated by switch dispatch + small inlinable helpers, which -Og suppresses.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+
+# PSRAM — run at 80 MHz (rev-3 silicon + 80 MHz QIO flash support it) for ~2x
+# PSRAM bandwidth vs the 40 MHz default.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Keep the PSRAM internal-RAM reserve small. This board has ample free internal
+# RAM, and a large reserve carves a block out of the dual-mapped D/IRAM region,
+# fragmenting the executable heap the JIT code cache allocates from — a bigger
+# contiguous cache is worth more here than a deep internal-only safety margin.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=8192
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FAT long filenames. The auto-installer reads arbitrary .prc/.pdb files from
+# /install (names are usually longer than 8.3) and logs the real filenames.
+# Without LFN, FatFs rejects those names (EINVAL). Heap-allocated LFN working
+# buffer.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# FreeRTOS
+CONFIG_FREERTOS_HZ=1000
+
+# Stack sizes
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Log level
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

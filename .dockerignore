@@ -1,0 +1,14 @@
+# Keep the Docker build context tiny (the build never COPYs the tree — it's
+# bind-mounted at runtime — but a small context makes `docker compose build`
+# fast and avoids shipping multi-GB reference trees / IDA databases to the daemon).
+reference/
+build/
+build-host/
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.png
+run.log
+.git/

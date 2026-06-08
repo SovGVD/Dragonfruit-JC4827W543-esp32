@@ -1,0 +1,40 @@
+# --- Build output (firmware build/, host build-host/, per-target build-<chip>/) ---
+build/
+build-*/
+# Stray in-source build artifacts (host harness must build out-of-tree into
+# build-host/; these guard against an accidental in-source cmake build).
+*.obj
+*.exe
+
+# --- ESP-IDF generated config (sdkconfig.defaults* is the tracked source of truth;
+#     the bare sdkconfig and any per-target sdkconfig.<chip> are generated) ---
+/sdkconfig
+/sdkconfig.*
+!/sdkconfig.defaults
+!/sdkconfig.defaults.*
+
+# --- Read-only third-party reference trees (consulted, never part of our source) ---
+# ~500 MB with their own nested git repos; not committed here.
+reference/
+
+# --- Palm OS ROM (copyrighted; build dependency, supply your own) ---
+*.rom
+
+# --- Palm app images used to exercise the auto-installer (test artifacts, not
+#     sources; copy onto an SD /install dir or pass with the host -i flag) ---
+*.prc
+*.pdb
+*.pqa
+
+# --- IDA Pro databases (generated from Palm-IIIx-3.1.rom; large) ---
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# --- Debugging artifacts ---
+*.log
+screen*.png
+*_trace.log

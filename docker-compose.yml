@@ -1,0 +1,26 @@
+# Build the Dragonfruit (Palm IIIx emulator) firmware in a reproducible ESP-IDF
+# container. Flashing is done from the Windows host (see flash.ps1) because
+# Docker Desktop on Windows cannot pass through COM/USB serial ports.
+#
+#   docker compose run --rm idf                 # build (default)
+#   docker compose run --rm idf idf.py fullclean # clean
+#   docker compose run --rm idf idf.py menuconfig
+#
+# The helper scripts build.ps1 / flash.ps1 wrap these.
+
+services:
+  idf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dragonfruit-idf:release-v6.0
+    # Bind-mount the repo so build artifacts land in ./build on the host.
+    volumes:
+      - .:/project
+    working_dir: /project
+    environment:
+      # Redirect caches/venv state off the read-only-ish home to the mount-free
+      # /tmp, avoiding permission churn on the bind mount.
+      - HOME=/tmp
+    # Default action when no command is given on the CLI.
+    command: ["idf.py", "build"]

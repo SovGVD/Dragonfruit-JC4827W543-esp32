@@ -1,0 +1,10 @@
+# Place the 68k interpreter in internal IRAM ("noflash") instead of running it
+# from flash through the shared external-memory cache. On the ESP32 the flash
+# instruction cache and the PSRAM data cache are the same ~32 KB resource, so
+# the interpreter's code competes with the emulated ROM/RAM data for cache
+# lines. Moving the hot interpreter to IRAM removes that competition (data gets
+# the whole cache) and runs the dispatch loop + handlers at single-cycle speed.
+[mapping:m68k]
+archive: libm68k.a
+entries:
+    * (noflash)

@@ -20,6 +20,7 @@
 #include "lwip/inet.h"
 #include "lwip/lwip_napt.h"
 #include "lwip/sockets.h"
+#include "lwip/netifapi.h"
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
 #include "nvs.h"
@@ -34,6 +35,11 @@ static bool enabled;
 static esp_netif_t *station;
 static ppp_pcb *ppp;
 static struct netif ppp_netif;
+static struct netif slip_netif;
+static uint8_t slip_rx_buf[1500];
+static size_t slip_rx_len = 0;
+static bool slip_rx_esc = false;
+static portal_framing_t active_framing = PORTAL_FRAMING_NONE;
 static StreamBufferHandle_t to_palm, from_palm;
 static portMUX_TYPE handoff_lock = portMUX_INITIALIZER_UNLOCKED;
 /* Protected by handoff_lock. The generation prevents queued bytes from a reset
@@ -143,12 +149,81 @@ static void ppp_status(ppp_pcb *pcb, int error, void *ctx)
     }
 }
 
+static err_t slip_netif_output(struct netif *netif, struct pbuf *p, const ip4_addr_t *ipaddr)
+{
+    (void)netif; (void)ipaddr;
+    tcp_trace("->palm", p);
+    uint8_t out[1500 * 2 + 2];
+    size_t out_len = 0;
+    out[out_len++] = SLIP_END;
+    for (struct pbuf *q = p; q != NULL; q = q->next) {
+        const uint8_t *src = (const uint8_t *)q->payload;
+        for (u16_t i = 0; i < q->len; i++) {
+            uint8_t b = src[i];
+            if (b == SLIP_END) {
+                if (out_len + 2 >= sizeof(out)) return ERR_MEM;
+                out[out_len++] = SLIP_ESC;
+                out[out_len++] = SLIP_ESC_END;
+            } else if (b == SLIP_ESC) {
+                if (out_len + 2 >= sizeof(out)) return ERR_MEM;
+                out[out_len++] = SLIP_ESC;
+                out[out_len++] = SLIP_ESC_ESC;
+            } else {
+                if (out_len + 1 >= sizeof(out)) return ERR_MEM;
+                out[out_len++] = b;
+            }
+        }
+    }
+    if (out_len + 1 > sizeof(out)) return ERR_MEM;
+    out[out_len++] = SLIP_END;
+
+    if (xStreamBufferSpacesAvailable(to_palm) < out_len) {
+        atomic_fetch_add(&ppp_waits, 1);
+        for (int i = 0; i < 50 && xStreamBufferSpacesAvailable(to_palm) < out_len; i++)
+            vTaskDelay(pdMS_TO_TICKS(2) ? pdMS_TO_TICKS(2) : 1);
+        if (xStreamBufferSpacesAvailable(to_palm) < out_len) {
+            atomic_fetch_add(&ppp_drops, 1);
+            return ERR_MEM;
+        }
+    }
+    size_t n = xStreamBufferSend(to_palm, out, out_len, 0);
+    atomic_fetch_add(&ppp_tx_bytes, n);
+    return n == out_len ? ERR_OK : ERR_MEM;
+}
+
+static err_t slip_netif_init(struct netif *netif)
+{
+    netif->name[0] = 's';
+    netif->name[1] = 'l';
+    netif->output = slip_netif_output;
+    netif->mtu = 1500;
+    netif->flags = 0;
+    return ERR_OK;
+}
+
+static void slip_rx_feed(const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        size_t pkt_len = 0;
+        if (portal_slip_decode_byte(data[i], slip_rx_buf, sizeof(slip_rx_buf),
+                                    &slip_rx_len, &slip_rx_esc, &pkt_len)) {
+            struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)pkt_len, PBUF_POOL);
+            if (p) {
+                pbuf_take(p, slip_rx_buf, (u16_t)pkt_len);
+                tcp_trace("<-palm", p);
+                if (slip_netif.input(p, &slip_netif) != ERR_OK) {
+                    pbuf_free(p);
+                }
+            }
+        }
+    }
+}
+
 static void ppp_task(void *arg)
 {
     (void)arg;
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     bool running = false;
-    bool in_ppp = false;
     char at_buf[64] = {0};
     size_t at_len = 0;
     uint32_t generation = 0;
@@ -162,9 +237,13 @@ static void ppp_task(void *arg)
         if (change) ready = false;
         portEXIT_CRITICAL(&handoff_lock);
         if (change) {
-            /* Synchronous TCP/IP-thread barrier: no PPP callback still uses the
-             * output stream after this returns. nocarrier closes immediately. */
-            pppapi_close(ppp, 1);
+            if (active_framing == PORTAL_FRAMING_PPP) {
+                pppapi_close(ppp, 1);
+            } else if (active_framing == PORTAL_FRAMING_SLIP) {
+                netifapi_netif_set_link_down(&slip_netif);
+                netifapi_netif_set_down(&slip_netif);
+                ip_napt_enable_no(slip_netif.num, 0);
+            }
             atomic_store(&palm_ip, 0);
             portENTER_CRITICAL(&handoff_lock);
             xStreamBufferReset(to_palm);
@@ -172,38 +251,41 @@ static void ppp_task(void *arg)
             portEXIT_CRITICAL(&handoff_lock);
             pending = 0;
             running = false;
-            in_ppp = false;
+            active_framing = PORTAL_FRAMING_NONE;
             at_len = 0;
+            slip_rx_len = 0;
+            slip_rx_esc = false;
         }
         if (!running && want_open) {
             atomic_store(&ppp_dead, false);
-            if (pppapi_listen(ppp) == ERR_OK) {
-                generation = want_generation;
-                running = true;
-                in_ppp = false;
-                at_len = 0;
-                portENTER_CRITICAL(&handoff_lock);
-                ready_generation = generation;
-                ready = true;
-                portEXIT_CRITICAL(&handoff_lock);
-            }
+            generation = want_generation;
+            running = true;
+            active_framing = PORTAL_FRAMING_NONE;
+            at_len = 0;
+            slip_rx_len = 0;
+            slip_rx_esc = false;
+            portENTER_CRITICAL(&handoff_lock);
+            ready_generation = generation;
+            ready = true;
+            portEXIT_CRITICAL(&handoff_lock);
         }
         if (running) {
             if (!pending) pending = xStreamBufferReceive(from_palm, input, sizeof(input), 0);
             if (pending) {
-                if (!in_ppp) {
+                if (active_framing == PORTAL_FRAMING_NONE) {
                     char resp[64];
                     size_t resp_len = 0;
-                    bool found_hdlc = false;
+                    portal_framing_t found = PORTAL_FRAMING_NONE;
                     size_t pre = portal_ppp_preamble(input, pending,
                                                      at_buf, sizeof(at_buf), &at_len,
                                                      resp, sizeof(resp), &resp_len,
-                                                     &found_hdlc);
+                                                     &found);
                     if (resp_len) {
                         xStreamBufferSend(to_palm, resp, resp_len, 0);
                     }
-                    if (found_hdlc) {
-                        in_ppp = true;
+                    if (found == PORTAL_FRAMING_PPP) {
+                        active_framing = PORTAL_FRAMING_PPP;
+                        pppapi_listen(ppp);
                         size_t ppp_bytes = pending - pre;
                         if (ppp_bytes > 0 && pppos_input_tcpip(ppp, input + pre, (int)ppp_bytes) == ERR_OK) {
                             pending = 0;
@@ -213,11 +295,26 @@ static void ppp_task(void *arg)
                         } else {
                             pending = 0;
                         }
+                    } else if (found == PORTAL_FRAMING_SLIP) {
+                        active_framing = PORTAL_FRAMING_SLIP;
+                        netifapi_netif_set_link_up(&slip_netif);
+                        netifapi_netif_set_up(&slip_netif);
+                        ip_napt_enable(ip4_addr_get_u32(netif_ip4_addr(&slip_netif)), 1);
+                        atomic_store(&palm_ip, inet_addr(PALM_CLIENT_IP));
+                        atomic_fetch_add(&link_epoch, 1);
+                        ESP_LOGI(TAG, "SLIP link up: our=%s palm=%s",
+                                 ip4addr_ntoa(netif_ip4_addr(&slip_netif)), PALM_CLIENT_IP);
+                        size_t slip_bytes = pending - pre;
+                        slip_rx_feed(input + pre, slip_bytes);
+                        pending = 0;
                     } else {
                         pending = 0;
                     }
-                } else {
+                } else if (active_framing == PORTAL_FRAMING_PPP) {
                     if (pppos_input_tcpip(ppp, input, (int)pending) == ERR_OK) pending = 0;
+                } else if (active_framing == PORTAL_FRAMING_SLIP) {
+                    slip_rx_feed(input, pending);
+                    pending = 0;
                 }
             }
         }
@@ -793,6 +890,12 @@ bool wifi_gateway_init(void)
 #endif
     /* Authentication is disabled in this build; Palm can use any user name. */
     /* Listener mode responds to Palm's LCP; it does not send modem commands. */
+    ip4_addr_t our_ip, palm_ip_addr, netmask;
+    ip4addr_aton(PALM_GATEWAY_IP, &our_ip);
+    ip4addr_aton(PALM_CLIENT_IP, &palm_ip_addr);
+    ip4addr_aton("255.255.255.0", &netmask);
+    err = netifapi_netif_add(&slip_netif, &our_ip, &netmask, &palm_ip_addr, NULL, slip_netif_init, tcpip_input);
+    if (err != ESP_OK) goto fail;
     if (xTaskCreatePinnedToCore(ppp_task, "palm_ppp", 4096, NULL, 3, &tasks[0], 0) != pdPASS ||
         xTaskCreatePinnedToCore(http_task, "wifi_portal", 16384, NULL, 1, &tasks[1], 0) != pdPASS ||
         xTaskCreatePinnedToCore(dns_task, "palm_dns", 4096, NULL, 2, &tasks[2], 0) != pdPASS) {
@@ -802,10 +905,11 @@ bool wifi_gateway_init(void)
     }
     enabled = true;
     for (int i = 0; i < 3; i++) xTaskNotifyGive(tasks[i]);
-    ESP_LOGI(TAG, "PPP Wi-Fi ready; portal http://" PALM_PORTAL_HOST "/");
+    ESP_LOGI(TAG, "PPP/SLIP Wi-Fi ready; portal http://" PALM_PORTAL_HOST "/");
     return true;
 fail:
     for (int i = 0; i < 3; i++) if (tasks[i]) vTaskDelete(tasks[i]);
+    if (slip_netif.input) netifapi_netif_remove(&slip_netif);
     if (ppp) { pppapi_free(ppp); ppp = NULL; }
     if (to_palm) { vStreamBufferDelete(to_palm); to_palm = NULL; }
     if (from_palm) { vStreamBufferDelete(from_palm); from_palm = NULL; }

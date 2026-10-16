@@ -30,12 +30,31 @@ int portal_http_headers(const char *request, size_t len, size_t *body_len);
 int portal_http_header_value(const char *request, size_t header_len,
                               const char *name, char *out, size_t cap);
 
-/* Pre-PPP modem/handshake emulation for Palm OS network connections.
- * Inspects incoming bytes prior to PPP framing (0x7E):
- * - If 0x7E is found, sets *found_hdlc=true and returns offset of the 0x7E flag.
- * - Non-PPP ASCII commands (AT..., ATD..., CLIENT) generate synthetic modem
+typedef enum {
+    PORTAL_FRAMING_NONE = 0,
+    PORTAL_FRAMING_PPP  = 1,
+    PORTAL_FRAMING_SLIP = 2,
+} portal_framing_t;
+
+/* Pre-connection modem/handshake emulation for Palm OS network connections.
+ * Inspects incoming bytes prior to PPP framing (0x7E) or SLIP framing (0xC0):
+ * - If 0x7E is found, sets *framing=PORTAL_FRAMING_PPP and returns offset of the 0x7E flag.
+ * - If 0xC0 is found, sets *framing=PORTAL_FRAMING_SLIP and returns offset of the 0xC0 flag.
+ * - Non-framing ASCII commands (AT..., ATD..., CLIENT) generate synthetic modem
  *   responses (OK, CONNECT, CLIENTSERVER) in resp. */
 size_t portal_ppp_preamble(const uint8_t *src, size_t len,
                            char *at_buf, size_t at_cap, size_t *at_len,
                            char *resp, size_t resp_cap, size_t *resp_len,
-                           bool *found_hdlc);
+                           portal_framing_t *framing);
+
+/* RFC 1055 SLIP encoding and decoding */
+#define SLIP_END     0xC0
+#define SLIP_ESC     0xDB
+#define SLIP_ESC_END 0xDC
+#define SLIP_ESC_ESC 0xDD
+
+size_t portal_slip_encode(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_cap);
+
+bool portal_slip_decode_byte(uint8_t b, uint8_t *buf, size_t cap,
+                             size_t *len, bool *esc, size_t *packet_len);
+

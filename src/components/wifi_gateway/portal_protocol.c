@@ -208,15 +208,19 @@ int portal_http_header_value(const char *r, size_t len, const char *name, char *
 size_t portal_ppp_preamble(const uint8_t *src, size_t len,
                            char *at_buf, size_t at_cap, size_t *at_len,
                            char *resp, size_t resp_cap, size_t *resp_len,
-                           bool *found_hdlc)
+                           portal_framing_t *framing)
 {
-    *found_hdlc = false;
+    *framing = PORTAL_FRAMING_NONE;
     *resp_len = 0;
     size_t i = 0;
     for (; i < len; i++) {
         uint8_t b = src[i];
         if (b == 0x7E) {
-            *found_hdlc = true;
+            *framing = PORTAL_FRAMING_PPP;
+            break;
+        }
+        if (b == SLIP_END) {
+            *framing = PORTAL_FRAMING_SLIP;
             break;
         }
         if (b == '\r' || b == '\n') {
@@ -262,4 +266,62 @@ size_t portal_ppp_preamble(const uint8_t *src, size_t len,
     }
     return i;
 }
+
+size_t portal_slip_encode(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_cap)
+{
+    if (!src || !dst || dst_cap < src_len + 2) return 0;
+    size_t out = 0;
+    dst[out++] = SLIP_END;
+    for (size_t i = 0; i < src_len; i++) {
+        uint8_t b = src[i];
+        if (b == SLIP_END) {
+            if (out + 2 >= dst_cap) return 0;
+            dst[out++] = SLIP_ESC;
+            dst[out++] = SLIP_ESC_END;
+        } else if (b == SLIP_ESC) {
+            if (out + 2 >= dst_cap) return 0;
+            dst[out++] = SLIP_ESC;
+            dst[out++] = SLIP_ESC_ESC;
+        } else {
+            if (out + 1 >= dst_cap) return 0;
+            dst[out++] = b;
+        }
+    }
+    if (out + 1 > dst_cap) return 0;
+    dst[out++] = SLIP_END;
+    return out;
+}
+
+bool portal_slip_decode_byte(uint8_t b, uint8_t *buf, size_t cap,
+                             size_t *len, bool *esc, size_t *packet_len)
+{
+    *packet_len = 0;
+    if (b == SLIP_END) {
+        if (*len > 0) {
+            *packet_len = *len;
+            *len = 0;
+            *esc = false;
+            return true;
+        }
+        *esc = false;
+        return false;
+    }
+    if (b == SLIP_ESC) {
+        *esc = true;
+        return false;
+    }
+    if (*esc) {
+        *esc = false;
+        if (b == SLIP_ESC_END) b = SLIP_END;
+        else if (b == SLIP_ESC_ESC) b = SLIP_ESC;
+    }
+    if (*len < cap) {
+        buf[(*len)++] = b;
+    } else {
+        *len = 0;
+        *esc = false;
+    }
+    return false;
+}
+
 

@@ -104,48 +104,76 @@ int main(void)
     size_t at_len = 0;
     char resp[64] = {0};
     size_t resp_len = 0;
-    bool found_hdlc = false;
+    portal_framing_t framing = PORTAL_FRAMING_NONE;
 
     /* Direct Serial: immediately starts with 0x7E */
     const uint8_t ppp_frame[] = { 0x7e, 0xff, 0x03, 0xc0, 0x21 };
     size_t pre = portal_ppp_preamble(ppp_frame, sizeof(ppp_frame),
                                      at_buf, sizeof(at_buf), &at_len,
-                                     resp, sizeof(resp), &resp_len, &found_hdlc);
-    assert(pre == 0 && found_hdlc && resp_len == 0);
+                                     resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == 0 && framing == PORTAL_FRAMING_PPP && resp_len == 0);
+
+    /* Direct Serial: starts with SLIP 0xC0 */
+    const uint8_t slip_frame[] = { 0xc0, 0x45, 0x00, 0x00, 0x28 };
+    pre = portal_ppp_preamble(slip_frame, sizeof(slip_frame),
+                              at_buf, sizeof(at_buf), &at_len,
+                              resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == 0 && framing == PORTAL_FRAMING_SLIP && resp_len == 0);
 
     /* Modem init command */
     const uint8_t at_cmd[] = "AT&FX4\r";
     pre = portal_ppp_preamble(at_cmd, strlen((const char *)at_cmd),
                               at_buf, sizeof(at_buf), &at_len,
-                              resp, sizeof(resp), &resp_len, &found_hdlc);
-    assert(pre == strlen((const char *)at_cmd) && !found_hdlc);
+                              resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == strlen((const char *)at_cmd) && framing == PORTAL_FRAMING_NONE);
     assert(resp_len == 6 && !strcmp(resp, "\r\nOK\r\n"));
 
     /* Modem dial command */
     const uint8_t atd_cmd[] = "ATDT00\r";
     pre = portal_ppp_preamble(atd_cmd, strlen((const char *)atd_cmd),
                               at_buf, sizeof(at_buf), &at_len,
-                              resp, sizeof(resp), &resp_len, &found_hdlc);
-    assert(pre == strlen((const char *)atd_cmd) && !found_hdlc);
+                              resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == strlen((const char *)atd_cmd) && framing == PORTAL_FRAMING_NONE);
     assert(resp_len == 11 && !strcmp(resp, "\r\nCONNECT\r\n"));
 
     /* Windows RAS handshake */
     const uint8_t client_cmd[] = "CLIENT";
     pre = portal_ppp_preamble(client_cmd, strlen((const char *)client_cmd),
                               at_buf, sizeof(at_buf), &at_len,
-                              resp, sizeof(resp), &resp_len, &found_hdlc);
-    assert(pre == strlen((const char *)client_cmd) && !found_hdlc);
+                              resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == strlen((const char *)client_cmd) && framing == PORTAL_FRAMING_NONE);
     assert(resp_len == 12 && !strcmp(resp, "CLIENTSERVER"));
 
     /* AT followed immediately by 0x7E in the same buffer */
     const uint8_t mixed[] = "AT\r\x7e\xff\x03";
     pre = portal_ppp_preamble(mixed, sizeof(mixed) - 1,
                               at_buf, sizeof(at_buf), &at_len,
-                              resp, sizeof(resp), &resp_len, &found_hdlc);
-    assert(pre == 3 && found_hdlc);
+                              resp, sizeof(resp), &resp_len, &framing);
+    assert(pre == 3 && framing == PORTAL_FRAMING_PPP);
     assert(resp_len == 6 && !strcmp(resp, "\r\nOK\r\n"));
 
-    puts("portal form, HTTP framing, DNS and pre-PPP modem tests passed");
+    /* SLIP encoding and decoding */
+    const uint8_t raw_ip[] = { 0x45, 0x00, 0xc0, 0x28, 0xdb, 0x01, 0x02, 0xc0 };
+    uint8_t slip_encoded[64];
+    size_t elen = portal_slip_encode(raw_ip, sizeof(raw_ip), slip_encoded, sizeof(slip_encoded));
+    assert(elen > sizeof(raw_ip) + 2);
+    assert(slip_encoded[0] == SLIP_END && slip_encoded[elen - 1] == SLIP_END);
+
+    /* Decode byte by byte */
+    uint8_t decoded[64];
+    size_t dec_len = 0, pkt_len = 0;
+    bool esc = false, ready = false;
+    for (size_t i = 0; i < elen; i++) {
+        if (portal_slip_decode_byte(slip_encoded[i], decoded, sizeof(decoded),
+                                    &dec_len, &esc, &pkt_len)) {
+            ready = true;
+            break;
+        }
+    }
+    assert(ready && pkt_len == sizeof(raw_ip));
+    assert(!memcmp(decoded, raw_ip, sizeof(raw_ip)));
+
+    puts("portal form, HTTP framing, DNS, pre-modem and SLIP tests passed");
     return 0;
 }
 

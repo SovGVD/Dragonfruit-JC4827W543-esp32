@@ -49,7 +49,7 @@ target_include_directories(dragonfruit PRIVATE
 target_compile_definitions(dragonfruit PRIVATE
     HOST_BUILD=1
 )
-set(PALM_RAM_MB "4" CACHE STRING "Emulated Palm RAM in MB (2 or 4)")
+set(PALM_RAM_MB "2" CACHE STRING "Emulated Palm RAM in MB (2 or 4)")
 if(NOT PALM_RAM_MB MATCHES "^[24]$")
     message(FATAL_ERROR "PALM_RAM_MB must be 2 or 4")
 endif()

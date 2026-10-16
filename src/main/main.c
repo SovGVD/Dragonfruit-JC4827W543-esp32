@@ -53,6 +53,11 @@ static volatile uint32_t total_cycles = 0;
  * reconfigure blips (UARTEN low for ~tens of ms) don't tear the bridge down. */
 #define SERIAL_OFF_DEBOUNCE_MS  250
 
+/* Delivery rate for Wi-Fi PPP stream to Palm UART in bytes per emulated ms * 100.
+ * ~8 bytes/ms corresponds to ~80 kbps, which matches Palm OS's serial driver
+ * processing capacity without overrunning its internal software receive queue. */
+#define WIFI_RX_BYTES_PER_MS_X100 800
+
 /* Light-sleep coordination. The CPU task is the sole sleep driver; before it
  * calls esp_light_sleep_start() it asks the display + input tasks to park at a
  * loop boundary (so neither is mid SPI/I2C) and waits for both to acknowledge
@@ -712,10 +717,18 @@ static void cpu_task(void *param)
             if (room > sizeof(serial_data)) room = sizeof(serial_data);
             uint32_t n = db_uart_tx_pop(serial_data, (uint32_t)room);
             if (n) wifi_gateway_write(serial_data, n);
+            /* Deliver at a serial-line rate per emulated millisecond (one batch).
+             * Unpaced, a whole 536-byte TCP segment lands at once and overruns
+             * Palm OS's software receive queue: the frame fails its FCS, the Palm
+             * never ACKs, and every segment waits for a TCP retransmit. */
+            static uint32_t rx_credit_x100;
+            rx_credit_x100 += WIFI_RX_BYTES_PER_MS_X100;
+            if (rx_credit_x100 > 64 * 100) rx_credit_x100 = 64 * 100;
             room = db_uart_rx_free();
+            if (room > rx_credit_x100 / 100) room = rx_credit_x100 / 100;
             if (room > sizeof(serial_data)) room = sizeof(serial_data);
-            n = (uint32_t)wifi_gateway_read(serial_data, room);
-            if (n) db_uart_rx_push(serial_data, n);
+            n = room ? (uint32_t)wifi_gateway_read(serial_data, room) : 0;
+            if (n) { db_uart_rx_push(serial_data, n); rx_credit_x100 -= n * 100; }
         }
         /* A drained TX ring must also reassert TX-ready interrupts. */
         db_uart_update_irq();

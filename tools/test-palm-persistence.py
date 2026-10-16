@@ -33,7 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("emulator", type=Path)
     parser.add_argument("rom", type=Path)
-    parser.add_argument("--ram-mb", type=int, choices=(2, 4), default=4)
+    parser.add_argument("--ram-mb", type=int, choices=(2, 4), default=2)
     parser.add_argument("--card", action="store_true", help="also enable virtual storage (OS 4 ROM)")
     args = parser.parse_args()
     exe, rom = args.emulator.resolve(), args.rom.resolve()

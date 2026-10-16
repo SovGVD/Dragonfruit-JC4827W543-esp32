@@ -61,12 +61,70 @@ static atomic_bool ppp_dead;
 
 static uint32_t now_ms(void) { return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
+static atomic_uint ppp_drops, ppp_waits, ppp_tx_bytes, ppp_rx_bytes;
+
 static u32_t ppp_output(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
     (void)pcb; (void)ctx;
-    /* Never block lwIP. TCP retries if Wi-Fi outruns Palm's receive buffers. */
-    if (xStreamBufferSpacesAvailable(to_palm) < len) return 0;
-    return xStreamBufferSend(to_palm, data, len, 0);
+    /* A dropped frame costs a full TCP RTO (>=1.5 s) on this link, so wait a
+     * little for the Palm to drain the stream first. Bounded so lwIP is never
+     * stalled for long (the CPU task drains up to 128 bytes per ~1 ms batch). */
+    if (xStreamBufferSpacesAvailable(to_palm) < len) {
+        atomic_fetch_add(&ppp_waits, 1);
+        for (int i = 0; i < 50 && xStreamBufferSpacesAvailable(to_palm) < len; i++)
+            vTaskDelay(pdMS_TO_TICKS(2) ? pdMS_TO_TICKS(2) : 1);
+        if (xStreamBufferSpacesAvailable(to_palm) < len) {
+            atomic_fetch_add(&ppp_drops, 1);
+            return 0;
+        }
+    }
+    size_t n = xStreamBufferSend(to_palm, data, len, 0);
+    atomic_fetch_add(&ppp_tx_bytes, n);
+    return n;
+}
+
+/* Diagnostic TCP trace of everything crossing the PPP link. */
+static netif_output_fn ppp_ip_output;
+static netif_input_fn ppp_ip_input;
+
+static void tcp_trace(const char *dir, struct pbuf *p)
+{
+    uint8_t h[60];
+    u16_t got = pbuf_copy_partial(p, h, sizeof(h), 0);
+    if (got < 20 || (h[0] >> 4) != 4) return;
+    unsigned ihl = (h[0] & 15) * 4, total = (h[2] << 8) | h[3];
+    if (h[9] != 6 || got < ihl + 20) { ESP_LOGI(TAG, "%s proto=%u len=%u", dir, h[9], total); return; }
+    const uint8_t *t = h + ihl;
+    unsigned doff = (t[12] >> 4) * 4, fl = t[13];
+    unsigned mss = 0;
+    if ((fl & 0x02) && doff > 20 && got >= ihl + 24 && t[20] == 2) mss = (t[22] << 8) | t[23];
+    if (mss) {
+        ESP_LOGI(TAG, "%s %u>%u %s%s%s%s seq=%lu ack=%lu win=%u len=%u mss=%u",
+                 dir, (t[0] << 8) | t[1], (t[2] << 8) | t[3],
+                 fl & 2 ? "S" : "", fl & 1 ? "F" : "", fl & 4 ? "R" : "", fl & 16 ? "." : "",
+                 (unsigned long)((uint32_t)t[4] << 24 | t[5] << 16 | t[6] << 8 | t[7]),
+                 (unsigned long)((uint32_t)t[8] << 24 | t[9] << 16 | t[10] << 8 | t[11]),
+                 (t[14] << 8) | t[15], total - ihl - doff, mss);
+    } else {
+        ESP_LOGI(TAG, "%s %u>%u %s%s%s%s seq=%lu ack=%lu win=%u len=%u",
+                 dir, (t[0] << 8) | t[1], (t[2] << 8) | t[3],
+                 fl & 2 ? "S" : "", fl & 1 ? "F" : "", fl & 4 ? "R" : "", fl & 16 ? "." : "",
+                 (unsigned long)((uint32_t)t[4] << 24 | t[5] << 16 | t[6] << 8 | t[7]),
+                 (unsigned long)((uint32_t)t[8] << 24 | t[9] << 16 | t[10] << 8 | t[11]),
+                 (t[14] << 8) | t[15], total - ihl - doff);
+    }
+}
+
+static err_t ppp_trace_output(struct netif *nif, struct pbuf *p, const ip4_addr_t *dst)
+{
+    tcp_trace("->palm", p);
+    return ppp_ip_output(nif, p, dst);
+}
+
+static err_t ppp_trace_input(struct pbuf *p, struct netif *nif)
+{
+    tcp_trace("<-palm", p);
+    return ppp_ip_input(p, nif);
 }
 
 static void ppp_status(ppp_pcb *pcb, int error, void *ctx)
@@ -201,6 +259,7 @@ size_t wifi_gateway_write(const void *data, size_t len)
     portENTER_CRITICAL(&handoff_lock);
     size_t n = handoff_ready() ? xStreamBufferSend(from_palm, data, len, 0) : 0;
     portEXIT_CRITICAL(&handoff_lock);
+    atomic_fetch_add(&ppp_rx_bytes, n);
     return n;
 }
 
@@ -358,7 +417,7 @@ static void page(int sock, const char *status, const char *body)
         status, (unsigned)strlen(body));
     uint32_t t0 = now_ms();
     bool ok = send_all(sock, header, (size_t)n) && send_all(sock, body, strlen(body));
-    ESP_LOGI(TAG, "HTTP tx '%s' body=%u ok=%d errno=%d in %u ms", status, (unsigned)strlen(body), ok, ok ? 0 : errno,
+    ESP_LOGD(TAG, "HTTP tx '%s' body=%u ok=%d errno=%d in %u ms", status, (unsigned)strlen(body), ok, ok ? 0 : errno,
              (unsigned)(now_ms() - t0));
 }
 
@@ -390,7 +449,7 @@ static void serve_http(int sock)
     }
     {
         const char *eol = memchr(request, '\r', used);
-        ESP_LOGI(TAG, "HTTP rx used=%u hdr=%d body=%u after %u ms: %.*s", (unsigned)used, header_len,
+        ESP_LOGD(TAG, "HTTP rx used=%u hdr=%d body=%u after %u ms: %.*s", (unsigned)used, header_len,
                  (unsigned)content_len, (unsigned)(now_ms() - since),
                  (int)(eol ? eol - request : (used > 80 ? 80 : used)), request);
     }
@@ -546,7 +605,7 @@ static void http_task(void *arg)
         socklen_t size = sizeof(peer);
         int client = accept(listener, (struct sockaddr *)&peer, &size);
         if (client < 0) continue;
-        ESP_LOGI(TAG, "HTTP accept from " IPSTR, IP2STR((esp_ip4_addr_t *)&peer.sin_addr.s_addr));
+        ESP_LOGD(TAG, "HTTP accept from " IPSTR, IP2STR((esp_ip4_addr_t *)&peer.sin_addr.s_addr));
         if (peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip)) {
             struct timeval timeout = {.tv_sec = 2};
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -576,7 +635,18 @@ static void dns_task(void *arg)
     static uint8_t pkt[PORTAL_DNS_MAX + 16];
     static const uint8_t gateway[] = {192,168,99,1};
     int listener = -1;
+    uint32_t stats_at = now_ms();
     for (;;) {
+        if (now_ms() - stats_at >= 2000) {
+            unsigned tx = atomic_exchange(&ppp_tx_bytes, 0), rx = atomic_exchange(&ppp_rx_bytes, 0);
+            unsigned waits = atomic_exchange(&ppp_waits, 0), drops = atomic_exchange(&ppp_drops, 0);
+            uint32_t span = now_ms() - stats_at;
+            if (tx || rx || drops)
+                ESP_LOGI(TAG, "PPP to_palm %u B/s, from_palm %u B/s, waits=%u drops=%u, queued=%u",
+                         (unsigned)(tx * 1000ULL / span), (unsigned)(rx * 1000ULL / span), waits, drops,
+                         (unsigned)(STREAM_SIZE - xStreamBufferSpacesAvailable(to_palm)));
+            stats_at = now_ms();
+        }
         if (listener < 0) {
             listener = listen_socket(SOCK_DGRAM, 53);
             if (listener < 0) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
@@ -596,18 +666,18 @@ static void dns_task(void *arg)
             int len = recvfrom(listener, pkt, PORTAL_DNS_MAX + 1, 0, (struct sockaddr *)&peer, &size);
             char name[254] = "";
             size_t qend = len > 0 ? portal_dns_question(pkt, (size_t)len, name, sizeof(name)) : 0;
-            ESP_LOGI(TAG, "DNS rx len=%d from=" IPSTR " palm=" IPSTR " flags=%02x%02x qd=%d parsed=%u name='%s' wifi=%d proxy=%d",
+            ESP_LOGD(TAG, "DNS rx len=%d from=" IPSTR " palm=" IPSTR " flags=%02x%02x qd=%d parsed=%u name='%s' wifi=%d proxy=%d",
                      len, IP2STR((esp_ip4_addr_t *)&peer.sin_addr.s_addr),
                      IP2STR((esp_ip4_addr_t *)&(uint32_t){atomic_load(&palm_ip)}),
                      len > 3 ? pkt[2] : 0, len > 3 ? pkt[3] : 0, len > 5 ? (pkt[4] << 8 | pkt[5]) : -1,
                      (unsigned)qend, name, (int)atomic_load(&wifi_up), (int)atomic_load(&proxy_enabled));
-            if (len > 0) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, len > 64 ? 64 : len, ESP_LOG_INFO);
+            if (len > 0) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, len > 64 ? 64 : len, ESP_LOG_DEBUG);
             if (len > 0 && peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip) && qend) {
                 if (!strcmp(name, PALM_PORTAL_HOST) || !atomic_load(&wifi_up) || atomic_load(&proxy_enabled)) {
                     size_t n = portal_dns_answer(pkt, (size_t)len, sizeof(pkt), gateway, false);
                     int sent = n ? sendto(listener, pkt, n, 0, (struct sockaddr *)&peer, size) : -1;
-                    ESP_LOGI(TAG, "DNS tx local n=%u sent=%d", (unsigned)n, sent);
-                    if (n) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, n, ESP_LOG_INFO);
+                    ESP_LOGD(TAG, "DNS tx local n=%u sent=%d", (unsigned)n, sent);
+                    if (n) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, n, ESP_LOG_DEBUG);
                 } else {
                     lookup_t *slot = NULL;
                     for (int i = 0; i < DNS_PENDING; i++) if (pending[i].sock < 0) { slot = &pending[i]; break; }
@@ -707,6 +777,8 @@ bool wifi_gateway_init(void)
     if (!to_palm || !from_palm) { err = ESP_ERR_NO_MEM; goto fail; }
     ppp = pppapi_pppos_create(&ppp_netif, ppp_output, ppp_status, NULL);
     if (!ppp) { err = ESP_ERR_NO_MEM; goto fail; }
+    ppp_ip_output = ppp_netif.output; ppp_netif.output = ppp_trace_output;
+    ppp_ip_input = ppp_netif.input; ppp_netif.input = ppp_trace_input;
     /* The newly created PCB is dormant; configure before publishing it to tasks. */
     ip4_addr_t addr;
     ip4addr_aton(PALM_GATEWAY_IP, &addr);

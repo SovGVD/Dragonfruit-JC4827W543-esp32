@@ -18,6 +18,12 @@ static const char *TAG = "palm_uart";
 
 #define UART_RING  256
 #define UART_MASK  (UART_RING - 1)
+/* The ring is deeper than the EZ328's hardware FIFO (8 bytes modelled here).
+ * Status bits and FIFO-level interrupts use the hardware depth: Palm OS arms
+ * the RX "FIFO half" interrupt and would otherwise only see data once 128
+ * bytes queued, leaving short PPP frames (TCP ACKs) to its slow poll timer. */
+#define HW_FIFO_HALF 4
+#define HW_FIFO_FULL 8
 
 /* Single-producer / single-consumer rings (lock-free; volatile head/tail with a
  * fence before publishing the new head). RX: producer = transport task, consumer
@@ -120,10 +126,12 @@ void db_uart_update_irq(void)
     uint16_t rx_n = ring_used(rx_head, rx_tail);
     uint16_t tx_n = ring_used(tx_head, tx_tail);
 
-    bool rx_irq = en && rxen && (
-        ((db.ustcnt & USTCNT_RXRDYEN)  && rx_n > 0) ||
-        ((db.ustcnt & USTCNT_RXHALFEN) && rx_n >= UART_RING / 2) ||
-        ((db.ustcnt & USTCNT_RXFULLEN) && rx_n >= UART_MASK));
+    /* Bytes are delivered in bursts once per CPU batch, not at line rate. With
+     * a real 8-byte FIFO the tail of a short frame would still be picked up
+     * promptly by the next byte arriving; here nothing more may arrive, so any
+     * enabled RX level interrupt is treated as "data waiting". */
+    bool rx_irq = en && rxen && rx_n > 0 &&
+        (db.ustcnt & (USTCNT_RXRDYEN | USTCNT_RXHALFEN | USTCNT_RXFULLEN));
 
     bool tx_irq = en && txen && (
         ((db.ustcnt & USTCNT_TXEMPTYEN) && tx_n == 0) ||
@@ -142,8 +150,8 @@ static uint16_t urx_status_flags(uint16_t rx_n)
 {
     uint16_t v = 0;
     if (rx_n > 0)              v |= URX_DATARDY;
-    if (rx_n >= UART_RING / 2) v |= URX_FIFOHALF;
-    if (rx_n >= UART_MASK)     v |= URX_FIFOFULL;
+    if (rx_n >= HW_FIFO_HALF)  v |= URX_FIFOHALF;
+    if (rx_n >= HW_FIFO_FULL)  v |= URX_FIFOFULL;
     if (rx_overrun)            v |= URX_OVRUN;
     return v;
 }
@@ -163,8 +171,8 @@ uint16_t db_uart_read16(uint16_t offset)
 
         uint16_t v = URX_DATARDY | b;
         uint16_t rx_n = ring_used(rx_head, rx_tail);
-        if (rx_n >= UART_RING / 2) v |= URX_FIFOHALF;
-        if (rx_n >= UART_MASK)     v |= URX_FIFOFULL;
+        if (rx_n >= HW_FIFO_HALF)  v |= URX_FIFOHALF;
+        if (rx_n >= HW_FIFO_FULL)  v |= URX_FIFOFULL;
         if (rx_overrun) { v |= URX_OVRUN; rx_overrun = false; }
         db_uart_update_irq();               /* read drained a byte */
         return v;
@@ -206,6 +214,7 @@ void db_uart_write16(uint16_t offset, uint16_t val)
 {
     switch (offset) {
     case REG_USTCNT:
+        if (val != db.ustcnt) ESP_LOGD(TAG, "USTCNT=%04X", val);
         db.ustcnt = val;
         db_uart_update_irq();               /* enable bits changed */
         break;

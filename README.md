@@ -70,7 +70,7 @@ On the ESP32 side the requirements are external PSRAM (the emulated RAM and the 
 image live there) and two cores (the JIT's compiler runs on the second one). That rules out
 single-core, no-PSRAM parts such as the ESP32-C3.
 
-JC4827W543 exposes 4 MB Palm RAM and automatically checkpoints apps, data and settings
+JC4827W543 exposes 2 MB Palm RAM and automatically checkpoints apps, data and settings
 to SD for restoration through a normal Palm restart. See the [board guide](docs/jc4827w543.md#persistent-palm-ram-and-sd-applications)
 for saving before unplugging and installing applications from `/install`.
 Palm OS 4 also sees `/palm-card` on the SD as a virtual **SD Card** volume. Put
@@ -94,7 +94,7 @@ src/
   components/
     m68k/           68000 interpreter (decode, addressing, ALU, move, branch, shift, bit,
                     BCD, system) plus the device-only burst JIT and its per-ISA backend
-    bus/            24-bit address space: 4 MB RAM on S3 / 2 MB on ESP32, ROM and peripherals
+    bus/            24-bit address space: 2 MB RAM, ROM and peripherals
     dragonball/     MC68EZ328 peripherals: interrupt controller, timer, RTC, GPIO,
                     SPI (digitizer + battery ADC), UART, LCD controller
     display/        IT8951 e-ink driver; composites the framebuffer and silkscreen overlay
@@ -135,7 +135,7 @@ cmake --build build-host
 
 `-r` selects the ROM, `-c` caps the cycle count, `-i <file>` queues a PRC/PDB to auto-install,
 `--state <prefix>` restores/saves RAM through alternating checkpoint files, and `-b <dir>`
-exports RAM databases. The host defaults to 4 MB; use `-DPALM_RAM_MB=2` for 2 MB.
+exports RAM databases. The host defaults to 2 MB; use `-DPALM_RAM_MB=4` for a 4 MB experiment.
 `--card <directory>` exposes a host directory as a Palm OS 4 expansion volume;
 add `--card-read-only` to prevent guest writes.
 For an interactive window (the emulated
@@ -194,7 +194,7 @@ Requirements: Docker Desktop, and on the host Python with `esptool` and `pyseria
 
 1. **CPU.** A switch-dispatched 68000 interpreter executes the ROM, handling vectored
    interrupts and the `STOP` instruction used for sleep.
-2. **Bus.** A 24-bit address space: 4 MB RAM on JC4827W543 (2 MB on M5Paper) at `0x0`, the ROM window at `0x10C08000`, and the
+2. **Bus.** A 24-bit address space: 2 MB RAM at `0x0`, the ROM window at `0x10C08000`, and the
    DragonBall register block at `0xFFFFF000`, with the hot read/write paths inlined.
 3. **Peripherals.** The DragonBall model drives the interrupt controller, the 100 Hz timer,
    the RTC (from wall-clock time), GPIO, the SPI master (both the digitizer and the battery

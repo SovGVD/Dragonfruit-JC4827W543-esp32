@@ -10,14 +10,10 @@
 #define BUS_ADDR_MASK     0x00FFFFFF  /* 24-bit address bus */
 
 #define BUS_RAM_BASE      0x00000000
-/* The S3 can address all 8 MB PSRAM: 4 MB Palm RAM + up to 2 MB ROM leaves
- * room for the installer and video memory. The original ESP32 keeps 2 MB. */
+/* Keep Palm RAM at 2 MB, leaving PSRAM for the ROM, video, Wi-Fi and installer.
+ * Host experiments can still override the size explicitly at compile time. */
 #ifndef BUS_RAM_SIZE
-#if CONFIG_BOARD_JC4827W543
-#define BUS_RAM_SIZE      0x00400000
-#else
 #define BUS_RAM_SIZE      0x00200000
-#endif
 #endif
 
 #define BUS_ROM_BASE      0x10C08000  /* big ROM starts at bigROMOffset (0x8000) */

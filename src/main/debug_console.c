@@ -329,6 +329,7 @@ static void dispatch(char *line)
         g_wave_benchmark_request = true;
         REPLY("OK waveform benchmark queued (results follow as '= WAVE ...')");
     } else if (strcmp(cmd, "serrx") == 0) {
+        if (serial_bridge_mode() == SERIAL_MODE_WIFI) { REPLY("ERR UART owned by PPP"); return; }
         uint8_t buf[64];
         int n = 0;
         char *tok;
@@ -338,6 +339,7 @@ static void dispatch(char *line)
         db_uart_rx_push(buf, n);
         REPLY("OK pushed %d byte(s) to UART RX", n);
     } else if (strcmp(cmd, "sertx") == 0) {
+        if (serial_bridge_mode() == SERIAL_MODE_WIFI) { REPLY("ERR UART owned by PPP"); return; }
         uint8_t buf[64];
         uint32_t n = db_uart_tx_pop(buf, sizeof(buf));
         char hex[64 * 3 + 1];
@@ -347,6 +349,7 @@ static void dispatch(char *line)
         hex[p] = '\0';
         REPLY("OK UART TX %lu byte(s): %s", (unsigned long)n, hex);
     } else if (strcmp(cmd, "serloop") == 0) {
+        if (serial_bridge_mode() == SERIAL_MODE_WIFI) { REPLY("ERR UART owned by PPP"); return; }
         char *s = strtok(NULL, " \t");
         bool on = s && strcmp(s, "on") == 0;
         db_uart_set_loopback(on);
@@ -359,6 +362,9 @@ static void dispatch(char *line)
         } else {
             int m = serial_bridge_parse_mode(s);
             if (m < 0) { REPLY("ERR usage: serial [auto|console|passthrough|status]"); return; }
+            if (m == SERIAL_MODE_WIFI || serial_bridge_mode() == SERIAL_MODE_WIFI) {
+                REPLY("ERR set serial.mode in palm.cfg and restart to change Wi-Fi transport"); return;
+            }
             /* Reply (and flush it out at the console baud) BEFORE the bridge can
              * park this task / switch UART0 to the sync baud. */
             REPLY("OK serial mode=%s", serial_bridge_mode_str(m));

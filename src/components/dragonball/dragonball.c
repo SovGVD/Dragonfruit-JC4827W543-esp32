@@ -10,6 +10,7 @@ void dragonball_init(void)
 {
     memset(&db, 0, sizeof(db));
     db_spi_reset();
+    db_uart_reset();
 
     /* MC68EZ328 reset defaults */
     db.scr = 0x14;              /* EZ328 chip ID */

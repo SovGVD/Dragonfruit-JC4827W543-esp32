@@ -1,0 +1,14 @@
+menu "Palm Wi-Fi gateway"
+config PALM_WIFI_GATEWAY
+    bool "Build PPP Wi-Fi gateway"
+    default y if BOARD_JC4827W543
+    default n
+    select LWIP_PPP_SUPPORT
+    select LWIP_PPP_SERVER_SUPPORT
+    select LWIP_IP_FORWARD
+    select LWIP_IPV4_NAPT
+    select MBEDTLS_CERTIFICATE_BUNDLE
+    help
+        Enable serial.mode=wifi: direct serial PPP from Palm OS, Wi-Fi station,
+        NAT, DNS relay and a small Wi-Fi setup portal. No IrDA or sync services.
+endmenu

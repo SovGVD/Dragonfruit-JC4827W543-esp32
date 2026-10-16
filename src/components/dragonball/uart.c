@@ -29,6 +29,31 @@ static uint8_t           tx_buf[UART_RING];
 
 static volatile bool     rx_overrun = false;
 static bool              loopback   = false;
+static bool              cpu_transport;
+static uint32_t          generation;
+
+void db_uart_set_cpu_transport(bool on)
+{
+    cpu_transport = on;
+    if (on) loopback = false;
+}
+
+void db_uart_flush_cpu_transport(void)
+{
+    /* Safe only when BOTH ring endpoints belong to the emulation task. */
+    if (cpu_transport) {
+        rx_head = rx_tail = tx_head = tx_tail = 0;
+        rx_overrun = false;
+    }
+}
+
+void db_uart_reset(void)
+{
+    generation++;
+    db_uart_flush_cpu_transport();
+}
+
+uint32_t db_uart_generation(void) { return generation; }
 
 static inline uint16_t ring_used(uint16_t head, uint16_t tail)
 {
@@ -79,6 +104,7 @@ bool db_uart_rx_ring_nonempty(void)
 
 void db_uart_set_loopback(bool on)
 {
+    if (cpu_transport) return;
     loopback = on;
     ESP_LOGI(TAG, "loopback %s", on ? "ON" : "OFF");
 }

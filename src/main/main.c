@@ -21,6 +21,7 @@
 #include "input.h"
 #include "debug_console.h"
 #include "serial_bridge.h"
+#include "wifi_gateway.h"
 #include "rom_loader.h"
 #include "layout.h"
 #include "palm_config.h"
@@ -653,17 +654,6 @@ static void cpu_task(void *param)
                             kev.ascii, (unsigned long)h);
         }
 
-        /* UART RX: bytes pushed by a producer (the serial bridge, or the debug
-         * console's serrx) into the RX ring. Re-evaluate INT_UART here on the CPU
-         * task (the sole writer of interrupt state) and wake a light doze so the
-         * SerialMgr wakeup handler runs — mirroring the pen/key paths. */
-        if (db_uart_rx_ring_nonempty()) {
-            db_uart_update_irq();
-            extern dragonball_state_t db;
-            if (db.ustcnt & USTCNT_RXEN)
-                cpu.regs.stopped = false;
-        }
-
         /* Serial pass-through auto-switch (honored only in AUTO mode). The bridge
          * follows the LEVEL of the ROM's serial-port-open state, asserted every
          * batch (serial_bridge_request self-dedups, so this is cheap). A level
@@ -693,15 +683,46 @@ static void cpu_task(void *param)
              * A real close is sustained, so it still reverts after the window. */
             static bool      off_armed = false;
             static TickType_t off_at   = 0;
+            static bool wifi_wanted = false;
+            static uint32_t wifi_generation;
+            if (serial_bridge_mode() == SERIAL_MODE_WIFI && wifi_generation != db_uart_generation()) {
+                wifi_generation = db_uart_generation();
+                wifi_wanted = off_armed = false;
+            }
             if (serial_open) {
                 off_armed = false;
-                serial_bridge_request(true);
+                if (serial_bridge_mode() == SERIAL_MODE_WIFI) wifi_wanted = true;
+                else serial_bridge_request(true);
             } else if (!off_armed) {
                 off_armed = true;
                 off_at = xTaskGetTickCount();
             } else if (xTaskGetTickCount() - off_at >= pdMS_TO_TICKS(SERIAL_OFF_DEBOUNCE_MS)) {
-                serial_bridge_request(false);
+                if (serial_bridge_mode() == SERIAL_MODE_WIFI) {
+                    wifi_wanted = false;
+                    db_uart_flush_cpu_transport();
+                } else serial_bridge_request(false);
             }
+            if (serial_bridge_mode() == SERIAL_MODE_WIFI)
+                wifi_gateway_request(wifi_wanted, wifi_generation);
+        }
+
+        if (serial_bridge_mode() == SERIAL_MODE_WIFI && wifi_gateway_ready()) {
+            uint8_t serial_data[128];
+            size_t room = wifi_gateway_write_space();
+            if (room > sizeof(serial_data)) room = sizeof(serial_data);
+            uint32_t n = db_uart_tx_pop(serial_data, (uint32_t)room);
+            if (n) wifi_gateway_write(serial_data, n);
+            room = db_uart_rx_free();
+            if (room > sizeof(serial_data)) room = sizeof(serial_data);
+            n = (uint32_t)wifi_gateway_read(serial_data, room);
+            if (n) db_uart_rx_push(serial_data, n);
+        }
+        /* A drained TX ring must also reassert TX-ready interrupts. */
+        db_uart_update_irq();
+        if (db_uart_rx_ring_nonempty()) {
+            extern dragonball_state_t db;
+            if (db.ustcnt & USTCNT_RXEN)
+                cpu.regs.stopped = false;
         }
 
         /* PDB/PRC auto-install. Driven by the shared installer_pump (the same
@@ -1051,7 +1072,11 @@ void app_main(void)
      * set even when the display failed, because input.c still maps touches
      * through it. Then draw the static silkscreen for the active layout. */
 #if CONFIG_BOARD_JC4827W543
+#if CONFIG_PALM_WIFI_GATEWAY
+    int serial_mode = SERIAL_MODE_WIFI;
+#else
     int serial_mode = SERIAL_MODE_CONSOLE;
+#endif
 #else
     int serial_mode = SERIAL_MODE_AUTO;
 #endif
@@ -1211,6 +1236,9 @@ void app_main(void)
     park_eg = xEventGroupCreate();
     if (!park_eg) ESP_LOGW(TAG, "park event group alloc failed; light sleep disabled");
 
+    debug_console_start();
+    serial_bridge_init(serial_mode, serial_baud);
+
     xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0);
@@ -1220,9 +1248,6 @@ void app_main(void)
     /* No verified battery divider on this board. Leave the emulated battery full. */
     db_spi_set_battery_sample(0xff0);
 #endif
-
-    debug_console_start();   /* serial command console on UART0 */
-    serial_bridge_init(serial_mode, serial_baud);  /* shares UART0; parks the console while bridging */
 
     ESP_LOGI(TAG, "Emulator running");
 }

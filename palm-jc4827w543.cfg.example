@@ -2,9 +2,9 @@
 # automatic portrait default for the JC4827W543 (USB connector at bottom).
 preset = jc4827w543
 
-# The debug console / serial HotSync transport uses UART0, 115200 baud.
-# Keep console mode unless using a physical UART0 serial HotSync connection.
-serial.mode = console
+# Internal serial PPP -> Wi-Fi. UART0 remains the debug console at 115200 baud.
+# Use console to disable Wi-Fi, or auto for physical UART0 serial HotSync.
+serial.mode = wifi
 serial.baud = 57600
 
 # Restore apps/data/settings through a normal Palm warm boot. Save when Palm

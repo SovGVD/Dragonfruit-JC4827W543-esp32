@@ -9,6 +9,7 @@
 #include "esp_log.h"
 
 #include "dragonball.h"
+#include "wifi_gateway.h"
 
 static const char *TAG = "serbridge";
 
@@ -109,6 +110,14 @@ static void bridge_task(void *arg)
 
 void serial_bridge_init(int mode, int baud)
 {
+    if (mode == SERIAL_MODE_WIFI) {
+        if (wifi_gateway_init()) {
+            s_mode = mode;
+            db_uart_set_cpu_transport(true);
+            return;
+        }
+        mode = SERIAL_MODE_CONSOLE;
+    }
     s_mode = mode;
     if (baud > 0) s_baud = baud;
     s_desired = (mode == SERIAL_MODE_PASSTHROUGH);   /* forced bridge starts active */
@@ -126,6 +135,9 @@ void serial_bridge_request(bool active)
 
 void serial_bridge_set_mode(int mode)
 {
+    /* Live handoff between two UART-ring owners would race the console reader.
+     * Select the internal transport through palm.cfg and restart instead. */
+    if (mode == SERIAL_MODE_WIFI || s_mode == SERIAL_MODE_WIFI) return;
     s_mode = mode;
     switch (mode) {
     case SERIAL_MODE_CONSOLE:     s_desired = false;     break;
@@ -144,6 +156,7 @@ int serial_bridge_parse_mode(const char *s)
     if (!strcmp(s, "auto"))        return SERIAL_MODE_AUTO;
     if (!strcmp(s, "console"))     return SERIAL_MODE_CONSOLE;
     if (!strcmp(s, "passthrough")) return SERIAL_MODE_PASSTHROUGH;
+    if (!strcmp(s, "wifi"))        return SERIAL_MODE_WIFI;
     return -1;
 }
 
@@ -153,6 +166,7 @@ const char *serial_bridge_mode_str(int mode)
     case SERIAL_MODE_AUTO:        return "auto";
     case SERIAL_MODE_CONSOLE:     return "console";
     case SERIAL_MODE_PASSTHROUGH: return "passthrough";
+    case SERIAL_MODE_WIFI:        return "wifi";
     default:                      return "?";
     }
 }

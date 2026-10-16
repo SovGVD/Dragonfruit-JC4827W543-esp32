@@ -18,12 +18,14 @@
  *                 when it closes. This is the default.
  *   CONSOLE     - force the console; never bridge.
  *   PASSTHROUGH - force the raw bridge; the console is parked for the whole run.
+ *   WIFI        - internal PPP gateway; UART0 stays console. JC4827W543 default.
  */
 
 enum {
     SERIAL_MODE_AUTO = 0,
     SERIAL_MODE_CONSOLE,
     SERIAL_MODE_PASSTHROUGH,
+    SERIAL_MODE_WIFI, /* Internal PPP; fixed until reboot, UART0 stays console. */
 };
 
 /* Create the bridge task. `baud` is the UART0 line rate used while bridging
@@ -44,6 +46,6 @@ void serial_bridge_set_mode(int mode);
 int  serial_bridge_mode(void);
 bool serial_bridge_active(void);
 
-/* "auto"/"console"/"passthrough" -> SERIAL_MODE_*; -1 if unrecognized. */
+/* "auto"/"console"/"passthrough"/"wifi" -> SERIAL_MODE_*; -1 if unrecognized. */
 int  serial_bridge_parse_mode(const char *s);
 const char *serial_bridge_mode_str(int mode);

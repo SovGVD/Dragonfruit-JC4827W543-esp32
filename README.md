@@ -45,6 +45,9 @@ You supply the ROM. Palm OS is copyrighted and is not included here; see [Runnin
   restores the device's databases to the card.
 - Optional configurable on-screen layout: relocate or resize the silkscreen, rotate to
   landscape, or magnify, all from a file on the SD card.
+- JC4827W543 internal serial PPP to Wi-Fi, with a Palm browser setup portal and
+  IPv4 NAT/DNS plus an HTTPS-to-HTTP text browsing proxy. See
+  [Wi-Fi setup and verification limits](docs/wifi.md).
 
 ## Portability
 

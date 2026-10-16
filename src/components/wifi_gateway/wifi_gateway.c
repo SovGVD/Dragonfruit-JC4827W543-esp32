@@ -1,0 +1,699 @@
+#include "wifi_gateway.h"
+#include "sdkconfig.h"
+
+#if CONFIG_PALM_WIFI_GATEWAY
+#include "portal_protocol.h"
+#include "web_proxy.h"
+#include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/lwip_napt.h"
+#include "lwip/sockets.h"
+#include "netif/ppp/pppapi.h"
+#include "netif/ppp/pppos.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+
+#define SAVED_MAX 5
+#define SCAN_MAX 10
+#define STREAM_SIZE 8192
+#define DNS_PENDING 4
+static const char *TAG = "palm_wifi";
+static bool enabled;
+static esp_netif_t *station;
+static ppp_pcb *ppp;
+static struct netif ppp_netif;
+static StreamBufferHandle_t to_palm, from_palm;
+static portMUX_TYPE handoff_lock = portMUX_INITIALIZER_UNLOCKED;
+/* Protected by handoff_lock. The generation prevents queued bytes from a reset
+ * or closed connection being delivered into a new Palm serial session. */
+static uint32_t requested_generation, ready_generation;
+static bool requested_open, ready;
+static atomic_uint palm_ip;
+static atomic_uint link_epoch;
+static atomic_bool wifi_up, scan_done, disconnected;
+static atomic_int disconnect_reason;
+static atomic_bool proxy_enabled = true;
+
+typedef struct { char ssid[33], password[65]; } saved_network_t;
+typedef struct { uint32_t version, count; saved_network_t nets[SAVED_MAX]; } saved_store_t;
+static saved_store_t saved;
+static char outcomes[SAVED_MAX][48];
+static wifi_ap_record_t scanned[SCAN_MAX];
+static uint16_t scanned_count;
+static nvs_handle_t settings;
+static enum { IDLE, SCANNING, CONNECTING, CONNECTED, WAITING } phase;
+static uint32_t phase_at;
+static int queue[SAVED_MAX], queue_count, queue_pos, current = -1, preferred = -1;
+static bool rescan = true, scanning;
+static atomic_bool ppp_dead;
+
+static uint32_t now_ms(void) { return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
+
+static u32_t ppp_output(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
+{
+    (void)pcb; (void)ctx;
+    /* Never block lwIP. TCP retries if Wi-Fi outruns Palm's receive buffers. */
+    if (xStreamBufferSpacesAvailable(to_palm) < len) return 0;
+    return xStreamBufferSend(to_palm, data, len, 0);
+}
+
+static void ppp_status(ppp_pcb *pcb, int error, void *ctx)
+{
+    (void)pcb; (void)ctx;
+    atomic_fetch_add(&link_epoch, 1);
+    if (error == PPPERR_NONE) {
+        ip_napt_enable(ip4_addr_get_u32(netif_ip4_addr(&ppp_netif)), 1);
+        atomic_store(&palm_ip, ip4_addr_get_u32(netif_ip4_gw(&ppp_netif)));
+    } else {
+        ip_napt_enable_no(ppp_netif.num, 0);
+        atomic_store(&palm_ip, 0);
+        atomic_store(&ppp_dead, true);
+    }
+}
+
+static void ppp_task(void *arg)
+{
+    (void)arg;
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    bool running = false;
+    uint32_t generation = 0;
+    uint8_t input[128];
+    size_t pending = 0;
+    for (;;) {
+        portENTER_CRITICAL(&handoff_lock);
+        bool want_open = requested_open;
+        uint32_t want_generation = requested_generation;
+        bool change = running && (!want_open || generation != want_generation || atomic_load(&ppp_dead));
+        if (change) ready = false;
+        portEXIT_CRITICAL(&handoff_lock);
+        if (change) {
+            /* Synchronous TCP/IP-thread barrier: no PPP callback still uses the
+             * output stream after this returns. nocarrier closes immediately. */
+            pppapi_close(ppp, 1);
+            atomic_store(&palm_ip, 0);
+            portENTER_CRITICAL(&handoff_lock);
+            xStreamBufferReset(to_palm);
+            xStreamBufferReset(from_palm);
+            portEXIT_CRITICAL(&handoff_lock);
+            pending = 0;
+            running = false;
+        }
+        if (!running && want_open) {
+            atomic_store(&ppp_dead, false);
+            if (pppapi_listen(ppp) == ERR_OK) {
+                generation = want_generation;
+                running = true;
+                portENTER_CRITICAL(&handoff_lock);
+                ready_generation = generation;
+                ready = true;
+                portEXIT_CRITICAL(&handoff_lock);
+            }
+        }
+        if (running) {
+            if (!pending) pending = xStreamBufferReceive(from_palm, input, sizeof(input), 0);
+            if (pending && pppos_input_tcpip(ppp, input, (int)pending) == ERR_OK) pending = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
+void wifi_gateway_request(bool open, uint32_t generation)
+{
+    portENTER_CRITICAL(&handoff_lock);
+    requested_open = open;
+    requested_generation = generation;
+    portEXIT_CRITICAL(&handoff_lock);
+}
+
+static bool handoff_ready(void)
+{
+    return enabled && requested_open && ready && ready_generation == requested_generation;
+}
+
+bool wifi_gateway_ready(void)
+{
+    portENTER_CRITICAL(&handoff_lock);
+    bool ok = handoff_ready();
+    portEXIT_CRITICAL(&handoff_lock);
+    return ok;
+}
+
+size_t wifi_gateway_write_space(void)
+{
+    portENTER_CRITICAL(&handoff_lock);
+    size_t n = handoff_ready() ? xStreamBufferSpacesAvailable(from_palm) : 0;
+    portEXIT_CRITICAL(&handoff_lock);
+    return n;
+}
+
+size_t wifi_gateway_write(const void *data, size_t len)
+{
+    portENTER_CRITICAL(&handoff_lock);
+    size_t n = handoff_ready() ? xStreamBufferSend(from_palm, data, len, 0) : 0;
+    portEXIT_CRITICAL(&handoff_lock);
+    return n;
+}
+
+size_t wifi_gateway_read(void *data, size_t len)
+{
+    portENTER_CRITICAL(&handoff_lock);
+    size_t n = handoff_ready() ? xStreamBufferReceive(to_palm, data, len, 0) : 0;
+    portEXIT_CRITICAL(&handoff_lock);
+    return n;
+}
+
+static void wifi_event(void *ctx, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)ctx;
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        /* PPP must never become the upstream default route. */
+        esp_netif_set_default_netif(station);
+        atomic_store(&wifi_up, true);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        atomic_store(&wifi_up, false);
+        atomic_store(&disconnect_reason, ((wifi_event_sta_disconnected_t *)data)->reason);
+        atomic_store(&disconnected, true);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        atomic_store(&scan_done, true);
+    }
+}
+
+static bool personal(wifi_auth_mode_t auth)
+{
+    return auth == WIFI_AUTH_OPEN || auth == WIFI_AUTH_WPA_PSK ||
+           auth == WIFI_AUTH_WPA2_PSK || auth == WIFI_AUTH_WPA_WPA2_PSK ||
+           auth == WIFI_AUTH_WPA3_PSK || auth == WIFI_AUTH_WPA2_WPA3_PSK;
+}
+
+static bool store_networks(const saved_store_t *next)
+{
+    if (nvs_set_blob(settings, "networks", next, sizeof(*next)) != ESP_OK ||
+        nvs_commit(settings) != ESP_OK) return false;
+    saved = *next;
+    return true;
+}
+
+static void restart_wifi(void)
+{
+    if (scanning) { esp_wifi_scan_stop(); esp_wifi_clear_ap_list(); scanning = false; }
+    esp_wifi_disconnect();
+    atomic_store(&wifi_up, false);
+    phase = WAITING;
+    phase_at = now_ms();
+    rescan = true;
+    current = -1;
+}
+
+static void try_next_network(void)
+{
+    if (queue_pos >= queue_count) {
+        phase = WAITING;
+        phase_at = now_ms();
+        return;
+    }
+    current = queue[queue_pos++];
+    wifi_config_t cfg = {0};
+    memcpy(cfg.sta.ssid, saved.nets[current].ssid, strlen(saved.nets[current].ssid));
+    memcpy(cfg.sta.password, saved.nets[current].password, strlen(saved.nets[current].password));
+    cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    cfg.sta.pmf_cfg.capable = true;
+    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    atomic_store(&disconnected, false);
+    snprintf(outcomes[current], sizeof(outcomes[current]), "connecting");
+    phase = CONNECTING;
+    phase_at = now_ms();
+    if (esp_wifi_set_config(WIFI_IF_STA, &cfg) != ESP_OK || esp_wifi_connect() != ESP_OK) {
+        snprintf(outcomes[current], sizeof(outcomes[current]), "could not start connection");
+        phase = WAITING;
+    }
+}
+
+static void manage_wifi(void)
+{
+    uint32_t now = now_ms();
+    if (atomic_exchange(&scan_done, false)) {
+        scanned_count = SCAN_MAX;
+        if (esp_wifi_scan_get_ap_records(&scanned_count, scanned) != ESP_OK) scanned_count = 0;
+        scanning = false;
+        if (phase == SCANNING) {
+            queue_count = queue_pos = 0;
+            bool queued[SAVED_MAX] = {0};
+            /* A just-entered network may be hidden. Otherwise strongest first. */
+            if (preferred >= 0 && preferred < (int)saved.count) {
+                queue[queue_count++] = preferred;
+                queued[preferred] = true;
+            }
+            preferred = -1;
+            for (int i = 0; i < scanned_count; i++) {
+                if (!personal(scanned[i].authmode)) continue;
+                for (unsigned j = 0; j < saved.count; j++) {
+                    if (!queued[j] && !strcmp((char *)scanned[i].ssid, saved.nets[j].ssid)) {
+                        queue[queue_count++] = (int)j;
+                        queued[j] = true;
+                    }
+                }
+            }
+            for (unsigned j = 0; j < saved.count; j++)
+                if (!queued[j]) snprintf(outcomes[j], sizeof(outcomes[j]), "not in range");
+            try_next_network();
+        }
+    }
+    if (atomic_load(&wifi_up)) {
+        phase = CONNECTED;
+        if (current >= 0) snprintf(outcomes[current], sizeof(outcomes[current]), "connected");
+    } else if (phase == CONNECTED) {
+        phase = WAITING;
+        phase_at = now;
+    } else if (phase == CONNECTING &&
+               (atomic_load(&disconnected) || now - phase_at >= 15000)) {
+        int reason = atomic_load(&disconnected) ? atomic_load(&disconnect_reason) : 0;
+        snprintf(outcomes[current], sizeof(outcomes[current]),
+                 reason == 202 || reason == 15 || reason == 204 ? "password refused (%d)" : "connection failed (%d)", reason);
+        esp_wifi_disconnect();
+        /* Let a deliberate disconnect event drain before the next attempt. */
+        phase = IDLE;
+        phase_at = now;
+    }
+    if (phase == IDLE && !rescan && now - phase_at >= 300) try_next_network();
+    bool scan_wanted = rescan || (phase == WAITING && saved.count && now - phase_at >= 20000);
+    if (!scanning && scan_wanted && phase != CONNECTING &&
+        (phase != WAITING || now - phase_at >= 300)) {
+        atomic_store(&scan_done, false);
+        if (esp_wifi_scan_start(NULL, false) == ESP_OK) {
+            scanning = true;
+            rescan = false;
+            if (!atomic_load(&wifi_up)) phase = SCANNING;
+        }
+    }
+}
+
+static bool send_all(int sock, const char *data, size_t len)
+{
+    while (len) {
+        int n = send(sock, data, len, 0);
+        if (n <= 0) return false;
+        data += n; len -= (size_t)n;
+    }
+    return true;
+}
+
+static void page(int sock, const char *status, const char *body)
+{
+    char header[240];
+    int n = snprintf(header, sizeof(header),
+        "HTTP/1.0 %s\r\nContent-Type: text/html; charset=ISO-8859-1\r\n"
+        "Content-Length: %u\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        status, (unsigned)strlen(body));
+    if (send_all(sock, header, (size_t)n)) send_all(sock, body, strlen(body));
+}
+
+static void append(char *out, size_t cap, const char *fmt, ...)
+{
+    size_t n = strlen(out);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(out + n, cap - n, fmt, ap);
+    va_end(ap);
+}
+
+static void serve_http(int sock)
+{
+    /* Static because this single-client server does not need per-request stacks. */
+    static char request[2048], body[10240];
+    size_t used = 0, content_len = 0;
+    int header_len = 0;
+    uint32_t since = now_ms();
+    while (used < sizeof(request) - 1 && now_ms() - since < 5000) {
+        int n = recv(sock, request + used, sizeof(request) - 1 - used, 0);
+        if (n <= 0) break;
+        used += (size_t)n;
+        request[used] = 0;
+        header_len = portal_http_headers(request, used, &content_len);
+        if (header_len < 0) break;
+        if (header_len && used >= (size_t)header_len + content_len) break;
+    }
+    if (header_len <= 0 || used < (size_t)header_len + content_len) {
+        page(sock, "400 Bad Request", "<html><body>Invalid or oversized request.</body></html>");
+        return;
+    }
+    request[header_len + content_len] = 0;
+    char host[260], agent[160], type[128], remote[WEB_PROXY_URL_MAX];
+    if (portal_http_header_value(request, (size_t)header_len, "Host", host, sizeof(host)) < 0 ||
+        portal_http_header_value(request, (size_t)header_len, "User-Agent", agent, sizeof(agent)) < 0 ||
+        portal_http_header_value(request, (size_t)header_len, "Content-Type", type, sizeof(type)) < 0) {
+        page(sock, "400 Bad Request", "Invalid or oversized header"); return;
+    }
+    bool post = !strncmp(request, "POST ", 5);
+    char *target = request + (post ? 5 : 4);
+    char *end = strpbrk(target, " \r\n");
+    if (!end) { page(sock, "400 Bad Request", "Invalid request"); return; }
+    *end = 0;
+    int route = web_proxy_request_url(target, host, remote, sizeof(remote));
+    if (route < 0) { page(sock, "400 Bad Request", "Invalid address"); return; }
+    if (route > 0) {
+        if (!atomic_load(&proxy_enabled)) page(sock, "503 Unavailable", "Web proxy is off. Open http://wifi.setup/ to enable it.");
+        else if (!atomic_load(&wifi_up)) page(sock, "503 Unavailable", "Wi-Fi is disconnected. Open http://wifi.setup/ to configure it.");
+        else web_proxy_fetch(sock, remote, post, request + header_len, type, agent);
+        memset(request, 0, sizeof(request));
+        return;
+    }
+    if (!strncasecmp(target, "http://", 7) || !strncasecmp(target, "https://", 8)) {
+        web_proxy_url_t local;
+        if (web_proxy_parse_url(target, &local)) memmove(target, local.path, strlen(local.path) + 1);
+    }
+    char *query = strchr(target, '?');
+    if (query) *query++ = 0;
+    char *form = post ? request + header_len : query;
+    const char *message = "";
+    if (!strcmp(target, "/proxy/on") || !strcmp(target, "/proxy/off")) {
+        bool on = !strcmp(target, "/proxy/on");
+        if (nvs_set_u8(settings, "proxy", on) != ESP_OK || nvs_commit(settings) != ESP_OK) {
+            page(sock, "500 Storage Error", "Could not save proxy setting."); return;
+        }
+        atomic_store(&proxy_enabled, on);
+        message = "Proxy setting saved. Disconnect and reconnect PPP to refresh cached DNS addresses.";
+    } else if (!strcmp(target, "/save") || !strcmp(target, "/forget")) {
+        /* Accept GET too for Palm browsers whose form support uses query fields. */
+        char ssid[33], password[65];
+        if (!form || !portal_form_get(form, "s", ssid, sizeof(ssid)) || !ssid[0]) {
+            page(sock, "400 Bad Request", "Invalid network name"); return;
+        }
+        int index = -1;
+        for (unsigned i = 0; i < saved.count; i++)
+            if (!strcmp(saved.nets[i].ssid, ssid)) index = (int)i;
+        saved_store_t next = saved;
+        if (!strcmp(target, "/save")) {
+            if (!portal_form_get(form, "p", password, sizeof(password)) || !portal_password_valid(password)) {
+                page(sock, "400 Bad Request", "Password: empty for open Wi-Fi, 8-63 ASCII characters, or 64 hex digits."); return;
+            }
+            if (index < 0) {
+                if (next.count == SAVED_MAX) {
+                    page(sock, "400 Bad Request", "Five networks saved. Forget one first."); return;
+                }
+                index = (int)next.count++;
+            }
+            snprintf(next.nets[index].ssid, sizeof(next.nets[index].ssid), "%s", ssid);
+            snprintf(next.nets[index].password, sizeof(next.nets[index].password), "%s", password);
+        } else if (index >= 0) {
+            memmove(&next.nets[index], &next.nets[index + 1], (next.count - (unsigned)index - 1) * sizeof(next.nets[0]));
+            memset(&next.nets[--next.count], 0, sizeof(next.nets[0]));
+        }
+        if (!store_networks(&next)) { page(sock, "500 Storage Error", "Could not save Wi-Fi settings."); return; }
+        memset(outcomes, 0, sizeof(outcomes));
+        preferred = !strcmp(target, "/save") ? index : -1;
+        restart_wifi();
+        message = "Settings saved. Refresh after a few seconds.";
+    } else if (!strcmp(target, "/scan")) {
+        rescan = true;
+        message = "Scan requested. Refresh after a few seconds.";
+    } else if (strcmp(target, "/")) {
+        page(sock, "404 Not Found", "<html><body><a href=\"/\">Wi-Fi setup</a></body></html>"); return;
+    }
+    snprintf(body, sizeof(body), "<html><head><title>Wi-Fi</title></head><body><h3>Palm Wi-Fi</h3><p>%s</p>", message);
+    if (atomic_load(&wifi_up)) {
+        wifi_ap_record_t ap;
+        esp_netif_ip_info_t ip;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK && esp_netif_get_ip_info(station, &ip) == ESP_OK) {
+            char escaped[200];
+            portal_html_escape((char *)ap.ssid, escaped, sizeof(escaped));
+            append(body, sizeof(body), "<p>Connected: %s<br>Address: " IPSTR "</p>", escaped, IP2STR(&ip.ip));
+        }
+    } else append(body, sizeof(body), "<p>Wi-Fi: %s</p>", phase == CONNECTING ? "connecting" : phase == SCANNING ? "scanning" : "disconnected");
+    append(body, sizeof(body), "<p><a href=\"/\">Refresh</a> <a href=\"/scan\">Scan</a></p>");
+    append(body, sizeof(body), "<p>Web proxy: %s. HTTPS pages are fetched by ESP32 and sent to Palm over HTTP.<br>"
+        "<a href=\"/proxy/%s\">Turn proxy %s</a></p>",
+        atomic_load(&proxy_enabled) ? "on" : "off", atomic_load(&proxy_enabled) ? "off" : "on", atomic_load(&proxy_enabled) ? "off" : "on");
+    for (unsigned i = 0; i < saved.count; i++) {
+        char escaped[200];
+        portal_html_escape(saved.nets[i].ssid, escaped, sizeof(escaped));
+        append(body, sizeof(body), "<p>Saved: %s %s</p><form action=\"/forget\" method=\"post\">"
+            "<input type=\"hidden\" name=\"s\" value=\"%s\"><input type=\"submit\" value=\"Forget\"></form>",
+            escaped, outcomes[i], escaped);
+    }
+    append(body, sizeof(body), "<h4>Add or update Wi-Fi</h4><form action=\"/save\" method=\"post\">SSID:<br>"
+        "<input name=\"s\" maxlength=\"32\"><br>Password:<br><input type=\"password\" name=\"p\" maxlength=\"64\">"
+        "<br><input type=\"submit\" value=\"Save and connect\"></form><p>Empty password for open Wi-Fi.</p>");
+    if (scanned_count) {
+        append(body, sizeof(body), "<h4>Nearby networks</h4><form action=\"/save\" method=\"post\"><select name=\"s\">");
+        for (unsigned i = 0; i < scanned_count; i++) {
+            if (!scanned[i].ssid[0] || !personal(scanned[i].authmode)) continue;
+            char escaped[200];
+            portal_html_escape((char *)scanned[i].ssid, escaped, sizeof(escaped));
+            append(body, sizeof(body), "<option value=\"%s\">%s (%s, %d dBm)</option>", escaped, escaped,
+                   scanned[i].authmode == WIFI_AUTH_OPEN ? "open" : "personal", scanned[i].rssi);
+        }
+        append(body, sizeof(body), "</select><br>Password:<br><input type=\"password\" name=\"p\" maxlength=\"64\">"
+               "<br><input type=\"submit\" value=\"Save and connect\"></form>");
+    }
+    append(body, sizeof(body), "<p>Palm: " PALM_CLIENT_IP "<br>Gateway: " PALM_GATEWAY_IP "</p></body></html>");
+    page(sock, "200 OK", body);
+    memset(request, 0, sizeof(request));
+}
+
+static int listen_socket(int type, int port)
+{
+    int fd = socket(AF_INET, type, 0);
+    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(port),
+                              .sin_addr.s_addr = inet_addr(PALM_GATEWAY_IP)};
+    if (fd >= 0 && bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) return fd;
+    if (fd >= 0) close(fd);
+    return -1;
+}
+
+static void http_task(void *arg)
+{
+    (void)arg;
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    int listener = -1;
+    for (;;) {
+        manage_wifi();
+        if (listener < 0) {
+            listener = listen_socket(SOCK_STREAM, 80);
+            if (listener < 0 || listen(listener, 2) < 0) {
+                if (listener >= 0) close(listener);
+                listener = -1;
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
+        }
+        fd_set fds;
+        FD_ZERO(&fds); FD_SET(listener, &fds);
+        struct timeval wait = {.tv_usec = 200000};
+        if (select(listener + 1, &fds, NULL, NULL, &wait) <= 0) continue;
+        struct sockaddr_in peer;
+        socklen_t size = sizeof(peer);
+        int client = accept(listener, (struct sockaddr *)&peer, &size);
+        if (client < 0) continue;
+        if (peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip)) {
+            struct timeval timeout = {.tv_sec = 2};
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+            serve_http(client);
+            shutdown(client, SHUT_WR);
+        }
+        close(client);
+    }
+}
+
+typedef struct {
+    int sock;
+    struct sockaddr_in peer;
+    uint32_t since;
+    uint32_t epoch;
+    size_t len;
+    uint8_t query[PORTAL_DNS_MAX];
+} lookup_t;
+
+static void dns_task(void *arg)
+{
+    (void)arg;
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    static lookup_t pending[DNS_PENDING];
+    for (int i = 0; i < DNS_PENDING; i++) pending[i].sock = -1;
+    static uint8_t pkt[PORTAL_DNS_MAX + 16];
+    static const uint8_t gateway[] = {192,168,99,1};
+    int listener = -1;
+    for (;;) {
+        if (listener < 0) {
+            listener = listen_socket(SOCK_DGRAM, 53);
+            if (listener < 0) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
+        }
+        fd_set fds;
+        FD_ZERO(&fds); FD_SET(listener, &fds);
+        int top = listener;
+        for (int i = 0; i < DNS_PENDING; i++) if (pending[i].sock >= 0) {
+            FD_SET(pending[i].sock, &fds);
+            if (pending[i].sock > top) top = pending[i].sock;
+        }
+        struct timeval wait = {.tv_usec = 200000};
+        int result = select(top + 1, &fds, NULL, NULL, &wait);
+        if (result > 0 && FD_ISSET(listener, &fds)) {
+            struct sockaddr_in peer;
+            socklen_t size = sizeof(peer);
+            int len = recvfrom(listener, pkt, PORTAL_DNS_MAX + 1, 0, (struct sockaddr *)&peer, &size);
+            char name[254];
+            if (len > 0 && peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip) &&
+                portal_dns_question(pkt, (size_t)len, name, sizeof(name))) {
+                if (!strcmp(name, PALM_PORTAL_HOST) || !atomic_load(&wifi_up) || atomic_load(&proxy_enabled)) {
+                    size_t n = portal_dns_answer(pkt, (size_t)len, sizeof(pkt), gateway, false);
+                    if (n) sendto(listener, pkt, n, 0, (struct sockaddr *)&peer, size);
+                } else {
+                    lookup_t *slot = NULL;
+                    for (int i = 0; i < DNS_PENDING; i++) if (pending[i].sock < 0) { slot = &pending[i]; break; }
+                    esp_netif_dns_info_t dns;
+                    uint32_t server = inet_addr("1.1.1.1");
+                    if (esp_netif_get_dns_info(station, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK &&
+                        dns.ip.type == ESP_IPADDR_TYPE_V4 && dns.ip.u_addr.ip4.addr) server = dns.ip.u_addr.ip4.addr;
+                    int upstream = slot ? socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) : -1;
+                    struct sockaddr_in dest = {.sin_family = AF_INET, .sin_port = htons(53), .sin_addr.s_addr = server};
+                    if (upstream >= 0 && connect(upstream, (struct sockaddr *)&dest, sizeof(dest)) == 0 &&
+                        send(upstream, pkt, (size_t)len, 0) == len) {
+                        slot->sock = upstream; slot->peer = peer; slot->since = now_ms(); slot->len = (size_t)len;
+                        slot->epoch = atomic_load(&link_epoch);
+                        memcpy(slot->query, pkt, (size_t)len);
+                    } else {
+                        if (upstream >= 0) close(upstream);
+                        size_t n = portal_dns_answer(pkt, (size_t)len, sizeof(pkt), gateway, true);
+                        if (n) sendto(listener, pkt, n, 0, (struct sockaddr *)&peer, size);
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < DNS_PENDING; i++) {
+            lookup_t *slot = &pending[i];
+            if (slot->sock < 0) continue;
+            if (slot->epoch != atomic_load(&link_epoch) || !atomic_load(&palm_ip)) {
+                close(slot->sock); slot->sock = -1; continue;
+            }
+            bool done = false;
+            if (result > 0 && FD_ISSET(slot->sock, &fds)) {
+                int len = recv(slot->sock, pkt, PORTAL_DNS_MAX + 1, 0);
+                if (len > 0 && portal_dns_reply_matches(slot->query, slot->len, pkt, (size_t)len)) {
+                    sendto(listener, pkt, (size_t)len, 0, (struct sockaddr *)&slot->peer, sizeof(slot->peer));
+                    done = true;
+                }
+            }
+            if (!done && now_ms() - slot->since >= 3000) {
+                memcpy(pkt, slot->query, slot->len);
+                size_t n = portal_dns_answer(pkt, slot->len, sizeof(pkt), gateway, true);
+                if (n) sendto(listener, pkt, n, 0, (struct sockaddr *)&slot->peer, sizeof(slot->peer));
+                done = true;
+            }
+            if (done || !atomic_load(&palm_ip)) { close(slot->sock); slot->sock = -1; }
+        }
+    }
+}
+
+bool wifi_gateway_init(void)
+{
+    if (enabled) return true;
+    TaskHandle_t tasks[3] = {0};
+    bool wifi_initialized = false, wifi_handler = false, ip_handler = false;
+    /* Do not erase NVS on initialization failures: it may contain other settings. */
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) goto fail;
+    err = nvs_open("palm_wifi", NVS_READWRITE, &settings);
+    if (err != ESP_OK) goto fail;
+    size_t len = sizeof(saved);
+    if (nvs_get_blob(settings, "networks", &saved, &len) != ESP_OK || len != sizeof(saved) ||
+        saved.version != 1 || saved.count > SAVED_MAX) memset(&saved, 0, sizeof(saved));
+    saved.version = 1;
+    uint8_t proxy = 1;
+    nvs_get_u8(settings, "proxy", &proxy);
+    atomic_store(&proxy_enabled, proxy != 0);
+    for (unsigned i = 0; i < saved.count; i++) {
+        if (!memchr(saved.nets[i].ssid, 0, sizeof(saved.nets[i].ssid)) || !saved.nets[i].ssid[0] ||
+            !memchr(saved.nets[i].password, 0, sizeof(saved.nets[i].password)) ||
+            !portal_password_valid(saved.nets[i].password)) {
+            saved.count = 0;
+            break;
+        }
+    }
+    err = esp_netif_init();
+    if (err != ESP_OK) goto fail;
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto fail;
+    station = esp_netif_create_default_wifi_sta();
+    if (!station) { err = ESP_ERR_NO_MEM; goto fail; }
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) goto fail;
+    wifi_initialized = true;
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK) goto fail;
+    err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
+    if (err != ESP_OK) goto fail;
+    wifi_handler = true;
+    err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
+    if (err != ESP_OK) goto fail;
+    ip_handler = true;
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_start();
+    if (err != ESP_OK) goto fail;
+    to_palm = xStreamBufferCreate(STREAM_SIZE, 1);
+    from_palm = xStreamBufferCreate(STREAM_SIZE, 1);
+    if (!to_palm || !from_palm) { err = ESP_ERR_NO_MEM; goto fail; }
+    ppp = pppapi_pppos_create(&ppp_netif, ppp_output, ppp_status, NULL);
+    if (!ppp) { err = ESP_ERR_NO_MEM; goto fail; }
+    /* The newly created PCB is dormant; configure before publishing it to tasks. */
+    ip4_addr_t addr;
+    ip4addr_aton(PALM_GATEWAY_IP, &addr);
+    ppp_set_ipcp_ouraddr(ppp, &addr);
+    ppp_set_ipcp_dnsaddr(ppp, 0, &addr);
+    ip4addr_aton(PALM_CLIENT_IP, &addr);
+    ppp_set_ipcp_hisaddr(ppp, &addr);
+    ppp_set_usepeerdns(ppp, 0);
+#if VJ_SUPPORT
+    ppp->ipcp_wantoptions.neg_vj = 0;
+    ppp->ipcp_allowoptions.neg_vj = 0;
+#endif
+    /* Authentication is disabled in this build; Palm can use any user name. */
+    /* Listener mode responds to Palm's LCP; it does not send modem commands. */
+    if (xTaskCreatePinnedToCore(ppp_task, "palm_ppp", 4096, NULL, 3, &tasks[0], 0) != pdPASS ||
+        xTaskCreatePinnedToCore(http_task, "wifi_portal", 16384, NULL, 1, &tasks[1], 0) != pdPASS ||
+        xTaskCreatePinnedToCore(dns_task, "palm_dns", 4096, NULL, 2, &tasks[2], 0) != pdPASS) {
+        /* Tasks wait at a startup gate until all allocations have succeeded. */
+        err = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    enabled = true;
+    for (int i = 0; i < 3; i++) xTaskNotifyGive(tasks[i]);
+    ESP_LOGI(TAG, "PPP Wi-Fi ready; portal http://" PALM_PORTAL_HOST "/");
+    return true;
+fail:
+    for (int i = 0; i < 3; i++) if (tasks[i]) vTaskDelete(tasks[i]);
+    if (ppp) { pppapi_free(ppp); ppp = NULL; }
+    if (to_palm) { vStreamBufferDelete(to_palm); to_palm = NULL; }
+    if (from_palm) { vStreamBufferDelete(from_palm); from_palm = NULL; }
+    if (wifi_handler) esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event);
+    if (ip_handler) esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event);
+    if (wifi_initialized) { esp_wifi_stop(); esp_wifi_deinit(); }
+    if (station) { esp_netif_destroy_default_wifi(station); station = NULL; }
+    if (settings) { nvs_close(settings); settings = 0; }
+    ESP_LOGE(TAG, "Gateway unavailable: %s", esp_err_to_name(err));
+    return false;
+}
+
+bool wifi_gateway_enabled(void) { return enabled; }
+#else
+bool wifi_gateway_init(void) { return false; }
+bool wifi_gateway_enabled(void) { return false; }
+void wifi_gateway_request(bool open, uint32_t generation) { (void)open; (void)generation; }
+bool wifi_gateway_ready(void) { return false; }
+size_t wifi_gateway_write_space(void) { return 0; }
+size_t wifi_gateway_write(const void *data, size_t len) { (void)data; (void)len; return 0; }
+size_t wifi_gateway_read(void *data, size_t len) { (void)data; (void)len; return 0; }
+#endif

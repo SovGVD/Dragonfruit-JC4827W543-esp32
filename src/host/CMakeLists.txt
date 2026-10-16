@@ -292,3 +292,38 @@ if(HOST_UI)
 endif()
 add_test(NAME palm_card COMMAND test_palm_card "${CMAKE_CURRENT_BINARY_DIR}/test-card")
 
+add_executable(test_portal_protocol test_portal_protocol.c
+    ../components/wifi_gateway/portal_protocol.c)
+target_include_directories(test_portal_protocol PRIVATE ../components/wifi_gateway/include)
+add_executable(test_uart test_uart.c ../components/dragonball/uart.c)
+target_include_directories(test_uart PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    ../components/dragonball/include)
+foreach(target test_portal_protocol test_uart)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+endforeach()
+add_test(NAME portal_protocol COMMAND test_portal_protocol)
+add_test(NAME uart COMMAND test_uart)
+
+add_executable(test_web_proxy test_web_proxy.c ../components/wifi_gateway/web_proxy.c)
+target_include_directories(test_web_proxy PRIVATE ../components/wifi_gateway/include)
+if(MSVC)
+    target_compile_options(test_web_proxy PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_web_proxy PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+add_test(NAME web_proxy COMMAND test_web_proxy)
+
+if(UNIX)
+    add_executable(test_web_proxy_http test_web_proxy_http.c
+        ../components/wifi_gateway/web_proxy_http.c ../components/wifi_gateway/web_proxy.c
+        ../components/wifi_gateway/portal_protocol.c)
+    target_include_directories(test_web_proxy_http PRIVATE proxy_test_support
+        ../components/wifi_gateway/include)
+    target_compile_options(test_web_proxy_http PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME web_proxy_http COMMAND test_web_proxy_http)
+endif()
+

@@ -374,6 +374,10 @@ uint32_t db_uart_rx_free(void);      /* free space in the RX ring (for back-pres
 bool     db_uart_rx_ring_nonempty(void);
 void     db_uart_update_irq(void);   /* (re)evaluate INT_UART; CPU task only */
 void     db_uart_set_loopback(bool on);
+void     db_uart_set_cpu_transport(bool on); /* before CPU task starts */
+void     db_uart_flush_cpu_transport(void);  /* CPU task, exclusive transport only */
+void     db_uart_reset(void);               /* db_init reset notification */
+uint32_t db_uart_generation(void);          /* CPU task only */
 
 void     db_spi_reset(void);
 void     db_spi_set_touch(int16_t x, int16_t y, bool down);

@@ -1,7 +1,7 @@
 #requires -Version 5
 <#
 .SYNOPSIS
-  Flash the built firmware to the M5 Paper from the Windows host using esptool.
+  Flash the built firmware to the selected Dragonfruit board from the Windows host using esptool.
 
 .DESCRIPTION
   Docker Desktop on Windows can't reach COM ports, so the build runs in the
@@ -25,15 +25,17 @@
 param(
     [string] $Port = 'COM5',
     [int]    $Baud = 460800,
-    [switch] $Monitor
+    [switch] $Monitor,
+    [string] $BuildDir = 'build'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
-$argsFile = Join-Path $PSScriptRoot 'build/flasher_args.json'
+$artifactDir = Join-Path $PSScriptRoot $BuildDir
+$argsFile = Join-Path $artifactDir 'flasher_args.json'
 if (-not (Test-Path $argsFile)) {
-    throw "build/flasher_args.json not found. Run ./build.ps1 first."
+    throw "$argsFile not found. Build the firmware first."
 }
 
 $fa = Get-Content $argsFile -Raw | ConvertFrom-Json
@@ -45,7 +47,7 @@ $writeArgs = @($fa.write_flash_args)
 $pairs = @()
 foreach ($p in $fa.flash_files.PSObject.Properties) {
     $offset = $p.Name
-    $file   = Join-Path $PSScriptRoot ("build/" + $p.Value)
+    $file   = Join-Path $artifactDir $p.Value
     if (-not (Test-Path $file)) { throw "Missing artifact: $file" }
     $pairs += $offset
     $pairs += $file
@@ -57,7 +59,10 @@ for ($i = 0; $i -lt $pairs.Count; $i += 2) {
     Write-Host ("    {0}  {1}" -f $pairs[$i], $pairs[$i+1])
 }
 
-& python -m esptool --chip esp32 --port $Port --baud $Baud write-flash @writeArgs @pairs
+$chip = $fa.extra_esptool_args.chip
+if (-not $chip) { throw "Build metadata does not specify an ESP chip." }
+
+& python -m esptool --chip $chip --port $Port --baud $Baud write-flash @writeArgs @pairs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Flash failed (exit $LASTEXITCODE)." -ForegroundColor Red
     exit $LASTEXITCODE

@@ -316,6 +316,61 @@ int main(void)
         CHECK(d >= 0, "divider region present after hide=false");
     }
 
+    /* JC4827W543: default, explicit preset, and invalid-config fallback all
+     * stay on-panel. Every visible source pixel must also route back through
+     * the global input transform, catching overlaps that steal another region. */
+    const char *compact_cfgs[] = { NULL, "preset=jc4827w543\n",
+        "preset=default\n", "preset=unknown\n",
+        "preset=jc4827w543\n[screen]\nscale=3\n" };
+    for (unsigned c = 0; c < sizeof(compact_cfgs)/sizeof(compact_cfgs[0]); c++) {
+        if (compact_cfgs[c]) layout_load(compact_cfgs[c], 480, 272);
+        else layout_use_default(480, 272);
+        CHECK(layout_region_count() == 2, "compact config %u region count", c);
+        for (int i = 0; i < layout_region_count(); i++) {
+            const region_t *r = layout_region(i);
+            int w, h;
+            layout_region_box(r, &w, &h);
+            CHECK(r->panel_x >= 0 && r->panel_y >= 0 &&
+                  r->panel_x + w <= 480 && r->panel_y + h <= 272,
+                  "compact region %d out of bounds", i);
+            for (int y = r->palm_y; y < r->palm_y + r->palm_h; y++) {
+                for (int x = r->palm_x; x < r->palm_x + r->palm_w; x++) {
+                    int px, py, bx = -1, by = -1;
+                    layout_src_to_panel(r, x, y, &px, &py);
+                    bool hit = layout_panel_to_palm(px, py, &bx, &by);
+                    CHECK(hit && bx == x && by == y,
+                          "compact routing region %d at %d,%d", i, x, y);
+                }
+            }
+        }
+    }
+
+    /* Fractional scale must keep source pixels reachable through all rotations.
+     * Every source pixel must remain reachable through the inverse map. */
+    for (int rot = ROT_0; rot <= ROT_270; rot++) {
+        region_t r = { .kind = REGION_SCREEN, .palm_w = 160, .palm_h = 160,
+            .panel_x = 16, .panel_y = 8, .scale_x = 8, .scale_y = 9,
+            .scale_den = 5, .rot = (region_rot_t)rot };
+        for (int y = 0; y < 160; y++) for (int x = 0; x < 160; x++) {
+            int px, py, bx = -1, by = -1;
+            layout_src_to_panel(&r, x, y, &px, &py);
+            bool hit = layout_region_panel_to_palm(&r, px, py, &bx, &by);
+            CHECK(hit && bx == x && by == y, "fractional round trip rot=%d src=%d,%d got=%d,%d", rot, x, y, bx, by);
+        }
+    }
+    layout_use_default(480, 272);
+    {
+        const region_t *lcd = layout_region(0), *silk = layout_region(1);
+        int w, h; layout_region_box(lcd, &w, &h);
+        CHECK(w == 160 && h == 160 && lcd->rot == ROT_270, "JC portrait LCD dimensions/rotation");
+        CHECK(lcd->scale_x == 1 && lcd->scale_y == 1 && lcd->scale_den == 1,
+              "JC portrait must render at 1:1");
+        CHECK(silk->panel_x + 60 == lcd->panel_x, "portrait screen/silk must be continuous");
+        int x, y;
+        layout_src_to_panel(lcd, 10, 10, &x, &y);
+        CHECK(x == 337 && y == 66, "portrait top-left target native position");
+    }
+
     /* ---- geometry dump (manual inspection of preset visuals) ---- */
     {
         const char *names[] = { "default", "custom", "buttons-top",

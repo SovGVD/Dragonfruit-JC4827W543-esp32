@@ -1,3 +1,5 @@
+# Only the classic ESP32 executable-memory backend is supported. S3 and RISC-V
+# targets use the interpreter until their memory/codegen backend is validated.
 # The JIT is split into an architecture-neutral core (driver + block cache) and a
 # per-ISA code-generation backend + chip-specific executable-memory unit, selected
 # at build time by the target arch. Adding a RISC-V target (e.g. ESP32-P4) means
@@ -11,14 +13,16 @@ set(m68k_srcs
     "m68k_jit_core.c"       # neutral JIT driver (dispatch, async compiler, install)
     "m68k_jit_cache.c"      # neutral block hash + presence bitmap + segmented ring
 )
-if(CONFIG_IDF_TARGET_ARCH_XTENSA)
+if(CONFIG_IDF_TARGET_ESP32)
     list(APPEND m68k_srcs
         "m68k_jit_backend_xtensa.c"   # 68k -> Xtensa translator
         "jit_execmem_esp32.c")        # classic-ESP32 D/IRAM executable memory
 elseif(CONFIG_IDF_TARGET_ARCH_RISCV)
+    list(APPEND m68k_srcs "m68k_jit_backend_riscv.c" "jit_execmem_riscv.c")
+else()
     list(APPEND m68k_srcs
-        "m68k_jit_backend_riscv.c"    # placeholder: no codegen yet (interpreter-only)
-        "jit_execmem_riscv.c")        # placeholder: no executable cache yet
+        "m68k_jit_backend_disabled.c"    # placeholder: no codegen yet (interpreter-only)
+        "jit_execmem_disabled.c")        # placeholder: no executable cache yet
 endif()
 
 idf_component_register(

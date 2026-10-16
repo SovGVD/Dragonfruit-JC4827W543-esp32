@@ -27,9 +27,9 @@ rom_load_result_t rom_load_from_sd(uint8_t **out_data, size_t *out_size)
     *out_data = NULL;
     *out_size = 0;
 
-    /* Mount the shared microSD on the display's already-initialized SPI bus.
-     * m5_sd retries the flaky first transaction after the IT8951 has been
-     * driving the bus, and owns the SPI3/GPIO4 wiring. */
+    /* The board SD component owns bus wiring, initialization and retries.
+     * On JC4827W543 this uses SPI2 shared with resistive touch; the display
+     * runs independently on SPI3. */
     sdmmc_card_t *card = NULL;
     esp_err_t err = m5_sd_mount(&card);
     if (err != ESP_OK) {

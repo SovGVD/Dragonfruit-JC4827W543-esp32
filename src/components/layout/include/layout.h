@@ -13,7 +13,7 @@
  *  This module owns that mapping once. A "layout" is an ordered list of
  *  "regions"; each region maps a rectangle of the logical 160x220 Palm
  *  surface to a placement on the IT8951 panel, with an independent
- *  rotation and (per-axis) integer magnification.
+ *  rotation and (per-axis) rational magnification.
  *
  *  The unified Palm surface is 160 wide x 220 tall:
  *    - rows   0..159  = the live LCD framebuffer        (REGION_SCREEN)
@@ -58,9 +58,12 @@ typedef struct {
      * enforces this. */
     int16_t  panel_x, panel_y;
 
-    /* Integer magnification of the PALM axes (independent of rotation):
-     * scale_x magnifies the palm-x dimension, scale_y the palm-y dimension. */
+    /* Magnification numerators of the PALM axes (independent of rotation):
+     * scale_x magnifies palm-x, scale_y magnifies palm-y, divided by scale_den. */
     uint8_t  scale_x, scale_y;
+    /* Optional common denominator; zero means 1 for existing integer layouts.
+     * The JC portrait layout uses 1/1 for native-resolution pixels. */
+    uint8_t  scale_den;
 
     region_rot_t rot;
 
@@ -77,9 +80,9 @@ typedef struct {
  * ~4 KB. Both the SD reader and the parser size their buffers to this. */
 #define LAYOUT_CFG_MAX 8192
 
-/* Install the built-in default layout (stock centered portrait, scale 3,
- * 90 deg CCW) for the given panel size. Reproduces the pre-refactor geometry
- * exactly. Always succeeds. */
+/* Install the board-sized default: JC4827W543 uses portrait, scale 1,
+ * ROT_270 (USB at bottom); the original 960x540 panel retains scale 3 ROT_90.
+ * Always succeeds. */
 void layout_use_default(uint16_t panel_w, uint16_t panel_h);
 
 /* Install an upright (ROT_0) portrait layout: the 160x160 LCD stacked above the

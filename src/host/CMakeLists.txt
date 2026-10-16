@@ -179,3 +179,42 @@ else()
         -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -O2
     )
 endif()
+
+# SD-ROM loader: actual file I/O and validation, fake mount/PSRAM only.
+add_executable(test_rom_loader test_rom_loader.c ../components/rom_loader/rom_loader.c)
+target_include_directories(test_rom_loader PRIVATE
+    rom_test_support ../components/rom_loader/include ../components/bus/include)
+target_compile_definitions(test_rom_loader PRIVATE
+    TEST_SD_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-sd")
+# Keep test assertions active even in Release builds.
+if(NOT MSVC)
+    target_compile_options(test_rom_loader PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+
+enable_testing()
+add_test(NAME layout COMMAND test_layout)
+add_test(NAME touch_config COMMAND test_touch_config)
+add_test(NAME jit_cache COMMAND test_jit_cache)
+add_test(NAME rom_loader COMMAND test_rom_loader)
+
+add_executable(test_sd_mount test_sd_mount.c ../components/m5_sd/m5_sd.c)
+target_include_directories(test_sd_mount PRIVATE sd_test_support
+    ../components/m5_sd/include rom_test_support ../components/board/include)
+if(MSVC)
+    target_compile_options(test_sd_mount PRIVATE /UNDEBUG)
+    target_compile_options(test_rom_loader PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_sd_mount PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+add_test(NAME sd_mount COMMAND test_sd_mount)
+
+add_executable(test_resistive_touch test_resistive_touch.c
+    ../components/input/resistive_touch.c ../components/layout/layout.c)
+target_include_directories(test_resistive_touch PRIVATE
+    rom_test_support ../components/input/include ../components/layout/include)
+if(MSVC)
+    target_compile_options(test_resistive_touch PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_resistive_touch PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+add_test(NAME resistive_touch COMMAND test_resistive_touch)

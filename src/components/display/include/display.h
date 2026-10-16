@@ -3,13 +3,13 @@
 #include "esp_err.h"
 #include <stdint.h>
 
-/* Initialize the IT8951 hardware (SPI bus, panel clear). Does NOT draw the
+/* Initialize the selected panel hardware (SPI bus, panel clear). Does NOT draw the
  * silkscreen — the caller establishes the layout first, then calls
- * display_draw_static(). The SD card (ROM + /palm.cfg) shares this SPI bus, so
- * display_init() must run before any SD access. */
+ * display_draw_static(). M5Paper SD shares the panel SPI bus and requires
+ * display_init() first; JC4827W543 SD/touch SPI2 is independent of the LCD. */
 esp_err_t display_init(void);
 
-/* Real panel dimensions from the IT8951 (valid after display_init succeeds).
+/* Native panel dimensions (valid after display_init succeeds).
  * The caller uses these to size the layout. */
 void display_get_panel_size(uint16_t *w, uint16_t *h);
 

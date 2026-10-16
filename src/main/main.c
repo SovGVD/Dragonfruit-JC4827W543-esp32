@@ -14,6 +14,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 
 #include "m68k.h"
+#include "board.h"
 #include "bus.h"
 #include "dragonball.h"
 #include "display.h"
@@ -34,7 +35,7 @@ static volatile uint32_t total_cycles = 0;
 
 /* M5Paper middle button = GPIO38 (active-low, external pull-up): the power/
  * wake-sleep button and the light-sleep wake source. */
-#define PIN_BTN_POWER  GPIO_NUM_38
+#define PIN_BTN_POWER BOARD_BTN_POWER
 #define POWER_HOLD_MS  1000     /* >=1s hold to wake from light sleep */
 
 /* MC68EZ328 core clock. The IIIx clocks the DragonBall EZ at 16.58 MHz; the cpu
@@ -375,6 +376,7 @@ static void run_br_with_confirm(bool restore)
  * bump just re-sleeps. Called once per batch from the CPU task. */
 static void maybe_enter_light_sleep(void)
 {
+#if !CONFIG_BOARD_JC4827W543
     if (!park_eg || !db_is_asleep() || !cpu.regs.stopped)
         return;
 
@@ -426,6 +428,8 @@ static void maybe_enter_light_sleep(void)
     display_resume_after_wake();
     wake_emulated_device();
     unpark_io_tasks();
+#endif
+    /* JC4827W543 stays awake so BOOT and the console can wake Palm OS. */
 }
 
 static void cpu_task(void *param)
@@ -510,8 +514,12 @@ static void cpu_task(void *param)
          * event loop never acts on that event; the syscall path is the one that
          * is processed. Waking uses the matrix key instead. */
         if (input_pop_power_key()) {
-            uint32_t h = inject_key_event(0x0208 /*vchrHardPower*/, 0, 0x0008 /*commandKeyMask*/);
-            if (h) ESP_LOGI(TAG, "POWER key injected -> EvtEnqueueKey=%08lX", (unsigned long)h);
+            if (db_is_asleep()) {
+                wake_emulated_device();
+            } else {
+                uint32_t h = inject_key_event(0x0208 /*vchrHardPower*/, 0, 0x0008 /*commandKeyMask*/);
+                if (h) ESP_LOGI(TAG, "POWER key injected -> EvtEnqueueKey=%08lX", (unsigned long)h);
+            }
         }
 
         /* On-device backup/restore: a >=1s hold of the UP (backup) / DOWN
@@ -732,6 +740,7 @@ static void input_task(void *param)
  * onto the 12-bit ADS7846 battery sample the ROM reads (level = sample>>4, dead
  * below ~125). The window below is an honest Li-ion map: a genuinely flat pack
  * lands below the shutdown threshold so Palm OS runs its own low-battery path. */
+#if !CONFIG_BOARD_JC4827W543
 #define BAT_ADC_CHANNEL  ADC_CHANNEL_7   /* GPIO35 on ADC1 */
 #define BAT_MV_FULL      4200            /* ~100% -> level ~255 (sample 0xFF0) */
 #define BAT_MV_EMPTY     3300            /* dead  -> level ~110 (< 125 thresh)  */
@@ -827,13 +836,19 @@ static void battery_task(void *param)
     }
 }
 
+#endif
+
 /* How often the display task checks Palm's framebuffer for changes. This is the
  * change-DETECTION rate, decoupled from the actual e-ink push rate: a check is a cheap
  * ~3 KB memcmp, while pushes are paced by the panel's waveform via it8951_wait_ready()
  * inside region_load(). Polling fast keeps the quiescence settle in display_refresh()
  * cheap (it costs ~one poll of latency) so a settled redraw appears ~60 ms after Palm
  * stops drawing instead of ~200 ms, while still never showing a half-drawn frame. */
+#if CONFIG_BOARD_JC4827W543
+#define DISPLAY_POLL_MS 33
+#else
 #define DISPLAY_POLL_MS 60
+#endif
 
 static void display_task(void *param)
 {
@@ -888,7 +903,11 @@ void app_main(void)
      * the cpu task samples a hot PC, long after this, so the ROM need not be loaded
      * yet. The 68k->Xtensa burst JIT is interpreter-primary; set g_m68k_accel_mode
      * = 0 for the pure interpreter. */
+#if CONFIG_IDF_TARGET_ESP32
     g_m68k_accel_mode = 1;
+#else
+    g_m68k_accel_mode = 0;
+#endif
     if (g_m68k_accel_mode)
         m68k_jit_init();
 
@@ -898,7 +917,7 @@ void app_main(void)
         ESP_LOGW(TAG, "Display init failed: %s (continuing without display)",
                  esp_err_to_name(err));
 
-    ESP_LOGI(TAG, "=== Dragonfruit (Palm IIIx emulator) ===");
+    ESP_LOGI(TAG, "=== Dragonfruit on %s (Palm IIIx emulator) ===", BOARD_NAME);
 
     ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
     ESP_LOGI(TAG, "Free PSRAM: %lu bytes",
@@ -910,10 +929,14 @@ void app_main(void)
      * layout if the card/file is absent or the config is invalid. The layout is
      * set even when the display failed, because input.c still maps touches
      * through it. Then draw the static silkscreen for the active layout. */
+#if CONFIG_BOARD_JC4827W543
+    int serial_mode = SERIAL_MODE_CONSOLE;
+#else
     int serial_mode = SERIAL_MODE_AUTO;
+#endif
     int serial_baud = 57600;       /* the Palm HotSync default; PC end must match */
     {
-        uint16_t pw = 960, ph = 540;
+        uint16_t pw = BOARD_PANEL_W, ph = BOARD_PANEL_H;
         if (display_ok) display_get_panel_size(&pw, &ph);
 
         static char cfg_text[LAYOUT_CFG_MAX];
@@ -1005,7 +1028,9 @@ void app_main(void)
              (unsigned long)cpu.regs.pc,
              (unsigned long)cpu.regs.a[7]);
 
-    input_init();
+    err = input_init();
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Input init failed: %s", esp_err_to_name(err));
 
     park_eg = xEventGroupCreate();
     if (!park_eg) ESP_LOGW(TAG, "park event group alloc failed; light sleep disabled");
@@ -1013,7 +1038,12 @@ void app_main(void)
     xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0);
+#if !CONFIG_BOARD_JC4827W543
     xTaskCreatePinnedToCore(battery_task, "battery", 4096, NULL, 2, NULL, 0);
+#else
+    /* No verified battery divider on this board. Leave the emulated battery full. */
+    db_spi_set_battery_sample(0xff0);
+#endif
 
     debug_console_start();   /* serial command console on UART0 */
     serial_bridge_init(serial_mode, serial_baud);  /* shares UART0; parks the console while bridging */

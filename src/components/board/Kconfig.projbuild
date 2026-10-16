@@ -1,0 +1,26 @@
+menu "Dragonfruit board"
+    choice DRAGONFRUIT_BOARD
+        prompt "Hardware board"
+        default BOARD_JC4827W543 if IDF_TARGET_ESP32S3
+        default BOARD_M5PAPER
+
+        config BOARD_JC4827W543
+            bool "JC4827W543 (NV3041A QSPI)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_M5PAPER
+            bool "M5Paper (IT8951 / GT911)"
+            depends on IDF_TARGET_ESP32
+    endchoice
+
+    choice DRAGONFRUIT_TOUCH
+        prompt "JC4827W543 touchscreen"
+        depends on BOARD_JC4827W543
+        default TOUCH_XPT2046
+
+        config TOUCH_XPT2046
+            bool "Resistive (XPT2046 on shared SD SPI2 bus)"
+        config TOUCH_GT911
+            bool "Capacitive (GT911 on I2C)"
+    endchoice
+endmenu

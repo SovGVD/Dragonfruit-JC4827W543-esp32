@@ -15,12 +15,12 @@ typedef enum {
     CONFIG_READ_ERR,   /* open/read failure */
 } config_load_result_t;
 
-/* Mount the M5Paper microSD, read /palm.cfg into `buf` (NUL-terminated, at most
+/* Mount the board microSD, read /palm.cfg into `buf` (NUL-terminated, at most
  * cap-1 bytes), then unmount. On CONFIG_OK *out_len is the text length.
  *
- * Like rom_loader, this only ADDS an sdspi device to the display's already-
- * initialized SPI3 bus and removes it before returning, so display_init() must
- * have run first and the display keeps sole use of the bus during emulation. */
+ * The board SD component owns bus initialization and removes the card device
+ * before returning. JC4827W543 uses SPI2 shared with resistive touch; the
+ * original target requires display_init() to initialize its shared SPI3 bus. */
 config_load_result_t config_load_from_sd(char *buf, size_t cap, size_t *out_len);
 
 /* Generic form of config_load_from_sd: mount, read `path` (a full

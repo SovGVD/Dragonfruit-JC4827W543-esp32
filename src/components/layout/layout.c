@@ -32,10 +32,16 @@ static const char *TAG = "layout";
  *  formulas; ROT_90/ROT_270 swap the bounding-box axes (W<->H).
  * ------------------------------------------------------------------ */
 
+static int scale_ceil(int value, int numerator, int denominator)
+{
+    return (value * numerator + denominator - 1) / denominator;
+}
+
 void layout_region_box(const region_t *r, int *box_w, int *box_h)
 {
-    int ew = r->palm_w * r->scale_x;
-    int eh = r->palm_h * r->scale_y;
+    int den = r->scale_den ? r->scale_den : 1;
+    int ew = scale_ceil(r->palm_w, r->scale_x, den);
+    int eh = scale_ceil(r->palm_h, r->scale_y, den);
     int w, h;
     if (r->rot == ROT_90 || r->rot == ROT_270) { w = eh; h = ew; }
     else                                        { w = ew; h = eh; }
@@ -54,16 +60,19 @@ void layout_src_to_panel(const region_t *r, int palm_x, int palm_y,
 {
     int u = palm_x - r->palm_x;
     int v = palm_y - r->palm_y;
-    int a = u * r->scale_x;                 /* scaled offset along palm-x */
-    int b = v * r->scale_y;                 /* scaled offset along palm-y */
-    int ew = r->palm_w * r->scale_x;
-    int eh = r->palm_h * r->scale_y;
+    int den = r->scale_den ? r->scale_den : 1;
+    int a = scale_ceil(u, r->scale_x, den);
+    int b = scale_ceil(v, r->scale_y, den);
+    int ew = scale_ceil(r->palm_w, r->scale_x, den);
+    int eh = scale_ceil(r->palm_h, r->scale_y, den);
+    int reverse_a = ew - scale_ceil(u + 1, r->scale_x, den);
+    int reverse_b = eh - scale_ceil(v + 1, r->scale_y, den);
 
     switch (r->rot) {
-    case ROT_0:   *px = r->panel_x + a;                       *py = r->panel_y + b;                       break;
-    case ROT_90:  *px = r->panel_x + b;                       *py = r->panel_y + (ew - r->scale_x) - a;   break;
-    case ROT_180: *px = r->panel_x + (ew - r->scale_x) - a;   *py = r->panel_y + (eh - r->scale_y) - b;   break;
-    case ROT_270: *px = r->panel_x + (eh - r->scale_y) - b;   *py = r->panel_y + a;                       break;
+    case ROT_0:   *px = r->panel_x + a;         *py = r->panel_y + b;         break;
+    case ROT_90:  *px = r->panel_x + b;         *py = r->panel_y + reverse_a; break;
+    case ROT_180: *px = r->panel_x + reverse_a; *py = r->panel_y + reverse_b; break;
+    case ROT_270: *px = r->panel_x + reverse_b; *py = r->panel_y + a;         break;
     }
 }
 
@@ -78,15 +87,16 @@ bool layout_region_panel_to_palm(const region_t *r, int panel_x, int panel_y,
     if (dx < 0 || dy < 0 || dx >= box_w || dy >= box_h)
         return false;
 
-    int ew = r->palm_w * r->scale_x;
-    int eh = r->palm_h * r->scale_y;
+    int den = r->scale_den ? r->scale_den : 1;
+    int ew = scale_ceil(r->palm_w, r->scale_x, den);
+    int eh = scale_ceil(r->palm_h, r->scale_y, den);
     int u, v;
 
     switch (r->rot) {
-    case ROT_0:   u = dx / r->scale_x;               v = dy / r->scale_y;               break;
-    case ROT_90:  u = (ew - 1 - dy) / r->scale_x;    v = dx / r->scale_y;               break;
-    case ROT_180: u = (ew - 1 - dx) / r->scale_x;    v = (eh - 1 - dy) / r->scale_y;    break;
-    case ROT_270: u = dy / r->scale_x;               v = (eh - 1 - dx) / r->scale_y;    break;
+    case ROT_0:   u = dx * den / r->scale_x;            v = dy * den / r->scale_y;            break;
+    case ROT_90:  u = (ew - 1 - dy) * den / r->scale_x; v = dx * den / r->scale_y;            break;
+    case ROT_180: u = (ew - 1 - dx) * den / r->scale_x; v = (eh - 1 - dy) * den / r->scale_y; break;
+    case ROT_270: u = dy * den / r->scale_x;            v = (eh - 1 - dx) * den / r->scale_y; break;
     default:      return false;
     }
 
@@ -143,8 +153,18 @@ bool layout_panel_to_palm(int panel_x, int panel_y, int *palm_x, int *palm_y)
 #define DEF_SCALE   3
 #define LAYOUT_MAX_SCALE 16
 
+static void layout_use_compact(uint16_t panel_w, uint16_t panel_h);
+
 void layout_use_default(uint16_t panel_w, uint16_t panel_h)
 {
+    if (panel_w == 480 && panel_h == 272) {
+        layout_use_compact(panel_w, panel_h);
+        return;
+    }
+    if (panel_w < 660 || panel_h < 480) {
+        layout_use_default_upright(panel_w, panel_h);
+        return;
+    }
     s_panel_w = panel_w;
     s_panel_h = panel_h;
 
@@ -337,6 +357,27 @@ static bool preset_base(const char *preset, uint16_t panel_w, uint16_t panel_h,
                         elem_place_t place[EL_COUNT])
 {
     for (int i = 0; i < EL_COUNT; i++) stock_place(panel_w, panel_h, i, &place[i]);
+
+    if (strcmp(preset, "jc4827w543-landscape") == 0) {
+        /* Upright LCD on the left; enlarged Graffiti + four buttons on the
+         * right. All geometry stays inside the 480x272 native landscape panel. */
+        for (int e = 0; e < EL_COUNT; e++) {
+            place[e].present = e != EL_DIVIDER;
+            place[e].rot = ROT_0;
+            place[e].scale_x = place[e].scale_y = 2;
+        }
+        place[EL_SCREEN].scale_x = place[EL_SCREEN].scale_y = 1;
+        place[EL_SCREEN].panel_x = 16;
+        place[EL_SCREEN].panel_y = 56;
+        place[EL_GRAFFITI].panel_x = 224;
+        place[EL_GRAFFITI].panel_y = 112;
+        const int buttons[] = { EL_TL, EL_BL, EL_TR, EL_BR };
+        for (int k = 0; k < 4; k++) {
+            place[buttons[k]].panel_x = 208 + k * 64;
+            place[buttons[k]].panel_y = 40;
+        }
+        return true;
+    }
 
     if (strcmp(preset, "custom") == 0)
         return true;                       /* stock positions, fully overridable */
@@ -567,6 +608,40 @@ static bool compile_and_validate(elem_place_t place[EL_COUNT],
     return true;
 }
 
+static void layout_use_compact(uint16_t panel_w, uint16_t panel_h)
+{
+    /* Portrait with USB at the bottom. Keep the LCD and full silkscreen as
+     * one continuous band, rotated clockwise in native landscape coordinates.
+     * 160x220 at 1:1, centered on the 480x272 native panel. */
+    const int numerator = 1, den = 1;
+    int band_w = scale_ceil(LAYOUT_PALM_FULL_H, numerator, den);
+    int band_h = scale_ceil(LAYOUT_PALM_W, numerator, den);
+    int silk_w = scale_ceil(LAYOUT_SILK_H, numerator, den);
+    int left = PANEL_X_ALIGN_DOWN(((int)panel_w - band_w) / 2);
+    int top = ((int)panel_h - band_h) / 2;
+    if (left < 0 || top < 0) {
+        layout_use_default_upright(panel_w, panel_h);
+        return;
+    }
+    s_regions[0] = (region_t){
+        .kind = REGION_SCREEN,
+        .palm_w = LAYOUT_PALM_W, .palm_h = LAYOUT_PALM_H,
+        .panel_x = left + silk_w, .panel_y = top,
+        .scale_x = numerator, .scale_y = numerator, .scale_den = den,
+        .rot = ROT_270,
+    };
+    s_regions[1] = (region_t){
+        .kind = REGION_SILK,
+        .palm_y = LAYOUT_PALM_H, .palm_w = LAYOUT_PALM_W, .palm_h = LAYOUT_SILK_H,
+        .panel_x = left, .panel_y = top,
+        .scale_x = numerator, .scale_y = numerator, .scale_den = den,
+        .rot = ROT_270,
+    };
+    s_region_count = 2;
+    s_panel_w = panel_w; s_panel_h = panel_h;
+    ESP_LOGI(TAG, "JC portrait layout: LCD 160x160 (1:1), USB at bottom");
+}
+
 bool layout_load(const char *cfg_text, uint16_t panel_w, uint16_t panel_h)
 {
     if (!cfg_text) { layout_use_default(panel_w, panel_h); return false; }
@@ -612,6 +687,11 @@ bool layout_load(const char *cfg_text, uint16_t panel_w, uint16_t panel_h)
         }
     }
     if (!preset[0]) strcpy(preset, any_element ? "custom" : "default");
+
+    if (strcmp(preset, "jc4827w543") == 0 || strcmp(preset, "jc4827w543-portrait") == 0) {
+        layout_use_compact(panel_w, panel_h);
+        return true;
+    }
 
     if (strcmp(preset, "default") == 0) {
         layout_use_default(panel_w, panel_h);

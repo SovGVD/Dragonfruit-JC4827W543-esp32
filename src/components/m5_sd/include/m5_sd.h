@@ -3,18 +3,19 @@
 #include "esp_err.h"
 #include "sdmmc_cmd.h"
 
-/* ------------------------------------------------------------------ *
- *  M5Paper microSD mount helper — the single owner of the SD wiring.
- *
- *  The microSD shares the e-ink IT8951 SPI bus (SPI3_HOST, CS GPIO4).
- *  display_init()'s spi_bus_initialize() must run first; these helpers only
- *  ADD an sdspi device to that already-initialized bus and remove it again, so
- *  the display keeps sole use of the bus during emulation. Both rom_loader and
- *  config use this so the mount sequence (and its retry) lives in one place.
- * ------------------------------------------------------------------ */
+/* Shared SD mount API (name retained for existing consumers). On M5Paper,
+ * display_init() owns SPI3 and SD shares it with CS4. On JC4827W543 this
+ * component initializes the shared SD/XPT2046 SPI2 bus itself (CS10, CLK12,
+ * MISO13, MOSI11). Unmount removes the card device, leaving the bus ready
+ * for later config, install, or backup operations. No mount formats a card.
+ */
 
 /* FAT mount point shared by every SD user; build paths as M5_SD_MOUNT_POINT "/file". */
 #define M5_SD_MOUNT_POINT "/sdcard"
+
+/* Initialize the JC4827W543 shared SD/XPT2046 SPI2 bus. Safe to call again;
+ * does not require a card or display. JC4827W543 builds only. */
+esp_err_t m5_sd_bus_init(void);
 
 /* Mount the microSD at M5_SD_MOUNT_POINT. The FIRST sdspi transaction after the
  * IT8951 has been driving the shared bus intermittently CRC-fails until the

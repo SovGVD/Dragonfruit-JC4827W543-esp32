@@ -1,4 +1,18 @@
-# Dragonfruit
+# Dragonfruit for JC4827W543
+
+This checkout targets the **JC4827W543 with resistive XPT2046 touchscreen**.
+It loads the Palm ROM from a FAT32 SD card. See the
+[board setup, build, flash and touch calibration guide](docs/jc4827w543.md) and
+[example SD configuration](palm-jc4827w543.cfg.example).
+
+```sh
+./tools/build-jc4827w543.sh
+```
+
+Copy your Palm IIIx ROM to the SD root as `palm.rom`. The build creates
+`build-jc4827w543/dragonfruit-jc4827w543.bin` for flashing at address `0x0`.
+
+The upstream overview below describes the emulator and its original hardware.
 
 An emulator of the Motorola MC68EZ328 ("DragonBall EZ"), the 68000-based
 system-on-chip at the heart of the late-90s Palm handhelds, with enough of the surrounding
@@ -7,7 +21,7 @@ portable C: a 68000 interpreter plus models of the DragonBall's on-chip peripher
 (interrupt controller, timer, RTC, GPIO, SPI, UART, LCD controller).
 
 The core has no platform dependencies. It runs headless on a PC for development and on ESP32
-hardware for the real thing. The reference target is the **M5Paper**, an ESP32 board with an
+hardware for the real thing. The original reference target is the **M5Paper**, an ESP32 board with an
 e-ink panel and a capacitive touchscreen, which the emulator turns into a working Palm IIIx:
 it boots to the launcher, runs the first-boot setup wizard, and takes stylus input including
 Graffiti handwriting.
@@ -120,12 +134,16 @@ cmake --build build-host
 
 ### On the M5Paper
 
-The firmware builds in a reproducible ESP-IDF Docker container; flashing runs on the host,
+For the original target, explicitly select `IDF_TARGET=esp32` and
+`SDKCONFIG_DEFAULTS=sdkconfig.defaults` in a separate build directory. This
+checkout now defaults to JC4827W543; the commands in the board guide above are
+the supported path for this checkout. The upstream firmware builds in an ESP-IDF
+Docker container; flashing runs on the host,
 because Docker Desktop on Windows cannot pass through COM ports.
 
 ```powershell
-./build.ps1                       # idf.py build inside the container (subcommands pass through)
-./flash.ps1 -Port COM5 -Monitor   # esptool from the host; -Monitor opens the serial log at 115200
+./build.ps1 -B build-m5paper -D IDF_TARGET=esp32 -D SDKCONFIG=sdkconfig.m5paper -D SDKCONFIG_DEFAULTS=sdkconfig.defaults build
+./flash.ps1 -BuildDir build-m5paper -Port COM5 -Monitor   # esptool from the host; -Monitor opens the serial log at 115200
 ```
 
 The ROM is not embedded in the firmware. Copy a Palm IIIx ROM to a FAT32 SD card as

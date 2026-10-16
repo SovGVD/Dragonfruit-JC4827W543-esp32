@@ -9,5 +9,14 @@ cmake_minimum_required(VERSION 3.16)
 # non-IDF host harness and is intentionally NOT listed here.
 set(EXTRA_COMPONENT_DIRS "src/components" "src/main")
 
+# This checkout defaults to the JC4827W543. Select M5Paper explicitly with
+# -DIDF_TARGET=esp32 -DSDKCONFIG_DEFAULTS=sdkconfig.defaults in a fresh build.
+if(NOT DEFINED SDKCONFIG_DEFAULTS)
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults.jc4827w543")
+endif()
+if(NOT DEFINED IDF_TARGET AND NOT DEFINED ENV{IDF_TARGET})
+    set(IDF_TARGET "esp32s3")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(dragonfruit)

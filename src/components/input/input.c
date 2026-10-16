@@ -1,4 +1,6 @@
 #include "input.h"
+#include "input_events.h"
+#include "board.h"
 #include "dragonball.h"
 #include "layout.h"
 #include "touch_config.h"
@@ -13,55 +15,6 @@
 #include <string.h>
 
 static const char *TAG = "input";
-
-/* Pen events flow input_poll() (touch task) -> CPU task, which injects them
- * into Palm OS via the EvtEnqueuePenPoint ROM trap. We do NOT drive the raw
- * pen-IRQ digitizer path (db_spi_set_touch): on the IIIx ROM that re-enters
- * the AMXHardwareEZ pen handler and fatal-errors ("Pen down int. invalid"). */
-/* Deep enough to hold a whole Graffiti stroke's worth of sampled points if the
- * CPU task briefly falls behind draining them (it normally drains far faster
- * than the 100 Hz sampling). */
-#define PEN_QUEUE_LEN 64
-static QueueHandle_t pen_queue = NULL;
-
-#define KEY_QUEUE_LEN 8
-static QueueHandle_t key_queue = NULL;
-
-static void pen_push(int16_t x, int16_t y, bool pen_up)
-{
-    if (!pen_queue)
-        return;
-    input_pen_event_t ev = { x, y, pen_up };
-    xQueueSend(pen_queue, &ev, 0);   /* drop if full rather than block */
-}
-
-bool input_pop_pen_event(input_pen_event_t *out)
-{
-    if (!pen_queue)
-        return false;
-    return xQueueReceive(pen_queue, out, 0) == pdTRUE;
-}
-
-/* Injection API — enqueue from any task; the CPU task drains. */
-void input_inject_pen(int16_t x, int16_t y, bool pen_up)
-{
-    pen_push(x, y, pen_up);
-}
-
-void input_inject_key(uint16_t ascii, uint16_t keycode, uint16_t modifiers)
-{
-    if (!key_queue)
-        return;
-    input_key_event_t ev = { ascii, keycode, modifiers };
-    xQueueSend(key_queue, &ev, 0);   /* drop if full rather than block */
-}
-
-bool input_pop_key(input_key_event_t *out)
-{
-    if (!key_queue)
-        return false;
-    return xQueueReceive(key_queue, out, 0) == pdTRUE;
-}
 
 /* Latched once per awake Power-button press; drained by the CPU task. */
 static volatile bool power_key_pending = false;
@@ -97,17 +50,23 @@ int input_pop_br_request(void)
 #define GT911_FWVER_REG     0x8144
 #define GT911_RESOL_REG     0x8146
 
-/* M5 Paper pins */
-#define PIN_SDA     21
-#define PIN_SCL     22
-#define PIN_INT     36
-#define PIN_BTN_L   37
-#define PIN_BTN_M   38
-#define PIN_BTN_R   39
+#define PIN_SDA BOARD_TOUCH_SDA
+#define PIN_SCL BOARD_TOUCH_SCL
+#define PIN_INT BOARD_TOUCH_INT
+#define PIN_BTN_M BOARD_BTN_POWER
+#if !CONFIG_BOARD_JC4827W543
+#define PIN_BTN_L 37
+#define PIN_BTN_R 39
+#endif
 
 bool input_button_held(int which)
 {
+#if CONFIG_BOARD_JC4827W543
+    (void)which;
+    return false; /* no M5Paper side buttons on this board */
+#else
     return !gpio_get_level(which ? PIN_BTN_R : PIN_BTN_L);
+#endif
 }
 
 /* Panel<->Palm mapping lives in components/layout (shared with display.c, the
@@ -122,8 +81,8 @@ static i2c_master_bus_handle_t gt911_bus;   /* I2C0 master bus */
 static i2c_master_dev_handle_t gt911_dev;   /* GT911 device (7-bit addr bound at probe) */
 static bool last_pen_down = false;
 static int16_t last_px = -1, last_py = -1;   /* last streamed stroke point */
+#if !CONFIG_BOARD_JC4827W543
 static bool last_btn_l = false;
-static bool last_btn_m = false;
 static bool last_btn_r = false;
 /* Long-hold timing for the UP/DOWN side buttons (backup/restore trigger) plus
  * the deferred-tap pulse that lets a short tap still send a single page key. */
@@ -131,6 +90,8 @@ static TickType_t l_press_tick = 0, r_press_tick = 0;
 static bool l_hold_fired = false, r_hold_fired = false;
 static int  tap_row = -1, tap_col = 0;   /* page key held for a tap; row < 0 = idle */
 static TickType_t tap_pulse_until = 0;
+#endif
+static bool last_btn_m = false;
 static uint32_t poll_diag_count = 0;
 
 /* --- GT911 I2C helpers --- */
@@ -146,6 +107,10 @@ static esp_err_t gt911_use_addr(uint8_t addr)
         .device_address  = addr,
         .scl_speed_hz    = 400000,
     };
+    if (gt911_dev) {
+        i2c_master_bus_rm_device(gt911_dev);
+        gt911_dev = NULL;
+    }
     gt911_addr = addr;
     return i2c_master_bus_add_device(gt911_bus, &dc, &gt911_dev);
 }
@@ -252,6 +217,27 @@ static void gt911_sync_sensitivity(void)
 
 esp_err_t input_init(void)
 {
+    ESP_RETURN_ON_ERROR(input_events_init(), TAG, "input queues");
+
+#if CONFIG_BOARD_JC4827W543
+    /* BOOT is active-low with an internal pull-up; GPIO38 is touch RESET,
+     * GPIO39 is an LCD data line. Never configure those as M5 buttons. */
+    gpio_config_t power = {
+        .pin_bit_mask = 1ULL << PIN_BTN_M,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&power), TAG, "BOOT GPIO");
+    /* GT911 reset: hold INT low while RESET rises to select address 0x5d. */
+    gpio_set_direction(BOARD_TOUCH_RST, GPIO_MODE_OUTPUT);
+    gpio_set_direction(PIN_INT, GPIO_MODE_OUTPUT);
+    gpio_set_level(BOARD_TOUCH_RST, 0);
+    gpio_set_level(PIN_INT, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(BOARD_TOUCH_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(60));
+    gpio_set_direction(PIN_INT, GPIO_MODE_INPUT);
+#endif
     i2c_master_bus_config_t bus_conf = {
         .i2c_port = I2C_NUM_0,
         .sda_io_num = PIN_SDA,
@@ -275,6 +261,7 @@ esp_err_t input_init(void)
     };
     gpio_config(&int_conf);
 
+#if !CONFIG_BOARD_JC4827W543
     /* Hardware buttons (input-only GPIOs 37-39, external pull-ups on M5 Paper) */
     gpio_config_t btn_conf = {
         .pin_bit_mask = (1ULL << PIN_BTN_L) | (1ULL << PIN_BTN_M) | (1ULL << PIN_BTN_R),
@@ -285,6 +272,7 @@ esp_err_t input_init(void)
     };
     gpio_config(&btn_conf);
 
+#endif
     /* Probe GT911 at primary address, then alternate */
     uint8_t product_id[4];
     if (gt911_use_addr(GT911_ADDR) == ESP_OK &&
@@ -333,18 +321,11 @@ esp_err_t input_init(void)
         ESP_LOGW(TAG, "GT911 not found");
     }
 
-    pen_queue = xQueueCreate(PEN_QUEUE_LEN, sizeof(input_pen_event_t));
-    if (!pen_queue)
-        ESP_LOGE(TAG, "pen queue alloc failed");
-
-    key_queue = xQueueCreate(KEY_QUEUE_LEN, sizeof(input_key_event_t));
-    if (!key_queue)
-        ESP_LOGE(TAG, "key queue alloc failed");
-
     ESP_LOGI(TAG, "Input ready (touch=%s)", gt911_found ? "yes" : "no");
     return ESP_OK;
 }
 
+#if !CONFIG_BOARD_JC4827W543
 #define BR_HOLD_MS   1000     /* hold >= this -> backup/restore request */
 #define TAP_PULSE_MS 60       /* a deferred tap holds the page key this long */
 
@@ -396,6 +377,8 @@ static void handle_hold_button(bool pressed, bool *last, TickType_t *press_tick,
     *last = pressed;
 }
 
+#endif
+
 void input_poll(void)
 {
     /* --- Touch --- */
@@ -423,8 +406,13 @@ void input_poll(void)
                     uint16_t gt_x = ((uint16_t)data[1] << 8) | data[0];
                     uint16_t gt_y = ((uint16_t)data[3] << 8) | data[2];
 
+#if CONFIG_BOARD_JC4827W543
+                    int eink_x = (int)gt_x;
+                    int eink_y = (int)gt_y;
+#else
                     int eink_x = (int)gt_y;
                     int eink_y = (layout_panel_h() - 1) - (int)gt_x;
+#endif
 
                     /* Step 2 — native panel pixel -> Palm coords via the active
                      * layout (the same transform display.c renders through, so
@@ -443,24 +431,24 @@ void input_poll(void)
                          * still tap produces no moves, so taps and silkscreen
                          * buttons behave exactly as before (single down + up). */
                         if (!last_pen_down) {
-                            pen_push((int16_t)palm_x, (int16_t)palm_y, false);
+                            input_inject_pen((int16_t)palm_x, (int16_t)palm_y, false);
                             ESP_LOGI(TAG, "pen DOWN gt=%d,%d eink=%d,%d palm=%d,%d",
                                      gt_x, gt_y, eink_x, eink_y, palm_x, palm_y);
                             last_pen_down = true;
                         } else if (palm_x != last_px || palm_y != last_py) {
-                            pen_push((int16_t)palm_x, (int16_t)palm_y, false);
+                            input_inject_pen((int16_t)palm_x, (int16_t)palm_y, false);
                         }
                         last_px = (int16_t)palm_x;
                         last_py = (int16_t)palm_y;
                     } else if (last_pen_down) {
-                        pen_push(-1, -1, true);
+                        input_inject_pen(-1, -1, true);
                         last_pen_down = false;
                         last_px = last_py = -1;
                     }
                 }
             } else {
                 if (last_pen_down) {
-                    pen_push(-1, -1, true);
+                    input_inject_pen(-1, -1, true);
                     last_pen_down = false;
                     last_px = last_py = -1;
                 }
@@ -480,12 +468,15 @@ void input_poll(void)
      * sleep is handled by the ESP32 light-sleep GPIO wake + a >=1s re-hold check
      * in the CPU task (main.c), which then pulses the matrix POWER key — while
      * asleep this input task isn't running, so no asleep branch is needed. */
-    bool btn_l = !gpio_get_level(PIN_BTN_L);
     bool btn_m = !gpio_get_level(PIN_BTN_M);
+#if !CONFIG_BOARD_JC4827W543
+    bool btn_l = !gpio_get_level(PIN_BTN_L);
     bool btn_r = !gpio_get_level(PIN_BTN_R);
 
     handle_hold_button(btn_l, &last_btn_l, &l_press_tick, &l_hold_fired,
                        KBD_KEY_PGUP, INPUT_BR_BACKUP);
+
+#endif
 
     /* Middle button: awake long-hold (>= 1s) = Power -> sleep. vchrHardPower is
      * delivered via the EvtEnqueueKey syscall (the running event loop ignores
@@ -506,8 +497,10 @@ void input_poll(void)
     }
     last_btn_m = btn_m;
 
+#if !CONFIG_BOARD_JC4827W543
     handle_hold_button(btn_r, &last_btn_r, &r_press_tick, &r_hold_fired,
                        KBD_KEY_PGDN, INPUT_BR_RESTORE);
 
     tap_pulse_service();
+#endif
 }

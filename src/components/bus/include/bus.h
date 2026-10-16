@@ -19,10 +19,19 @@
 #define BUS_PERIPH_BASE   0x00FFF000  /* $FFFFF000 masked to 24 bits */
 #define BUS_PERIPH_SIZE   0x00001000  /* 4 KB */
 
+/* Palm IIIc Epson SED1375 external color LCD controller mapped on CSB1.
+ * The low 24 bits of $1F000000 are $000000, so this window must be decoded
+ * before applying BUS_ADDR_MASK to avoid aliasing onto low system RAM. */
+#define BUS_SED1375_BASE      0x1F000000u
+#define BUS_SED1375_SIZE      0x00020000u  /* 128 KB CSB1 decode window */
+#define BUS_SED1375_VRAM_SIZE 0x00014000u  /* 80 KB embedded video SRAM */
+#define BUS_SED1375_REG_BASE  0x0001FFE0u  /* 32-byte control/LUT register block */
+
 #define BUS_ROM_LO        (BUS_ROM_BASE & BUS_ADDR_MASK)  /* 0x00C08000 */
 
 void bus_init(const uint8_t *rom_data, size_t rom_size);
 uint8_t *bus_ram_ptr(void);
+uint8_t *bus_vram_ptr(void);
 
 /* Called when sysDispatchTableP is written — populates table from ROM trap data */
 void bus_on_dispatch_table_set(uint32_t table_base);
@@ -35,6 +44,7 @@ void bus_on_dispatch_table_set(uint32_t table_base);
  * the out-of-line *_slow handlers in bus.c.  g_bus_ram/g_bus_rom and the ROM
  * window bounds are published by bus_init(). */
 extern uint8_t       *g_bus_ram;
+extern uint8_t       *g_bus_vram;
 extern const uint8_t *g_bus_rom;
 extern uint32_t       g_bus_rom_end;   /* BUS_ROM_LO + rom_size */
 
@@ -67,6 +77,8 @@ static inline bool bus_addr_in_rom(uint32_t addr)
 
 static inline uint8_t bus_read8(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
+        return bus_read8_slow(addr);
     addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE)
         return g_bus_ram[addr];
@@ -77,6 +89,8 @@ static inline uint8_t bus_read8(uint32_t addr)
 
 static inline uint16_t bus_read16(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
+        return bus_read16_slow(addr);
     addr &= BUS_ADDR_MASK;
     const uint8_t *p;
     if (addr < BUS_RAM_SIZE)            p = g_bus_ram + addr;
@@ -88,6 +102,8 @@ static inline uint16_t bus_read16(uint32_t addr)
 
 static inline uint32_t bus_read32(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
+        return bus_read32_slow(addr);
     addr &= BUS_ADDR_MASK;
     const uint8_t *p;
     if (addr < BUS_RAM_SIZE)            p = g_bus_ram + addr;
@@ -100,6 +116,10 @@ static inline uint32_t bus_read32(uint32_t addr)
 
 static inline void bus_write8(uint32_t addr, uint8_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        bus_write8_slow(addr, val);
+        return;
+    }
     addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE) { g_bus_ram[addr] = val; return; }
     bus_write8_slow(addr, val);
@@ -107,6 +127,10 @@ static inline void bus_write8(uint32_t addr, uint8_t val)
 
 static inline void bus_write16(uint32_t addr, uint16_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        bus_write16_slow(addr, val);
+        return;
+    }
     addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE) {
         uint8_t *p = g_bus_ram + addr;
@@ -119,6 +143,10 @@ static inline void bus_write16(uint32_t addr, uint16_t val)
 
 static inline void bus_write32(uint32_t addr, uint32_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        bus_write32_slow(addr, val);
+        return;
+    }
     addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE) {
         uint8_t *p = g_bus_ram + addr;

@@ -113,61 +113,76 @@ static void png_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t l
     free(tmp);
 }
 
-/* Dump the live framebuffer to a grayscale PNG (3x scale). Reads the LCD bpp /
- * stride / dimensions straight from the DragonBall LCD registers, so it tracks
- * whatever depth the ROM has programmed (1/2/4 bpp). Headless inspection only —
- * the UI renders through the layout engine instead. */
+/* Dump the live framebuffer to a PNG (3x scale). Reads the LCD bpp / stride /
+ * dimensions from the active controller (SED1375 RGB color or DragonBall
+ * grayscale), so it tracks whatever depth/palette the ROM has programmed. */
 static void save_bmp(const char *filename)   /* writes PNG; name kept for callers */
 {
     uint32_t fb = db_lcd_framebuffer_addr();
-    if (!fb || fb >= BUS_RAM_SIZE) return;
+    if (!fb) return;
 
     extern dragonball_state_t db;
-    int width = db.lxmax + 1;
+    bool color = db_lcd_is_color();
+    int width = color ? 160 : (db.lxmax + 1);
     if (width == 0) width = 160;
-    int height = db.lymax + 1;
+    int height = color ? 160 : (db.lymax + 1);
     if (height == 0) height = 160;
-    int bpp = (db.lpicf & 0x02) ? 4 : ((db.lpicf & 0x01) ? 2 : 1);
-    int stride = db.lvpw ? db.lvpw * 2 : width * bpp / 8;
+    int bpp = db_lcd_bpp();
+    int stride = color ? (width * bpp / 8) : (db.lvpw ? db.lvpw * 2 : width * bpp / 8);
     int maxval = (1 << bpp) - 1;
 
-    /* Bound the whole framebuffer read against RAM, not just the start address:
-     * the inner loop reads up to fb + height*stride. */
-    if ((size_t)fb + (size_t)height * stride > BUS_RAM_SIZE) return;
+    const uint8_t *src = NULL;
+    if (color) {
+        uint8_t *vram = bus_vram_ptr();
+        uint32_t off = fb - BUS_SED1375_BASE;
+        if (!vram || (size_t)off + (size_t)height * stride > BUS_SED1375_VRAM_SIZE) return;
+        src = vram + off;
+    } else {
+        if (fb >= BUS_RAM_SIZE || (size_t)fb + (size_t)height * stride > BUS_RAM_SIZE) return;
+        src = bus_ram_ptr() + fb;
+    }
 
     int scale = 3;
     int img_w = width * scale;
     int img_h = height * scale;
-
-    uint8_t *ram = bus_ram_ptr();
+    int ch = color ? 3 : 1;
 
     /* Raw image: each output row prefixed with a 0 (None) filter byte. */
-    size_t raw_stride = (size_t)img_w + 1;
+    size_t line_bytes = (size_t)img_w * ch;
+    size_t raw_stride = line_bytes + 1;
     size_t raw_size = raw_stride * img_h;
     uint8_t *raw = (uint8_t *)malloc(raw_size);
-    uint8_t *line = (uint8_t *)malloc(img_w);
+    uint8_t *line = (uint8_t *)malloc(line_bytes);
     size_t p = 0;
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            uint8_t byte = ram[fb + y * stride + x * bpp / 8];
-            uint8_t pixel;
-            if (bpp == 4) {
-                int shift = (1 - (x & 1)) * 4;
-                pixel = (maxval - ((byte >> shift) & 0xF)) * 255 / maxval;
+            uint8_t byte = src[y * stride + x * bpp / 8];
+            int idx;
+            if (bpp == 8) {
+                idx = byte;
+            } else if (bpp == 4) {
+                idx = (byte >> ((1 - (x & 1)) * 4)) & 0xF;
             } else if (bpp == 2) {
-                int shift = (3 - (x & 3)) * 2;
-                pixel = (maxval - ((byte >> shift) & 3)) * 255 / maxval;
+                idx = (byte >> ((3 - (x & 3)) * 2)) & 3;
             } else {
-                int shift = 7 - (x & 7);
-                pixel = (maxval - ((byte >> shift) & 1)) * 255;
+                idx = (byte >> (7 - (x & 7))) & 1;
             }
-            for (int sx = 0; sx < scale; sx++)
-                line[x * scale + sx] = pixel;
+            if (color) {
+                const uint8_t *rgb = db.sed_lut_rgb[idx & 0xFF];
+                for (int sx = 0; sx < scale; sx++) {
+                    uint8_t *dst = line + (x * scale + sx) * 3;
+                    dst[0] = rgb[0]; dst[1] = rgb[1]; dst[2] = rgb[2];
+                }
+            } else {
+                uint8_t pixel = (uint8_t)((maxval - idx) * 255 / maxval);
+                for (int sx = 0; sx < scale; sx++)
+                    line[x * scale + sx] = pixel;
+            }
         }
         for (int sy = 0; sy < scale; sy++) {
             raw[p++] = 0;
-            memcpy(raw + p, line, img_w);
-            p += img_w;
+            memcpy(raw + p, line, line_bytes);
+            p += line_bytes;
         }
     }
     free(line);
@@ -204,8 +219,8 @@ static void save_bmp(const char *filename)   /* writes PNG; name kept for caller
     uint8_t ihdr[13];
     ihdr[0]=img_w>>24; ihdr[1]=img_w>>16; ihdr[2]=img_w>>8; ihdr[3]=(uint8_t)img_w;
     ihdr[4]=img_h>>24; ihdr[5]=img_h>>16; ihdr[6]=img_h>>8; ihdr[7]=(uint8_t)img_h;
-    ihdr[8]=8;   /* bit depth */
-    ihdr[9]=0;   /* color type 0 = grayscale */
+    ihdr[8]=8;                   /* bit depth */
+    ihdr[9]=color ? 2 : 0;       /* color type 2 = RGB, 0 = grayscale */
     ihdr[10]=0; ihdr[11]=0; ihdr[12]=0;
     png_chunk(png, "IHDR", ihdr, 13);
     png_chunk(png, "IDAT", z, (uint32_t)zp);
@@ -468,10 +483,17 @@ int main(int argc, char **argv)
                             ? 1000000 : 5000000;
         if (total_cycles % interval == 0) {
             uint32_t fba = db_lcd_framebuffer_addr();
-            uint8_t *r = bus_ram_ptr();
+            const uint8_t *fb = NULL;
+            uint32_t fb_bytes = (uint32_t)(160 * 160 * db_lcd_bpp() / 8);
+            if (fba >= BUS_SED1375_BASE && fba + fb_bytes <= BUS_SED1375_BASE + BUS_SED1375_VRAM_SIZE) {
+                fb = bus_vram_ptr() + (fba - BUS_SED1375_BASE);
+            } else if (fba && fba + fb_bytes <= BUS_RAM_SIZE) {
+                fb = bus_ram_ptr() + fba;
+            }
             uint32_t cksum = 0;
-            if (fba && fba < BUS_RAM_SIZE)
-                for (int i = 0; i < 3200; i++) cksum += r[fba + i];
+            if (fb) {
+                for (uint32_t i = 0; i < fb_bytes; i++) cksum = cksum * 33u + fb[i];
+            }
             fprintf(stderr, "  %uM cyc: PC=%08X SR=%04X FB=%08X cksum=%08X irqs=%u\n",
                     total_cycles / 1000000, cpu.regs.pc, cpu.regs.sr,
                     fba, cksum, cpu.regs.irq_count);

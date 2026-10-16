@@ -9,6 +9,7 @@ static const char *TAG = "bus";
 
 /* Published to the inline fast path in bus.h. */
 uint8_t       *g_bus_ram   = NULL;
+uint8_t       *g_bus_vram  = NULL;
 const uint8_t *g_bus_rom   = NULL;
 uint32_t       g_bus_rom_end = BUS_ROM_LO;   /* BUS_ROM_LO + rom_size */
 uint32_t       g_bus_periph_seq = 0;         /* bumped on each peripheral access */
@@ -40,6 +41,12 @@ void bus_init(const uint8_t *rom_data, size_t rom_sz)
     }
     ESP_LOGI(TAG, "Emulated RAM: %u KB at %p", BUS_RAM_SIZE / 1024, g_bus_ram);
 
+    g_bus_vram = heap_caps_calloc(1, BUS_SED1375_VRAM_SIZE, MALLOC_CAP_SPIRAM);
+    if (!g_bus_vram) {
+        ESP_LOGE(TAG, "Failed to allocate %u bytes for SED1375 VRAM", BUS_SED1375_VRAM_SIZE);
+        return;
+    }
+
     /*
      * Copy reset vectors from ROM into RAM address 0.
      * At power-on the MC68EZ328 maps ROM across the whole address space
@@ -51,15 +58,25 @@ void bus_init(const uint8_t *rom_data, size_t rom_sz)
         memcpy(g_bus_ram, g_bus_rom, 8);
 }
 
-uint8_t *bus_ram_ptr(void) { return g_bus_ram; }
+uint8_t *bus_ram_ptr(void)  { return g_bus_ram; }
+uint8_t *bus_vram_ptr(void) { return g_bus_vram; }
 
-/* --- Slow path: peripherals + the MC68EZ328 "ROM mapped across the whole
- * address space" default (Palm OS local IDs are direct addresses that rely on
- * it).  Reached only when the address is neither RAM nor inside the ROM
+/* --- Slow path: peripherals + SED1375 + the MC68EZ328 "ROM mapped across the
+ * whole address space" default (Palm OS local IDs are direct addresses that rely
+ * on it). Reached only when the address is neither RAM nor inside the ROM
  * window. RAM/ROM are handled inline in bus.h. --- */
 
 uint8_t bus_read8_slow(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        uint32_t off = addr - BUS_SED1375_BASE;
+        if (off < BUS_SED1375_VRAM_SIZE)
+            return g_bus_vram ? g_bus_vram[off] : 0;
+        if (off >= BUS_SED1375_REG_BASE)
+            return db_sed1375_read8((uint16_t)(off - BUS_SED1375_REG_BASE));
+        return 0;
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         return dragonball_read8(addr - BUS_PERIPH_BASE);
@@ -71,6 +88,10 @@ uint8_t bus_read8_slow(uint32_t addr)
 
 uint16_t bus_read16_slow(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        return ((uint16_t)bus_read8_slow(addr) << 8) | bus_read8_slow(addr + 1);
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         return dragonball_read16(addr - BUS_PERIPH_BASE);
@@ -84,6 +105,10 @@ uint16_t bus_read16_slow(uint32_t addr)
 
 uint32_t bus_read32_slow(uint32_t addr)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        return ((uint32_t)bus_read16_slow(addr) << 16) | bus_read16_slow(addr + 2);
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         return dragonball_read32(addr - BUS_PERIPH_BASE);
@@ -98,6 +123,16 @@ uint32_t bus_read32_slow(uint32_t addr)
 
 void bus_write8_slow(uint32_t addr, uint8_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        uint32_t off = addr - BUS_SED1375_BASE;
+        if (off < BUS_SED1375_VRAM_SIZE) {
+            if (g_bus_vram) g_bus_vram[off] = val;
+        } else if (off >= BUS_SED1375_REG_BASE) {
+            db_sed1375_write8((uint16_t)(off - BUS_SED1375_REG_BASE), val);
+        }
+        return;
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         dragonball_write8(addr - BUS_PERIPH_BASE, val);
@@ -106,6 +141,12 @@ void bus_write8_slow(uint32_t addr, uint8_t val)
 
 void bus_write16_slow(uint32_t addr, uint16_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        bus_write8_slow(addr, (uint8_t)(val >> 8));
+        bus_write8_slow(addr + 1, (uint8_t)val);
+        return;
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         dragonball_write16(addr - BUS_PERIPH_BASE, val);
@@ -114,6 +155,12 @@ void bus_write16_slow(uint32_t addr, uint16_t val)
 
 void bus_write32_slow(uint32_t addr, uint32_t val)
 {
+    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+        bus_write16_slow(addr, (uint16_t)(val >> 16));
+        bus_write16_slow(addr + 2, (uint16_t)val);
+        return;
+    }
+    addr &= BUS_ADDR_MASK;
     if (addr >= BUS_PERIPH_BASE) {
         g_bus_periph_seq++;
         dragonball_write32(addr - BUS_PERIPH_BASE, val);

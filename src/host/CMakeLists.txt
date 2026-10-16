@@ -228,3 +228,29 @@ else()
     target_compile_options(test_spi PRIVATE -Wall -Wextra -UNDEBUG)
 endif()
 add_test(NAME spi COMMAND test_spi)
+
+# Dual-mode LCD controller (DragonBall EZ + Epson SED1375) and color surface sampler.
+add_executable(test_sed1375
+    test_sed1375.c
+    ../components/dragonball/lcd.c
+    ../components/layout/layout.c
+    ../components/display/surface.c
+)
+target_include_directories(test_sed1375 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ../components/dragonball/include
+    ../components/layout/include
+    ../components/display
+)
+if(MSVC)
+    target_compile_options(test_sed1375 PRIVATE
+        /FI${CMAKE_CURRENT_SOURCE_DIR}/esp_shim.h /W3 /UNDEBUG
+    )
+else()
+    target_compile_options(test_sed1375 PRIVATE
+        -include ${CMAKE_CURRENT_SOURCE_DIR}/esp_shim.h
+        -Wall -Wextra -Wno-unused-parameter -UNDEBUG -O2
+    )
+endif()
+add_test(NAME sed1375 COMMAND test_sed1375)
+

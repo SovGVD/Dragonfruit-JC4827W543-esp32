@@ -30,6 +30,11 @@ void dragonball_init(void)
     db.lpicf = 0x01;
     db.lvpw = 10;
 
+    /* Default SED1375 LUT index 0 to white before PrvUpdateCLUT runs */
+    db.sed_lut_raw[0][0] = db.sed_lut_raw[0][1] = db.sed_lut_raw[0][2] = 0xF0;
+    db.sed_lut_rgb[0][0] = db.sed_lut_rgb[0][1] = db.sed_lut_rgb[0][2] = 0xFF;
+    db.sed_lut_rgb565[0] = 0xFFFF;
+
     /* Port F bit 1 = PENIRQ, active low. Start with pen up (bit = 1). */
     db.port_data[5] = 0x02;
 

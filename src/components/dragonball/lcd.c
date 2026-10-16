@@ -1,8 +1,97 @@
 #include "dragonball.h"
 
+#define SED1375_BASE      0x1F000000u
+#define SED1375_VRAM_SIZE 0x00014000u
+#define DB_RAM_MAX        0x00200000u
+
 uint32_t db_lcd_framebuffer_addr(void)
 {
+    if (db.sed_active) {
+        uint32_t word_off = ((uint32_t)db.sed_regs[0x0D] << 8) | db.sed_regs[0x0C];
+        return SED1375_BASE + ((word_off * 2) % SED1375_VRAM_SIZE);
+    }
+    /* Ignore the $BADC0DE0 sentinel written by the Palm IIIc HAL to LSSA. */
+    if (db.lssa >= DB_RAM_MAX)
+        return 0;
     return db.lssa;
+}
+
+bool db_lcd_is_color(void)
+{
+    return db.sed_active;
+}
+
+int db_lcd_bpp(void)
+{
+    if (db.sed_active) {
+        /* SED1375 Mode Register 1 ($02) bits 7:6: 00=1bpp, 01=2bpp, 10=4bpp, 11=8bpp */
+        return 1 << ((db.sed_regs[0x02] >> 6) & 3);
+    }
+    return (db.lpicf & 0x02) ? 4 : ((db.lpicf & 0x01) ? 2 : 1);
+}
+
+uint8_t db_sed1375_read8(uint16_t reg)
+{
+    if (reg >= 32) return 0;
+    switch (reg) {
+    case 0x00:
+        return 0x24;   /* SED1375 product/revision code (0x09 << 2) */
+    case 0x0A:
+        /* Bit 7 = Vertical Non-Display Period status; always ready so
+         * PrvUpdateCLUT and HwrDisplayPalette never spin waiting for VBlank. */
+        return db.sed_regs[0x0A] | 0x80;
+    case 0x15:
+        return db.sed_lut_idx;
+    case 0x17: {
+        uint8_t v = db.sed_lut_raw[db.sed_lut_idx][db.sed_lut_comp];
+        if (++db.sed_lut_comp >= 3) {
+            db.sed_lut_comp = 0;
+            db.sed_lut_idx++;
+        }
+        return v;
+    }
+    default:
+        return db.sed_regs[reg];
+    }
+}
+
+void db_sed1375_write8(uint16_t reg, uint8_t val)
+{
+    if (reg >= 32) return;
+    db.sed_regs[reg] = val;
+    switch (reg) {
+    case 0x01:
+    case 0x02:
+        db.sed_active = true;
+        db.sed_palette_seq++;
+        break;
+    case 0x15:
+        db.sed_lut_idx = val;
+        db.sed_lut_comp = 0;
+        break;
+    case 0x17: {
+        uint8_t idx = db.sed_lut_idx;
+        uint8_t comp = db.sed_lut_comp;
+        uint8_t hi = val & 0xF0;
+        db.sed_lut_raw[idx][comp] = hi;
+        db.sed_lut_rgb[idx][comp] = hi | (hi >> 4);
+        if (++comp >= 3) {
+            uint8_t r = db.sed_lut_rgb[idx][0];
+            uint8_t g = db.sed_lut_rgb[idx][1];
+            uint8_t b = db.sed_lut_rgb[idx][2];
+            db.sed_lut_rgb565[idx] = (uint16_t)(((r & 0xF8) << 8) |
+                                                ((g & 0xFC) << 3) |
+                                                (b >> 3));
+            comp = 0;
+            db.sed_lut_idx++;
+            db.sed_palette_seq++;
+        }
+        db.sed_lut_comp = comp;
+        break;
+    }
+    default:
+        break;
+    }
 }
 
 uint8_t db_lcd_read8(uint16_t offset)

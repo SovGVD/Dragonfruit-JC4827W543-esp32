@@ -751,6 +751,15 @@ void installer_refresh_launcher(m68k_cpu_t *cpu)
  * against anything, so this is ROM/screen-agnostic. Returns 0 if the address is unusable. */
 static uint32_t installer_fb_cksum(uint32_t fb)
 {
+    if ((fb - BUS_SED1375_BASE) < BUS_SED1375_VRAM_SIZE) {
+        uint32_t off = fb - BUS_SED1375_BASE;
+        int bpp = db_lcd_bpp();
+        uint32_t nbytes = (uint32_t)(160 * 160 * bpp / 8);
+        if (!g_bus_vram || off + nbytes > BUS_SED1375_VRAM_SIZE) return 0;
+        uint32_t s = 2166136261u;
+        for (uint32_t i = 0; i < nbytes; i++) s = (s ^ g_bus_vram[off + i]) * 16777619u;
+        return s;
+    }
     if (!fb || (uint32_t)(fb + 3200) > BUS_RAM_SIZE) return 0;
     uint32_t s = 2166136261u;                 /* FNV-ish; any mixing is fine here */
     for (int i = 0; i < 3200; i++) s = (s ^ g_bus_ram[fb + i]) * 16777619u;
@@ -796,7 +805,9 @@ installer_pump_result_t installer_pump(install_set_t *set, m68k_cpu_t *cpu,
      * switch faults to a wild PC; the same install once the content changes is clean.
      * `force` and an idle STOP still settle directly. */
     if (current_fb && !st->boot_fb) st->boot_fb = current_fb;
-    bool ui_up = (current_fb && st->boot_fb && current_fb != st->boot_fb);
+    bool ui_up = (current_fb && st->boot_fb &&
+                  (current_fb != st->boot_fb ||
+                   (db_lcd_is_color() && m68k_ui_initialized())));
     if (ui_up) {
         uint32_t cks = installer_fb_cksum(current_fb);
         if (!st->ui_cksum)            st->ui_cksum = cks ? cks : 1u;  /* snapshot the splash */

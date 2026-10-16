@@ -295,6 +295,16 @@ typedef struct {
     uint16_t lgpmr;
     uint8_t  ldmr;
 
+    /* Epson SED1375 external color LCD controller (Palm IIIc, at $1F01FFE0) */
+    bool     sed_active;
+    uint8_t  sed_regs[32];
+    uint8_t  sed_lut_idx;
+    uint8_t  sed_lut_comp;
+    uint8_t  sed_lut_raw[256][3];
+    uint8_t  sed_lut_rgb[256][3];
+    uint16_t sed_lut_rgb565[256];
+    uint32_t sed_palette_seq;
+
     /* RTC */
     uint32_t hmsr;
     uint32_t alarm;
@@ -329,6 +339,10 @@ void     db_interrupt_clear(int source);
 int      db_interrupt_pending_level(void);
 
 uint32_t db_lcd_framebuffer_addr(void);
+bool     db_lcd_is_color(void);
+int      db_lcd_bpp(void);
+uint8_t  db_sed1375_read8(uint16_t reg);
+void     db_sed1375_write8(uint16_t reg, uint8_t val);
 
 void     db_timer_advance(uint32_t cpu_cycles);
 

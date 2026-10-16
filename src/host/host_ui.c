@@ -44,19 +44,32 @@ static void render_region(uint8_t *rgba, int W, int H, const region_t *r,
 {
     int box_w, box_h;
     layout_region_box(r, &box_w, &box_h);
-    static uint8_t gray[960];
-    if (box_w > (int)sizeof gray) return;   /* parity with device region_load's guard */
+    static uint8_t row_rgba[960 * 4];
+    if (box_w > 960) return;   /* parity with device region_load's guard */
+    bool is_color = (r->kind == REGION_SCREEN) && db_lcd_is_color();
+    int bpp = is_color ? db_lcd_bpp() : 1;
     for (int oy = 0; oy < box_h; oy++) {
         int py = r->panel_y + oy;
         if (py < 0 || py >= H) continue;
         int w;
-        surface_fill_row(r, fb, silk, oy, gray, &w);
-        for (int ox = 0; ox < w; ox++) {
-            int px = r->panel_x + ox;
-            if (px < 0 || px >= W) continue;
-            uint8_t *d = rgba + ((size_t)py * W + px) * 4;
-            uint8_t g = gray[ox];
-            d[0] = g; d[1] = g; d[2] = g; d[3] = 0xFF;
+        if (is_color) {
+            surface_fill_row_rgba(r, fb, bpp, db.sed_lut_rgb, silk, oy, row_rgba, &w);
+            for (int ox = 0; ox < w; ox++) {
+                int px = r->panel_x + ox;
+                if (px < 0 || px >= W) continue;
+                uint8_t *d = rgba + ((size_t)py * W + px) * 4;
+                const uint8_t *s = row_rgba + ox * 4;
+                d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+            }
+        } else {
+            surface_fill_row(r, fb, silk, oy, row_rgba, &w);
+            for (int ox = 0; ox < w; ox++) {
+                int px = r->panel_x + ox;
+                if (px < 0 || px >= W) continue;
+                uint8_t *d = rgba + ((size_t)py * W + px) * 4;
+                uint8_t g = row_rgba[ox];
+                d[0] = g; d[1] = g; d[2] = g; d[3] = 0xFF;
+            }
         }
     }
 }
@@ -217,10 +230,18 @@ int host_ui_run(m68k_cpu_t *cpu, host_step_fn step, void *ctx)
         /* 3. render the live screen regions on framebuffer change. */
         uint32_t fba = db_lcd_framebuffer_addr();
         const uint8_t *fb = NULL;
+        uint32_t fb_bytes = (uint32_t)(160 * 160 * db_lcd_bpp() / 8);
         uint32_t cksum = 0;
-        if (fba && fba + PALM_FB_BYTES <= BUS_RAM_SIZE) {
+        if (fba >= BUS_SED1375_BASE && fba + fb_bytes <= BUS_SED1375_BASE + BUS_SED1375_VRAM_SIZE) {
+            fb = bus_vram_ptr() + (fba - BUS_SED1375_BASE);
+        } else if (fba && fba + fb_bytes <= BUS_RAM_SIZE) {
             fb = bus_ram_ptr() + fba;
-            for (int i = 0; i < PALM_FB_BYTES; i++) cksum += fb[i];
+        }
+        if (fb) {
+            for (uint32_t i = 0; i < fb_bytes; i++) cksum = cksum * 33u + fb[i];
+            if (db_lcd_is_color()) {
+                cksum = cksum * 33u + db.sed_palette_seq;
+            }
         }
         if (fb && cksum != last_cksum) {
             render_kind(rgba, W, H, REGION_SCREEN, fb, silk);

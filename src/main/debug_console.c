@@ -193,7 +193,16 @@ static void cmd_fb(void)
 {
     uint32_t fb = db_lcd_framebuffer_addr();
     uint32_t cksum = 0;
-    if (fb && fb + 160 * 160 / 8 <= BUS_RAM_SIZE) {   /* whole 3200-byte FB in range */
+    if ((fb - BUS_SED1375_BASE) < BUS_SED1375_VRAM_SIZE) {
+        uint32_t off = fb - BUS_SED1375_BASE;
+        int bpp = db_lcd_bpp();
+        uint32_t nbytes = (uint32_t)(160 * 160 * bpp / 8);
+        uint8_t *vram = bus_vram_ptr();
+        if (vram && off + nbytes <= BUS_SED1375_VRAM_SIZE) {
+            for (uint32_t i = 0; i < nbytes; i++)
+                cksum += vram[off + i];
+        }
+    } else if (fb && fb + 160 * 160 / 8 <= BUS_RAM_SIZE) {   /* whole 3200-byte FB in range */
         uint8_t *ram = bus_ram_ptr();
         for (int i = 0; i < 160 * 160 / 8; i++)   /* 160x160 1bpp = 3200 bytes */
             cksum += ram[fb + i];
@@ -206,6 +215,34 @@ static void cmd_fb(void)
 static void cmd_fbdump(void)
 {
     uint32_t fb = db_lcd_framebuffer_addr();
+    if ((fb - BUS_SED1375_BASE) < BUS_SED1375_VRAM_SIZE) {
+        uint32_t off = fb - BUS_SED1375_BASE;
+        int bpp = db_lcd_bpp();
+        uint32_t nbytes = (uint32_t)(160 * 160 * bpp / 8);
+        uint8_t *vram = bus_vram_ptr();
+        if (!vram || off + nbytes > BUS_SED1375_VRAM_SIZE) { REPLY("ERR no framebuffer"); return; }
+        REPLY("FBDUMP fb=%08lX w=160 h=160 stride=20", (unsigned long)fb);
+        for (int row = 0; row < 160; row++) {
+            char line[2 * 20 + 1];
+            for (int b = 0; b < 20; b++) {
+                uint8_t packed = 0;
+                for (int bit = 0; bit < 8; bit++) {
+                    int x = b * 8 + bit;
+                    uint8_t idx = 0;
+                    if (bpp == 8) idx = vram[off + row * 160 + x];
+                    else if (bpp == 4) idx = (vram[off + row * 80 + (x >> 1)] >> ((1 - (x & 1)) * 4)) & 0x0F;
+                    else if (bpp == 2) idx = (vram[off + row * 40 + (x >> 2)] >> ((3 - (x & 3)) * 2)) & 0x03;
+                    else idx = (vram[off + row * 20 + (x >> 3)] >> (7 - (x & 7))) & 0x01;
+                    if (db.sed_lut_rgb565[idx] != 0xFFFF)
+                        packed |= (uint8_t)(1u << (7 - bit));
+                }
+                snprintf(line + 2 * b, 3, "%02X", packed);
+            }
+            printf("FB:%s\n", line);
+        }
+        REPLY("FBEND");
+        return;
+    }
     if (!fb || fb + 160 * 20 > BUS_RAM_SIZE) { REPLY("ERR no framebuffer"); return; }
     uint8_t *ram = bus_ram_ptr();
     REPLY("FBDUMP fb=%08lX w=160 h=160 stride=20", (unsigned long)fb);

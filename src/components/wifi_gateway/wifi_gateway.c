@@ -99,7 +99,18 @@ static void tcp_trace(const char *dir, struct pbuf *p)
     u16_t got = pbuf_copy_partial(p, h, sizeof(h), 0);
     if (got < 20 || (h[0] >> 4) != 4) return;
     unsigned ihl = (h[0] & 15) * 4, total = (h[2] << 8) | h[3];
-    if (h[9] != 6 || got < ihl + 20) { ESP_LOGI(TAG, "%s proto=%u len=%u", dir, h[9], total); return; }
+    if (h[9] != 6 || got < ihl + 20) {
+        if (h[9] == 17 && got >= ihl + 8) {
+            const uint8_t *u = h + ihl;
+            ESP_LOGI(TAG, "%s udp %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u len=%u",
+                     dir, h[12], h[13], h[14], h[15], (u[0] << 8) | u[1],
+                     h[16], h[17], h[18], h[19], (u[2] << 8) | u[3], total);
+        } else {
+            ESP_LOGI(TAG, "%s proto=%u len=%u %u.%u.%u.%u -> %u.%u.%u.%u",
+                     dir, h[9], total, h[12], h[13], h[14], h[15], h[16], h[17], h[18], h[19]);
+        }
+        return;
+    }
     const uint8_t *t = h + ihl;
     unsigned doff = (t[12] >> 4) * 4, fl = t[13];
     unsigned mss = 0;

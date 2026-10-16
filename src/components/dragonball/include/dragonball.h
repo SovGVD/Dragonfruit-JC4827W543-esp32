@@ -361,6 +361,7 @@ bool     db_uart_rx_ring_nonempty(void);
 void     db_uart_update_irq(void);   /* (re)evaluate INT_UART; CPU task only */
 void     db_uart_set_loopback(bool on);
 
+void     db_spi_reset(void);
 void     db_spi_set_touch(int16_t x, int16_t y, bool down);
 bool     db_spi_pen_down(void);
 uint32_t db_spi_xch_count(void);   /* cumulative ADS7846 conversions */

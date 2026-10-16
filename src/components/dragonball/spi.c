@@ -17,15 +17,15 @@ static bool pen_down = false;
 static bool pen_irq_enabled = true;
 static uint32_t spi_xch_count = 0;
 
-/* ADS7846 channel last commanded, and a flag marking that we are inside the
- * ROM's *bit-banged* HAL read sequence (sub_10C0C9EC/sub_10C0CA20).  That path
- * sends the command byte in the LOW byte of SPIMDATA, then reads the result via
- * a final 16-bit exchange with SPIMDATA pre-cleared to 0 — so the result must
- * be produced on a later exchange than the command.  The digitizer uses a
- * different routine (command in the HIGH byte, result read immediately) which
- * the high-byte branch below still serves unchanged. */
+/* HAL reads send the command in the low bits of SPIMDATA, then clock the
+ * result through a separate 16-bit exchange. Palm OS 4.1 splits the eight
+ * command bits across seven-bit and one-bit exchanges. Retain partial commands
+ * until all eight bits arrive. The legacy digitizer path puts the command in
+ * the high byte and consumes the result immediately. */
 static int  last_channel = 0;
 static bool bitbang_pending = false;
+static uint8_t command_shift;
+static unsigned command_bits;
 
 /* 12-bit ADS7846 sample for the battery (channel 2).  Read by the power-manager
  * via the bit-banged HAL, which computes level = (sample >> 4) and shuts the
@@ -33,6 +33,19 @@ static bool bitbang_pending = false;
  * Defaults to 0xC80 (level 200, comfortably healthy) until the firmware reports
  * the real M5Paper charge via db_spi_set_battery_sample(); see main.c. */
 static uint16_t battery_sample = 0x0C80;
+
+void db_spi_reset(void)
+{
+    touch_x = touch_y = -1;
+    pen_down = false;
+    pen_irq_enabled = true;
+    spi_xch_count = 0;
+    last_channel = 0;
+    bitbang_pending = false;
+    command_shift = 0;
+    command_bits = 0;
+    /* The physical battery reading survives an emulated reset. */
+}
 
 void db_spi_set_battery_sample(uint16_t sample)
 {
@@ -130,15 +143,33 @@ void db_spi_write16(uint16_t offset, uint16_t val)
          *
          * The command may arrive in the HIGH byte (digitizer routine — result
          * read in the same exchange, as 12-bit value << 4) or in the LOW byte
-         * (bit-banged HAL routine — result read on a later 16-bit exchange,
-         * extracted by the ROM as (SPIMDATA >> 3) & 0xFFF). */
+         * (HAL routine, including commands split across exchanges — result
+         * read later and extracted as (SPIMDATA >> 3) & 0xFFF). */
         if (val & SPIM_XCH) {
             uint8_t cmdhi = (uint8_t)(db.spim_data >> 8);
             uint8_t cmdlo = (uint8_t)(db.spim_data & 0xFF);
             uint8_t cmd = 0;
             bool from_low = false;
-            if (cmdhi & 0x80)      cmd = cmdhi;
-            else if (cmdlo & 0x80) { cmd = cmdlo; from_low = true; }
+            if (cmdhi & 0x80) {
+                cmd = cmdhi;
+                command_shift = 0;
+                command_bits = 0;
+                bitbang_pending = false;
+            } else if ((val & 0x000F) < 8) {
+                /* SPIM clocks the low (BIT_COUNT+1) bits, MSB first. Leading
+                 * zeroes are idle clocks; a one starts an ADS7846 command. */
+                for (int bit = val & 0x000F; bit >= 0; bit--) {
+                    unsigned next = (cmdlo >> bit) & 1;
+                    if (!command_bits && !next) continue;
+                    command_shift = (uint8_t)((command_shift << 1) | next);
+                    if (++command_bits == 8) {
+                        cmd = command_shift;
+                        from_low = true;
+                        command_shift = 0;
+                        command_bits = 0;
+                    }
+                }
+            }
 
             if (cmd & 0x80) {
                 int channel = (cmd >> 4) & 7;

@@ -218,3 +218,13 @@ else()
     target_compile_options(test_resistive_touch PRIVATE -Wall -Wextra -UNDEBUG)
 endif()
 add_test(NAME resistive_touch COMMAND test_resistive_touch)
+
+# ADS7846 command framing and SPI interrupt behavior, without a Palm ROM.
+add_executable(test_spi test_spi.c ../components/dragonball/spi.c)
+target_include_directories(test_spi PRIVATE ../components/dragonball/include)
+if(MSVC)
+    target_compile_options(test_spi PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_spi PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+add_test(NAME spi COMMAND test_spi)

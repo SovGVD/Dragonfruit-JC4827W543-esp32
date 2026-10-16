@@ -70,6 +70,10 @@ single-core, no-PSRAM parts such as the ESP32-C3.
 JC4827W543 exposes 4 MB Palm RAM and automatically checkpoints apps, data and settings
 to SD for restoration through a normal Palm restart. See the [board guide](docs/jc4827w543.md#persistent-palm-ram-and-sd-applications)
 for saving before unplugging and installing applications from `/install`.
+Palm OS 4 also sees `/palm-card` on the SD as a virtual **SD Card** volume. Put
+compatible apps in `/palm-card/PALM/Launcher` and choose **SD Card** in Palm's
+launcher. See [virtual storage](docs/jc4827w543.md#storage-inside-palm-os-os-4)
+for supported operations and limits.
 
 ## Hardware (M5Paper reference target)
 
@@ -95,8 +99,9 @@ src/
     layout/         Panel-to-Palm coordinate mapping, shared by display and input
     config/         Reads the optional layout config off the SD card at boot
     rom_loader/     Loads the ROM from the SD card into PSRAM at boot
+    palm_card/      Directory-backed Palm OS 4 VFS/Expansion Manager interface
     installer/      Installs PRC/PDB/PQA into RAM; backs up and restores databases
-    m5_sd/          Owns the shared microSD mount on the e-ink SPI bus
+    m5_sd/          Shared microSD mount and board SPI ownership
   host/             PC build harness: runs the core headless, with esp_shim.h in place of
                     ESP-IDF and a PNG snapshotter (plus an optional SDL window) for the screen
 tools/              Host-side scripts that drive the on-device serial debug console
@@ -128,6 +133,8 @@ cmake --build build-host
 `-r` selects the ROM, `-c` caps the cycle count, `-i <file>` queues a PRC/PDB to auto-install,
 `--state <prefix>` restores/saves RAM through alternating checkpoint files, and `-b <dir>`
 exports RAM databases. The host defaults to 4 MB; use `-DPALM_RAM_MB=2` for 2 MB.
+`--card <directory>` exposes a host directory as a Palm OS 4 expansion volume;
+add `--card-read-only` to prevent guest writes.
 For an interactive window (the emulated
 screen and silkscreen, with mouse clicks passed through as pen taps), build with the SDL UI
 and run with `--ui`:

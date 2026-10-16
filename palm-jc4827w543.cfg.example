@@ -11,6 +11,11 @@ serial.baud = 57600
 # goes to sleep (BOOT or Palm auto-off); no timed saves during active use.
 state.enabled = 1
 
+# Palm OS 4 virtual expansion card, backed by /palm-card on this SD card.
+# PRCs in /palm-card/PALM/Launcher appear under Palm's SD Card category.
+card.enabled = 1
+card.read_only = 0
+
 # For individual element placement use preset=custom and palm.cfg.example.
 # Native panel coordinates, x=0..479, y=0..271; rotation 0 is upright.
 # The portrait preset renders the LCD at native 160x160 (1:1), with no enlargement.

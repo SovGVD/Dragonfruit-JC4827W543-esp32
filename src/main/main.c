@@ -28,6 +28,7 @@
 #include "backup.h"
 #include "ram_state.h"
 #include "m5_sd.h"
+#include "palm_card.h"
 
 static const char *TAG = "emu";
 
@@ -100,6 +101,13 @@ static bool ram_state_enabled = true;
 static bool ram_state_enabled;
 #endif
 static bool ram_restored;
+#if CONFIG_BOARD_JC4827W543
+static bool card_enabled = true, card_read_only;
+/* Hold one mount reference for Palm's open file handles. */
+static sdmmc_card_t *palm_sd_card;
+static bool card_space(uint32_t *used, uint32_t *total)
+{ return m5_sd_space(used, total) == ESP_OK; }
+#endif
 static bool ram_progress_available, ram_progress_restoring;
 static int ram_progress_phase = -1, ram_progress_percent = -1;
 static volatile bool ram_status_latched;
@@ -262,7 +270,10 @@ static void maybe_save_ram(void)
     sdmmc_card_t *card = NULL;
     ram_state_result_t r = RAM_STATE_IO;
     if (m5_sd_mount(&card) == ESP_OK) {
-        r = ram_state_save(&ram_state, ram_state_prefix, bus_ram_ptr());
+        if (palm_card_sync())
+            r = ram_state_save(&ram_state, ram_state_prefix, bus_ram_ptr());
+        else
+            ESP_LOGW(TAG, "Virtual card flush failed; power-off save aborted");
         m5_sd_unmount(card);
     }
     g_ram_last_result = r;
@@ -295,6 +306,7 @@ static void maybe_save_ram(void)
 static void warm_reset_core(void)
 {
     ESP_LOGI(TAG, "warm reset: rebooting emulated Palm (RAM/databases preserved)");
+    palm_card_reset();
     dragonball_init();
     m68k_warm_reset(&cpu);
     m68k_set_irq(&cpu, db_interrupt_pending_level());
@@ -699,6 +711,7 @@ static void cpu_task(void *param)
          * calls so the OS commits each). Source files are left in /install;
          * databases already in restored RAM are kept. Runs on the cpu task — the sole writer of
          * CPU state — like the pen/key injection above. */
+        palm_card_pump(&cpu);
         if (g_install.phase == INST_WAIT || g_install.phase == INST_RUN) {
             installer_pump_result_t pr = installer_pump(
                 &g_install.set, &cpu, installer_os_ready(),
@@ -1061,6 +1074,12 @@ void app_main(void)
             char v[24];
             if (config_get_value(cfg_text, "state.enabled", v, sizeof v))
                 ram_state_enabled = !strcmp(v, "1");
+#if CONFIG_BOARD_JC4827W543
+            if (config_get_value(cfg_text, "card.enabled", v, sizeof v))
+                card_enabled = !strcmp(v, "1");
+            if (config_get_value(cfg_text, "card.read_only", v, sizeof v))
+                card_read_only = !strcmp(v, "1");
+#endif
             if (config_get_value(cfg_text, "serial.mode", v, sizeof v)) {
                 int m = serial_bridge_parse_mode(v);
                 if (m >= 0) serial_mode = m;
@@ -1153,6 +1172,18 @@ void app_main(void)
     if (!cpup) { ESP_LOGE(TAG, "CPU alloc fail"); return; }
 
     m68k_init(&cpu);
+#if CONFIG_BOARD_JC4827W543
+    if (card_enabled && m5_sd_mount(&palm_sd_card) == ESP_OK) {
+        if (palm_card_init(M5_SD_MOUNT_POINT "/palm-card", card_read_only)) {
+            palm_card_space = card_space;
+            cpu.palm_trap_callback = palm_card_trap;
+        } else {
+            ESP_LOGW(TAG, "Virtual Palm card unavailable; check /palm-card directory");
+            m5_sd_unmount(palm_sd_card);
+            palm_sd_card = NULL;
+        }
+    }
+#endif
     cpu.irq_callback = db_interrupt_pending_level;
     cpu.tick_callback = db_timer_advance;
     cpu.wake_callback = db_iwr_wake_pending;

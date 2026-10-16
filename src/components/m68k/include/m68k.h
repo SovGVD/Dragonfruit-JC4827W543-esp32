@@ -111,7 +111,9 @@ typedef uint32_t (*m68k_vector_base_callback_t)(void);
  * mimic the EZ328 restarting the PLL on wake (clearing DISPLL). */
 typedef void (*m68k_resume_callback_t)(void);
 
-typedef struct {
+typedef struct m68k_cpu m68k_cpu_t;
+
+struct m68k_cpu {
     m68k_regs_t regs;
     uint32_t    trap_table[PALM_TRAP_TABLE_SIZE]; /* native dispatch: trap# 0xA000+i → address */
     bool        native_dispatch;                   /* enable native TRAP#15 / A-line dispatch */
@@ -120,7 +122,10 @@ typedef struct {
     m68k_wake_callback_t wake_callback;
     m68k_vector_base_callback_t vector_base_callback;
     m68k_resume_callback_t resume_callback;
-} m68k_cpu_t;
+    /* Optional host implementation of a Palm system call. Arguments remain on
+     * the guest stack; true means the callback supplied D0/A0 and handled it. */
+    bool (*palm_trap_callback)(m68k_cpu_t *cpu, uint16_t trap);
+};
 
 /* --- Public API --- */
 void m68k_init(m68k_cpu_t *cpu);

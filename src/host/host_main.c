@@ -19,6 +19,7 @@
 #include "layout.h"
 #include "host_ui.h"
 #include "ram_state.h"
+#include "palm_card.h"
 
 /* Host harness for the emulator core: boots a ROM from the host filesystem and
  * runs the SAME components/ code as the firmware, with ESP-IDF stubbed out (see
@@ -55,6 +56,10 @@ static bool host_ram_restored;
 
 static bool host_save_state(void)
 {
+    if (!palm_card_sync()) {
+        fprintf(stderr, "Virtual card flush failed\n");
+        return false;
+    }
     if (!host_state_prefix) return true;
     if (!cpu.regs.stopped || !m68k_ui_initialized()) {
         fprintf(stderr, "RAM checkpoint deferred: Palm is not idle; no file changed\n");
@@ -332,6 +337,7 @@ static int host_step(m68k_cpu_t *c, void *ctx)
         db_timer_advance(batch);
     total_cycles += batch;
     m68k_set_irq(c, db_interrupt_pending_level());
+    palm_card_pump(c);
 
     /* PDB/PRC auto-install (host): drive the SAME pump the device uses. It waits for
      * the OS to settle (the launcher drawing over the boot splash) + a functional heap
@@ -355,6 +361,7 @@ static int host_step(m68k_cpu_t *c, void *ctx)
             if (pr.need_warm_reset) {
                 /* Exercise the warm reset on the host too (device parity). */
                 dragonball_init();
+                palm_card_reset();
                 m68k_warm_reset(c);
                 m68k_set_irq(c, db_interrupt_pending_level());
                 fprintf(stderr, "[%uM] auto-install complete (warm reset)\n",
@@ -424,6 +431,8 @@ int main(int argc, char **argv)
     int max_cycles = 150000000;
     bool ui = false;
     const char *layout_arg = "upright";
+    const char *card_dir = NULL;
+    bool card_read_only = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-r") == 0 && i+1 < argc)
@@ -440,6 +449,10 @@ int main(int argc, char **argv)
             layout_arg = argv[++i];                             /* upright|default|<cfg> */
         else if (strcmp(argv[i], "--state") == 0 && i+1 < argc)
             host_state_prefix = argv[++i];
+        else if (strcmp(argv[i], "--card") == 0 && i+1 < argc)
+            card_dir = argv[++i];
+        else if (strcmp(argv[i], "--card-read-only") == 0)
+            card_read_only = true;
     }
 
     FILE *f = fopen(rom_path, "rb");
@@ -470,6 +483,13 @@ int main(int argc, char **argv)
 
     cpup = calloc(1, sizeof(m68k_cpu_t));
     m68k_init(&cpu);
+    if (card_dir) {
+        if (!palm_card_init(card_dir, card_read_only)) {
+            fprintf(stderr, "Cannot open virtual card directory: %s\n", card_dir);
+            return 1;
+        }
+        cpu.palm_trap_callback = palm_card_trap;
+    }
     cpu.irq_callback = db_interrupt_pending_level;
     cpu.tick_callback = db_timer_advance;
     cpu.wake_callback = db_iwr_wake_pending;
@@ -495,6 +515,7 @@ int main(int argc, char **argv)
 #ifdef HOST_UI
         host_setup_layout(layout_arg);
         int rc = host_ui_run(&cpu, host_step, NULL);
+        palm_card_close();
         if (!host_save_state() && rc == 0) rc = 1;
         free(rom_data);
         free(cpup);
@@ -549,6 +570,7 @@ int main(int argc, char **argv)
     for (unsigned i = 0; host_state_prefix && !cpu.regs.stopped && i < 5000; i++)
         host_step(&cpu, NULL);
     bool saved = host_save_state();
+    palm_card_close();
     free(rom_data);
     free(cpup);
     return saved ? 0 : 1;

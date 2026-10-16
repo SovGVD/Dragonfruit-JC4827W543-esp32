@@ -38,7 +38,7 @@ esp_err_t esp_vfs_fat_sdspi_mount(const char *path, const sdmmc_host_t *host,
     assert(!strcmp(path, "/sdcard"));
     assert(host->slot == SPI2_HOST && host->max_freq_khz == 10000);
     assert(slot->gpio_cs == 10 && slot->host_id == SPI2_HOST);
-    assert(!cfg->format_if_mount_failed && cfg->max_files == 2);
+    assert(!cfg->format_if_mount_failed && cfg->max_files == 12);
     assert(!card.mounted);
     mount_calls++;
     if (reject_crc && !(host->flags & SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC))
@@ -56,6 +56,12 @@ void esp_vfs_fat_sdcard_unmount(const char *path, sdmmc_card_t *c)
     unmount_calls++;
 }
 void vTaskDelay(int ticks) { assert(ticks == 40); }
+esp_err_t esp_vfs_fat_info(const char *path, uint64_t *total, uint64_t *free_bytes)
+{
+    assert(!strcmp(path, "/sdcard"));
+    *total = 8000000000ull; *free_bytes = 2000000000ull;
+    return ESP_OK;
+}
 
 int main(void)
 {
@@ -66,6 +72,10 @@ int main(void)
     assert(m5_sd_mount(&out) == ESP_FAIL && !out && bus_calls == 2 && mount_calls == 4);
     fail_mounts = 2;
     assert(m5_sd_mount(&out) == ESP_OK && out == &card && mount_calls == 7);
+    sdmmc_card_t *shared = NULL;
+    assert(m5_sd_mount(&shared) == ESP_OK && shared == out && mount_calls == 7);
+    m5_sd_unmount(shared);
+    assert(card.mounted && !unmount_calls);
     m5_sd_unmount(out);
     assert(m5_sd_mount(&out) == ESP_OK && out == &card);
     m5_sd_unmount(out);
@@ -74,6 +84,8 @@ int main(void)
     assert(m5_sd_mount(&out) == ESP_OK && out == &card);
     m5_sd_unmount(out);
     assert(bus_calls == 2 && mount_calls == 10 && unmount_calls == 3);
+    uint32_t used, total;
+    assert(m5_sd_space(&used, &total) == ESP_OK && total == UINT32_MAX && used == UINT32_MAX - 2000000000u);
     puts("ALL SD MOUNT TESTS PASSED");
     return 0;
 }

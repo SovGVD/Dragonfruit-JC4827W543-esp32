@@ -34,6 +34,7 @@ def main():
     parser.add_argument("emulator", type=Path)
     parser.add_argument("rom", type=Path)
     parser.add_argument("--ram-mb", type=int, choices=(2, 4), default=4)
+    parser.add_argument("--card", action="store_true", help="also enable virtual storage (OS 4 ROM)")
     args = parser.parse_args()
     exe, rom = args.emulator.resolve(), args.rom.resolve()
     with tempfile.TemporaryDirectory(prefix="dragonfruit-state-") as temp:
@@ -44,6 +45,8 @@ def main():
         def run(label, installs):
             cmd = [str(exe), "-r", str(rom), "-c", "400000000",
                    "--state", "checkpoint", "-b", label]
+            if args.card:
+                cmd += ["--card", str(root / "card")]
             for item in installs:
                 cmd += ["-i", str(item)]
             result = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=45)
@@ -53,6 +56,8 @@ def main():
             expected = f"Palm memory: RAM={args.ram_mb * 1024 * 1024} "
             assert expected in log, log
             assert "RAM checkpoint: saved/restored" in log, log
+            if args.card:
+                assert "SD Card mounted as Palm VFS volume 1" in log, log
             return log
 
         first = run("before", [source])

@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "sdmmc_cmd.h"
@@ -21,9 +22,15 @@ esp_err_t m5_sd_bus_init(void);
  * IT8951 has been driving the shared bus intermittently CRC-fails until the
  * bus/card settle, so this retries a few times before giving up. On ESP_OK
  * *out_card holds the mounted card (hand it back to m5_sd_unmount); on failure
- * nothing is left mounted and the last error is returned. */
+ * nothing is left mounted and the last error is returned. On JC4827W543 mounts
+ * are reference counted: a virtual Palm card can keep the filesystem mounted
+ * while checkpoint and backup callers acquire/release their own references.
+ * Calls are serialized by boot / the CPU task, not from other tasks. */
 esp_err_t m5_sd_mount(sdmmc_card_t **out_card);
 
 /* Unmount the card from m5_sd_mount and remove the sdspi device, returning the
  * bus to the display. */
 void m5_sd_unmount(sdmmc_card_t *card);
+
+/* Capacity for Palm's 32-bit VFS API, capped at UINT32_MAX. */
+esp_err_t m5_sd_space(uint32_t *used, uint32_t *total);

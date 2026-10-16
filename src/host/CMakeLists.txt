@@ -28,6 +28,7 @@ set(EMU_SOURCES
     ../components/display/silkscreen.c
     ../components/display/surface.c
     ../components/ram_state/ram_state.c
+    ../components/palm_card/palm_card.c
 )
 
 add_executable(dragonfruit ${EMU_SOURCES})
@@ -41,6 +42,7 @@ target_include_directories(dragonfruit PRIVATE
     ../components/layout/include
     ../components/display                  # silkscreen.h, surface.h
     ../components/ram_state/include
+    ../components/palm_card/include
 )
 
 # Use our shim instead of real ESP headers
@@ -270,4 +272,23 @@ else()
     )
 endif()
 add_test(NAME sed1375 COMMAND test_sed1375)
+
+# Exercise the actual 68k TRAP #15 ABI and directory-backed VFS. With a local
+# ROM argument this also boots Palm and tests native database/handle interop.
+set(CARD_TEST_SOURCES ${EMU_SOURCES})
+list(REMOVE_ITEM CARD_TEST_SOURCES host_main.c)
+add_executable(test_palm_card test_palm_card.c ${CARD_TEST_SOURCES})
+foreach(prop INCLUDE_DIRECTORIES COMPILE_OPTIONS COMPILE_DEFINITIONS)
+    get_target_property(card_${prop} dragonfruit ${prop})
+    set_property(TARGET test_palm_card PROPERTY ${prop} "${card_${prop}}")
+endforeach()
+if(MSVC)
+    target_compile_options(test_palm_card PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_palm_card PRIVATE -UNDEBUG)
+endif()
+if(HOST_UI)
+    target_link_libraries(test_palm_card PRIVATE SDL3::SDL3)
+endif()
+add_test(NAME palm_card COMMAND test_palm_card "${CMAKE_CURRENT_BINARY_DIR}/test-card")
 

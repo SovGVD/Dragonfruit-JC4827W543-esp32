@@ -5,7 +5,10 @@
  * This is how Palm OS implements system calls. */
 void m68k_group_a(m68k_cpu_t *cpu, uint16_t opcode)
 {
-    (void)opcode;
+    if (cpu->palm_trap_callback && cpu->palm_trap_callback(cpu, opcode)) {
+        cpu->regs.cycles = 34;
+        return;
+    }
     /* 68000 Line-A exception stacks the address OF the faulting instruction,
      * not the instruction after it. PC was already advanced by the fetch. */
     cpu->regs.pc -= 2;
@@ -25,6 +28,14 @@ void m68k_group_f(m68k_cpu_t *cpu, uint16_t opcode)
 void m68k_op_trap(m68k_cpu_t *cpu, uint16_t opcode)
 {
     int vector = opcode & 0xF;
+    /* Palm's usual ABI is TRAP #15 followed by an Axxx selector word. That
+     * word is data read by the ROM dispatcher, not an executed A-line opcode. */
+    if (vector == 15 && cpu->palm_trap_callback &&
+        cpu->palm_trap_callback(cpu, bus_read16(cpu->regs.pc))) {
+        cpu->regs.pc += 2;
+        cpu->regs.cycles = 34;
+        return;
+    }
     m68k_take_exception(cpu, VEC_TRAP_BASE + vector);
     cpu->regs.cycles = 34;
 }

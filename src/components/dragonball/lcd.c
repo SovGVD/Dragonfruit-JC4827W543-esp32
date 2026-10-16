@@ -2,7 +2,7 @@
 
 #define SED1375_BASE      0x1F000000u
 #define SED1375_VRAM_SIZE 0x00014000u
-#define DB_RAM_MAX        0x00200000u
+#define DB_RAM_MAX        0x00C00000u /* RAM lies below the ROM window; renderer bounds actual size */
 
 uint32_t db_lcd_framebuffer_addr(void)
 {

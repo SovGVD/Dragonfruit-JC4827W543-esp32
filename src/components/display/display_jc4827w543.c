@@ -134,6 +134,14 @@ void display_show_message(const char *msg)
 
 void display_show_message_fast(const char *msg) { display_show_message(msg); }
 
+void display_show_progress(const char *title, const char *phase, int percent)
+{
+    static uint8_t fb[FB_BYTES];
+    display_progress_bitmap(title, phase, percent, fb);
+    draw_regions(REGION_SCREEN, fb);
+    first_refresh = true;
+}
+
 void display_blank_for_sleep(void)
 {
     if (!ready) return;

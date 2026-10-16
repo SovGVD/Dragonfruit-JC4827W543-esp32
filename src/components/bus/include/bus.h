@@ -3,15 +3,22 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
 
 #define BUS_ADDR_MASK     0x00FFFFFF  /* 24-bit address bus */
 
 #define BUS_RAM_BASE      0x00000000
-/* 2 MB. The Palm IIIx actually has 4 MB, but the classic ESP32 (M5Paper) memory-maps
- * only 4 MB of PSRAM for direct access, and the ~2 MB ROM already shares that window;
- * 4 MB here leaves no room for the ROM and boot-loops. Getting to a real 4 MB needs the
- * ROM moved out of PSRAM (e.g. mmap'd from flash), which would free the window for RAM. */
+/* The S3 can address all 8 MB PSRAM: 4 MB Palm RAM + up to 2 MB ROM leaves
+ * room for the installer and video memory. The original ESP32 keeps 2 MB. */
+#ifndef BUS_RAM_SIZE
+#if CONFIG_BOARD_JC4827W543
+#define BUS_RAM_SIZE      0x00400000
+#else
 #define BUS_RAM_SIZE      0x00200000
+#endif
+#endif
 
 #define BUS_ROM_BASE      0x10C08000  /* big ROM starts at bigROMOffset (0x8000) */
 #define BUS_ROM_MAX_SIZE  0x00200000  /* 2 MB max */

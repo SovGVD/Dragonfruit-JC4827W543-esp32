@@ -18,6 +18,7 @@
 #include "backup.h"
 #include "layout.h"
 #include "host_ui.h"
+#include "ram_state.h"
 
 /* Host harness for the emulator core: boots a ROM from the host filesystem and
  * runs the SAME components/ code as the firmware, with ESP-IDF stubbed out (see
@@ -48,6 +49,24 @@ static int host_backup_done = 0;
 
 static volatile int running = 1;
 static uint32_t total_cycles = 0;
+static const char *host_state_prefix;
+static ram_state_t host_state;
+static bool host_ram_restored;
+
+static bool host_save_state(void)
+{
+    if (!host_state_prefix) return true;
+    if (!cpu.regs.stopped || !m68k_ui_initialized()) {
+        fprintf(stderr, "RAM checkpoint deferred: Palm is not idle; no file changed\n");
+        return false;
+    }
+    uint32_t palm_ram, palm_free;
+    if (installer_memory_info(&cpu, &palm_ram, &palm_free))
+        fprintf(stderr, "Palm memory: RAM=%u free=%u bytes\n", palm_ram, palm_free);
+    ram_state_result_t r = ram_state_save(&host_state, host_state_prefix, bus_ram_ptr());
+    fprintf(stderr, "RAM checkpoint: %s generation=%u\n", ram_state_result_str(r), host_state.generation);
+    return r == RAM_STATE_OK || r == RAM_STATE_UNCHANGED;
+}
 
 static void sigint_handler(int sig) { (void)sig; running = 0; }
 
@@ -419,6 +438,8 @@ int main(int argc, char **argv)
             ui = true;                                          /* interactive SDL window */
         else if (strcmp(argv[i], "--layout") == 0 && i+1 < argc)
             layout_arg = argv[++i];                             /* upright|default|<cfg> */
+        else if (strcmp(argv[i], "--state") == 0 && i+1 < argc)
+            host_state_prefix = argv[++i];
     }
 
     FILE *f = fopen(rom_path, "rb");
@@ -433,6 +454,18 @@ int main(int argc, char **argv)
     fprintf(stderr, "Loaded ROM: %s (%zu bytes)\n", rom_path, rom_size);
 
     bus_init(rom_data, rom_size);
+    if (!bus_ram_ptr() || !bus_vram_ptr()) return 1;
+    if (host_state_prefix) {
+        ram_state_init(&host_state, ram_state_crc(rom_data, rom_size), BUS_RAM_SIZE);
+        ram_state_result_t r = ram_state_load(&host_state, host_state_prefix, bus_ram_ptr());
+        host_ram_restored = r == RAM_STATE_OK;
+        host_pump_state.keep_existing = host_ram_restored;
+        fprintf(stderr, "RAM restore: %s\n", ram_state_result_str(r));
+        if (!host_ram_restored) {
+            memset(bus_ram_ptr(), 0, BUS_RAM_SIZE);
+            memcpy(bus_ram_ptr(), rom_data, 8);
+        }
+    }
     dragonball_init();
 
     cpup = calloc(1, sizeof(m68k_cpu_t));
@@ -443,7 +476,7 @@ int main(int argc, char **argv)
     cpu.vector_base_callback = db_int_vector_base;
     cpu.resume_callback = db_cpu_resume;
 
-    setup_exception_vectors();
+    if (!host_ram_restored) setup_exception_vectors();
 
     uint32_t init_ssp = bus_read32(0x00000000);
     uint32_t reset_pc = bus_read32(0x00000004);
@@ -452,6 +485,7 @@ int main(int argc, char **argv)
     cpu.regs.a[7] = init_ssp;
     cpu.regs.ssp = init_ssp;
     cpu.regs.pc = reset_pc;
+    if (host_ram_restored) m68k_warm_reset(&cpu);
 
     signal(SIGINT, sigint_handler);
     fprintf(stderr, "Running: PC=%08X SSP=%08X max_cycles=%d%s\n",
@@ -461,6 +495,7 @@ int main(int argc, char **argv)
 #ifdef HOST_UI
         host_setup_layout(layout_arg);
         int rc = host_ui_run(&cpu, host_step, NULL);
+        if (!host_save_state() && rc == 0) rc = 1;
         free(rom_data);
         free(cpup);
         return rc;
@@ -509,7 +544,12 @@ int main(int argc, char **argv)
     fprintf(stderr, "\n=== Final: PC=%08X A7=%08X cycles=%u IRQs=%u ===\n",
             cpu.regs.pc, cpu.regs.a[7], total_cycles, cpu.regs.irq_count);
     save_bmp("screen.png");
+    /* Give a running draw/event handler a bounded chance to reach an idle STOP
+     * before a RAM-only checkpoint. Never persist half-way through a ROM call. */
+    for (unsigned i = 0; host_state_prefix && !cpu.regs.stopped && i < 5000; i++)
+        host_step(&cpu, NULL);
+    bool saved = host_save_state();
     free(rom_data);
     free(cpup);
-    return 0;
+    return saved ? 0 : 1;
 }

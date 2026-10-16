@@ -26,6 +26,8 @@
 #include "palm_config.h"
 #include "installer.h"
 #include "backup.h"
+#include "ram_state.h"
+#include "m5_sd.h"
 
 static const char *TAG = "emu";
 
@@ -88,6 +90,49 @@ volatile bool g_warm_reset_request = false;        /* console "reset" / batch re
  * warm reset. Only the two request booleans + arg cross threads; the rest is
  * cpu-task-private and read racily by `backup status`. */
 backup_runtime_t g_backup = { .last = BACKUP_OK };
+
+/* SD checkpoints contain RAM only; Palm warm-boots after loading one. */
+static ram_state_t ram_state;
+static char ram_state_prefix[64];
+#if CONFIG_BOARD_JC4827W543
+static bool ram_state_enabled = true;
+#else
+static bool ram_state_enabled;
+#endif
+static bool ram_restored;
+static bool ram_progress_available, ram_progress_restoring;
+static int ram_progress_phase = -1, ram_progress_percent = -1;
+static volatile bool ram_status_latched;
+volatile bool g_ram_save_request;
+volatile unsigned g_ram_save_count;
+volatile int g_ram_last_result = RAM_STATE_MISSING;
+
+static void ram_state_yield(void) { vTaskDelay(1); }
+
+static void ram_progress_begin(bool restoring)
+{
+    ram_progress_restoring = restoring;
+    ram_progress_phase = ram_progress_percent = -1;
+    if (ram_progress_available && g_display_enabled)
+        display_show_progress(restoring ? "RESTORING RAM" : "SAVING RAM", "MOUNTING SD", -1);
+}
+
+static void ram_progress_update(ram_state_phase_t phase, uint32_t done, uint32_t total)
+{
+    static const char *const labels[] = {
+        "CHECK SAVE 1", "CHECK SAVE 2", "READING SD", "CHECKING RAM", "WRITING SD", "FINALIZING"
+    };
+    int percent = phase == RAM_STATE_SYNCING || !total ? -1 : (int)((uint64_t)done * 100 / total);
+    if (phase == ram_progress_phase && (percent == ram_progress_percent ||
+        (percent >= ram_progress_percent && percent < ram_progress_percent + 5 && percent != 100)))
+        return;
+    if (phase != ram_progress_phase)
+        ESP_LOGI(TAG, "RAM %s: %s", ram_progress_restoring ? "restore" : "save", labels[phase]);
+    ram_progress_phase = phase;
+    ram_progress_percent = percent;
+    if (ram_progress_available && g_display_enabled)
+        display_show_progress(ram_progress_restoring ? "RESTORING RAM" : "SAVING RAM", labels[phase], percent);
+}
 
 /* Yield hook the installer calls every 32 records so a large .pdb install can't
  * starve the core-1 idle task past the 5 s task-watchdog window. */
@@ -182,6 +227,63 @@ static void unpark_io_tasks(void)
 {
     esp32_powersave_requested = false;
     if (park_eg) xEventGroupClearBits(park_eg, PARK_ALL);
+}
+
+/* Called between CPU batches at an OS STOP boundary. Both I/O tasks must be
+ * parked: input shares SPI2 with SD and display reads Palm RAM. A STOP outside
+ * ROM subcalls gives the OS a consistent heap for the subsequent warm boot. */
+static void maybe_save_ram(void)
+{
+    static bool was_asleep, sleep_save_pending;
+    bool asleep = db_is_asleep();
+    if (!asleep) {
+        ram_status_latched = false;
+        sleep_save_pending = false; /* never defer an automatic save into active use */
+    }
+    if (asleep && !was_asleep) sleep_save_pending = true;
+    was_asleep = asleep;
+    if (!ram_state_enabled) { g_ram_save_request = sleep_save_pending = false; return; }
+    /* Automatic checkpoints happen only during Palm sleep, never an awake
+     * event-loop STOP. An explicit console `state save` remains available. */
+    if (!(g_ram_save_request || sleep_save_pending) || !cpu.regs.stopped || !m68k_ui_initialized() ||
+        g_install.phase == INST_WAIT || g_install.phase == INST_RUN || g_backup.req != BR_REQ_NONE)
+        return;
+    if (!park_io_tasks(1000)) return;
+    ram_progress_begin(false);
+    static bool memory_reported;
+    if (!memory_reported && !asleep) {
+        uint32_t palm_ram, palm_free;
+        if (installer_memory_info(&cpu, &palm_ram, &palm_free)) {
+            ESP_LOGI(TAG, "Palm memory: RAM=%lu free=%lu bytes",
+                     (unsigned long)palm_ram, (unsigned long)palm_free);
+            memory_reported = true;
+        }
+    }
+    sdmmc_card_t *card = NULL;
+    ram_state_result_t r = RAM_STATE_IO;
+    if (m5_sd_mount(&card) == ESP_OK) {
+        r = ram_state_save(&ram_state, ram_state_prefix, bus_ram_ptr());
+        m5_sd_unmount(card);
+    }
+    g_ram_last_result = r;
+    g_ram_save_request = sleep_save_pending = false;
+    if (r == RAM_STATE_OK || r == RAM_STATE_UNCHANGED) {
+        if (r == RAM_STATE_OK) g_ram_save_count++;
+        ESP_LOGI(TAG, "RAM checkpoint: %s, generation=%lu (%u KB)", ram_state_result_str(r),
+                 (unsigned long)ram_state.generation, BUS_RAM_SIZE / 1024);
+    } else {
+        ESP_LOGW(TAG, "RAM checkpoint failed: %s; previous save retained", ram_state_result_str(r));
+    }
+    if (ram_progress_available && g_display_enabled) {
+        bool saved = r == RAM_STATE_OK || r == RAM_STATE_UNCHANGED;
+        display_show_message(saved ? "RAM SAVED\n\nSAFE TO\nPOWER OFF" : "SAVE FAILED\n\nOLD SAVE KEPT");
+        /* Keep completion visible while Palm sleeps. Explicit awake saves return to
+         * the Palm framebuffer after a short acknowledgement. Neither overlay
+         * writes into the emulated framebuffer or the checkpoint payload. */
+        ram_status_latched = asleep;
+        if (!asleep) vTaskDelay(pdMS_TO_TICKS(saved ? 900 : 2500));
+    }
+    unpark_io_tasks();
 }
 
 /* Warm ("soft") reset core, driven from the cpu task (the sole CPU-state writer):
@@ -594,9 +696,8 @@ static void cpu_task(void *param)
          * driver the host harness uses): it waits for the OS to settle (boot->UI
          * framebuffer switch), functionally probes the dynamic heap, then installs
          * one buffered database per batch (a full emulation batch runs between
-         * calls so the OS commits each). Source files are left in /install and
-         * re-installed every boot — correct here because the emulated RAM is
-         * volatile (see installer.h). Runs on the cpu task — the sole writer of
+         * calls so the OS commits each). Source files are left in /install;
+         * databases already in restored RAM are kept. Runs on the cpu task — the sole writer of
          * CPU state — like the pen/key injection above. */
         if (g_install.phase == INST_WAIT || g_install.phase == INST_RUN) {
             installer_pump_result_t pr = installer_pump(
@@ -605,7 +706,10 @@ static void cpu_task(void *param)
             if (pr.attempted) {
                 g_install.phase = INST_RUN;
                 g_install.last  = pr.attempted->result;
-                if (pr.attempted->status == IMG_INSTALLED) {
+                if (pr.attempted->status == IMG_SKIPPED) {
+                    g_install.skipped++;
+                    ESP_LOGI(TAG, "install %s: existing RAM database kept", pr.attempted->name);
+                } else if (pr.attempted->status == IMG_INSTALLED) {
                     g_install.ok++;
                     ESP_LOGI(TAG, "install %s ('%s'): %s", pr.attempted->name,
                              pr.attempted->dbname, installer_result_str(pr.attempted->result));
@@ -618,8 +722,8 @@ static void cpu_task(void *param)
                 }
             }
             if (pr.status == 1) {
-                ESP_LOGI(TAG, "auto-install complete: %d ok, %d failed%s",
-                         g_install.ok, g_install.fail,
+                ESP_LOGI(TAG, "auto-install complete: %d ok, %d kept, %d failed%s",
+                         g_install.ok, g_install.skipped, g_install.fail,
                          pr.need_warm_reset ? " — warm reset" : "");
                 /* A reset-after-install DB supersedes the launcher kick (the warm
                  * reboot repaints everything); both run on this cpu task. */
@@ -671,6 +775,7 @@ static void cpu_task(void *param)
 
         /* If the emulated device is in PLL-off sleep, power the ESP32 down into
          * light sleep until the power button is held. Blocks here until wake. */
+        maybe_save_ram();
         maybe_enter_light_sleep();
 
         if (total_cycles - last_log_cycles > cycles_per_batch * 2000) {
@@ -883,7 +988,7 @@ static void display_task(void *param)
         bool on = g_display_enabled;
         if (on) {
             if (!disp_was_on) display_resume_after_wake();  /* re-enabled: clean full repaint */
-            display_refresh();
+            if (!ram_status_latched) display_refresh();
         } else if (disp_was_on) {
             display_blank_for_sleep();   /* disabled: blank the panel once, then idle (no wear) */
         }
@@ -913,6 +1018,9 @@ void app_main(void)
 
     esp_err_t err = display_init();
     bool display_ok = (err == ESP_OK);
+#if CONFIG_BOARD_JC4827W543
+    ram_progress_available = display_ok;
+#endif
     if (!display_ok)
         ESP_LOGW(TAG, "Display init failed: %s (continuing without display)",
                  esp_err_to_name(err));
@@ -951,6 +1059,8 @@ void app_main(void)
          * serial_bridge.h): serial.mode = auto|console|passthrough, serial.baud. */
         if (cr == CONFIG_OK) {
             char v[24];
+            if (config_get_value(cfg_text, "state.enabled", v, sizeof v))
+                ram_state_enabled = !strcmp(v, "1");
             if (config_get_value(cfg_text, "serial.mode", v, sizeof v)) {
                 int m = serial_bridge_parse_mode(v);
                 if (m >= 0) serial_mode = m;
@@ -993,16 +1103,50 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "ROM loaded from SD: %u bytes", (unsigned)rom_size);
 
-    /* While the display SPI bus is still free (before any task starts), scan the
-     * SD's /install directory for PDB/PRC files and buffer them into PSRAM. The
-     * cpu task installs them once the OS has booted; files stay in /install and
-     * re-install every boot (the emulated RAM is volatile across a cold boot, so
-     * re-installing is what's wanted — see installer.h). */
+    /* Allocate the larger Palm RAM before buffering optional install images. */
+    bus_init(rom_data, rom_size);
+    if (!bus_ram_ptr() || !bus_vram_ptr()) {
+        ESP_LOGE(TAG, "Palm memory allocation failed");
+        if (display_ok) display_show_message("NOT ENOUGH\nMEMORY");
+        return;
+    }
+    ram_state_init(&ram_state, ram_state_crc(rom_data, rom_size), BUS_RAM_SIZE);
+    ram_state.yield = ram_state_yield;
+    ram_state.progress = ram_progress_available ? ram_progress_update : NULL;
+    snprintf(ram_state_prefix, sizeof(ram_state_prefix), "/sdcard/palm-%08lX-%uK-ram",
+             (unsigned long)ram_state.rom_crc, BUS_RAM_SIZE / 1024);
+    if (ram_state_enabled) {
+        ram_progress_begin(true);
+        sdmmc_card_t *card = NULL;
+        ram_state_result_t r = RAM_STATE_IO;
+        if (m5_sd_mount(&card) == ESP_OK) {
+            r = ram_state_load(&ram_state, ram_state_prefix, bus_ram_ptr());
+            m5_sd_unmount(card);
+        }
+        g_ram_last_result = r;
+        ram_restored = r == RAM_STATE_OK;
+        ESP_LOGI(TAG, "RAM restore: %s, %s", ram_state_result_str(r), ram_state_prefix);
+        if (r == RAM_STATE_IO || r == RAM_STATE_INVALID) {
+            /* Do not replace a possibly recoverable save with this cold boot. */
+            ram_state_enabled = false;
+            ESP_LOGW(TAG, "RAM save disabled this session to preserve unreadable checkpoints");
+        }
+        if (!ram_restored) {
+            memset(bus_ram_ptr(), 0, BUS_RAM_SIZE);
+            memcpy(bus_ram_ptr(), rom_data, 8);
+        }
+        if (ram_progress_available) {
+            display_show_message(ram_restored ? "RAM RESTORED\n\nSTARTING PALM" :
+                r == RAM_STATE_MISSING ? "NO SAVED RAM\n\nSTARTING NEW" : "RESTORE ERROR\nSAVE KEPT\nSTARTING NEW");
+            vTaskDelay(pdMS_TO_TICKS(r == RAM_STATE_OK || r == RAM_STATE_MISSING ? 600 : 2500));
+        }
+    }
+    /* Source files remain on SD; preserve existing databases on restored RAM. */
     installer_scan_sd(&g_install.set);
+    g_install.pump.keep_existing = ram_restored;
     g_install.phase = g_install.set.count ? INST_WAIT : INST_IDLE;
     g_installer_yield = installer_yield_cb;
 
-    bus_init(rom_data, rom_size);
     dragonball_init();
 
     cpup = heap_caps_calloc(1, sizeof(m68k_cpu_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1014,7 +1158,7 @@ void app_main(void)
     cpu.wake_callback = db_iwr_wake_pending;
     cpu.vector_base_callback = db_int_vector_base;
     cpu.resume_callback = db_cpu_resume;
-    setup_exception_vectors();
+    if (!ram_restored) setup_exception_vectors();
 
     uint32_t init_ssp = bus_read32(0x00000000);
     uint32_t reset_pc = bus_read32(0x00000004);
@@ -1023,6 +1167,7 @@ void app_main(void)
     cpu.regs.a[7] = init_ssp;
     cpu.regs.ssp = init_ssp;
     cpu.regs.pc = reset_pc;
+    if (ram_restored) m68k_warm_reset(&cpu);
 
     ESP_LOGI(TAG, "CPU: PC=%08lX SSP=%08lX",
              (unsigned long)cpu.regs.pc,

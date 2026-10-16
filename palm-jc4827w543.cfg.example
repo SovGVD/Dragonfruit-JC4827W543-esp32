@@ -7,6 +7,10 @@ preset = jc4827w543
 serial.mode = console
 serial.baud = 57600
 
+# Restore apps/data/settings through a normal Palm warm boot. Save when Palm
+# goes to sleep (BOOT or Palm auto-off); no timed saves during active use.
+state.enabled = 1
+
 # For individual element placement use preset=custom and palm.cfg.example.
 # Native panel coordinates, x=0..479, y=0..271; rotation 0 is upright.
 # The portrait preset renders the LCD at native 160x160 (1:1), with no enlargement.

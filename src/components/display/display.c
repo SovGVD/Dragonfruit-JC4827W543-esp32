@@ -295,6 +295,13 @@ static void show_message_mode(const char *msg, uint16_t mode)
 void display_show_message(const char *msg)      { show_message_mode(msg, IT8951_MODE_GC16); }
 void display_show_message_fast(const char *msg) { show_message_mode(msg, IT8951_MODE_A2); }
 
+void display_show_progress(const char *title, const char *phase, int percent)
+{
+    static uint8_t fb[PALM_FB_SIZE];
+    display_progress_bitmap(title, phase, percent, fb);
+    screen_blit_1bpp(fb, IT8951_MODE_A2);
+}
+
 /* Single pass over the framebuffer answering both questions the policy needs, reading each
  * byte once: *nchanged = bytes differing from the last PUSHED frame (shadow_fb) — the dirty
  * test and the change-size classifier; *moving = whether the frame differs from the previous

@@ -9,14 +9,10 @@
  * DmNewRecord/DmWrite rather than the OS-callback ExgDBRead path, which our
  * single-step trap-call model can't drive).
  *
- * Source files are LEFT IN /install and re-installed on every ESP32 boot. This
- * is the right model here because the emulated Palm RAM is volatile: bus_init
- * zeroes it on every cold boot and nothing persists it to flash, so an installed
- * database survives an emulated power-off + ESP32 light sleep (PSRAM retained,
- * app_main does not re-run) but is wiped by a full power-cycle/reflash — exactly
- * when re-installing from /install is wanted. installer_install_image is
- * idempotent (it deletes any existing same-named RAM database before recreating
- * it), so re-installing over a fresh boot is clean.
+ * Source files are LEFT IN /install. When RAM was restored from a checkpoint,
+ * the pump can keep existing RAM databases so a reboot never replaces edited
+ * user data with the original SD file. Explicit installer_install_image calls
+ * (including database restore) still replace an existing database.
  *
  * The engine (installer_install_image / installer_pump / installer_os_ready /
  * installer_add_buffer) is pure C with no SD/ESP dependencies, so it builds and
@@ -38,6 +34,7 @@
 typedef enum {
     INSTALLER_OK = 0,
     INSTALLER_NEEDS_RESET,         /* installed, but DB has dmHdrAttrResetAfterInstall */
+    INSTALLER_ALREADY_PRESENT,     /* restored RAM DB preserved by boot installer */
     INSTALLER_ERR_NOT_READY,       /* OS not booted / asleep when called */
     INSTALLER_ERR_BAD_IMAGE,       /* header validation failed */
     INSTALLER_ERR_DB_OPEN,         /* existing DB is open; cannot overwrite */
@@ -54,6 +51,7 @@ typedef enum {
     IMG_PENDING = 0,   /* buffered, not yet attempted */
     IMG_INSTALLED,     /* installed OK (or needs reset) */
     IMG_FAILED,        /* attempted, engine returned an error */
+    IMG_SKIPPED,       /* same-named RAM database kept after checkpoint restore */
 } install_img_status_t;
 
 typedef struct {
@@ -124,6 +122,8 @@ bool installer_os_ready(void);
  * past MemInit (calling MemPtrNew before MemInit crashes). Returns true on a
  * clean alloc+free round-trip. */
 bool installer_probe_heap(m68k_cpu_t *cpu);
+/* Query card 0 through MemCardInfo; same settled/UI-ready preconditions. */
+bool installer_memory_info(m68k_cpu_t *cpu, uint32_t *ram_bytes, uint32_t *free_bytes);
 
 /* Refresh the Launcher so a freshly-installed app appears: inject vchrLaunch
  * (0x0108) + commandKeyMask via the ROM's EvtEnqueueKey trap. No-op if the trap
@@ -146,6 +146,7 @@ typedef struct {
                               * (the boot splash); settle waits for it to change (launcher drawn) */
     bool     settled;        /* cheap pre-gate satisfied (launcher drawn or idle STOP) */
     bool     heap_confirmed; /* installer_probe_heap has succeeded at least once */
+    bool     keep_existing;  /* preserve existing RAM databases after state restore */
 } installer_pump_state_t;
 
 typedef struct {
@@ -175,7 +176,7 @@ typedef struct {
     install_set_t          set;    /* buffered images (large; NOT volatile)      */
     installer_pump_state_t pump;   /* settle/probe state across batches          */
     install_phase_t        phase;  /* INST_*; cpu writes, console reads (racy)   */
-    int                    ok, fail;
+    int                    ok, fail, skipped;
     installer_result_t     last;
     volatile bool          force;  /* console -> cpu: "install now"              */
 } install_runtime_t;
@@ -191,6 +192,6 @@ installer_pump_result_t installer_pump(install_set_t *set, m68k_cpu_t *cpu,
  * buffer each into PSRAM (honoring the caps), unmount. Returns the number
  * buffered (0 if the directory is absent — not an error). MUST run in the boot
  * SD window (display SPI bus free, before the tasks start). Files are left in
- * place and re-scanned/re-installed every boot (see the file header). */
+ * place and re-scanned every boot; the pump can keep restored databases. */
 int installer_scan_sd(install_set_t *set);
 #endif

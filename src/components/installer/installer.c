@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "esp_log.h"   /* host: stubbed by esp_shim.h */
 #include "bus.h"        /* bus_read/write, g_bus_ram, BUS_RAM_SIZE */
@@ -81,6 +82,7 @@ const char *installer_result_str(installer_result_t r)
     switch (r) {
     case INSTALLER_OK:                  return "ok";
     case INSTALLER_NEEDS_RESET:         return "ok (needs reset)";
+    case INSTALLER_ALREADY_PRESENT:     return "already present (kept)";
     case INSTALLER_ERR_NOT_READY:       return "not ready";
     case INSTALLER_ERR_BAD_IMAGE:       return "bad image";
     case INSTALLER_ERR_DB_OPEN:         return "database in use";
@@ -195,6 +197,29 @@ bool installer_probe_heap(m68k_cpu_t *cpu)
     m68k_arg_t fa[] = { { p, M68K_ARG_L } };
     m68k_call_trap(cpu, h_free, fa, 1, NULL, NULL);   /* MemPtrFree(p) */
     return true;
+}
+
+bool installer_memory_info(m68k_cpu_t *cpu, uint32_t *ram_bytes, uint32_t *free_bytes)
+{
+    uint32_t h_new = trap_handler(TRAP_MemPtrNew), h_free = trap_handler(TRAP_MemChunkFree);
+    uint32_t h_info = trap_handler(0xA004); /* MemCardInfo */
+    if (!h_new || !h_free || !h_info || !m68k_ui_initialized()) return false;
+    uint32_t p = 0;
+    bool timed_out = false;
+    m68k_arg_t alloc[] = {{8, M68K_ARG_L}};
+    m68k_call_trap(cpu, h_new, alloc, 1, &p, &timed_out);
+    if (timed_out || !p || p > BUS_RAM_SIZE - 8) return false;
+    m68k_arg_t args[] = {
+        {0, M68K_ARG_W}, {0, M68K_ARG_L}, {0, M68K_ARG_L}, {0, M68K_ARG_L},
+        {0, M68K_ARG_L}, {0, M68K_ARG_L}, {p, M68K_ARG_L}, {p + 4, M68K_ARG_L}
+    };
+    uint32_t err = m68k_call_trap(cpu, h_info, args, 8, NULL, &timed_out);
+    if (!err && !timed_out) {
+        *ram_bytes = bus_read32(p); *free_bytes = bus_read32(p + 4);
+    }
+    m68k_arg_t release[] = {{p, M68K_ARG_L}};
+    m68k_call_trap(cpu, h_free, release, 1, NULL, NULL);
+    return !err && !timed_out;
 }
 
 /* ---- install context: resolved handlers + live state for cleanup ---------- */
@@ -544,9 +569,9 @@ static int install_block(ictx_t *c, const uint8_t *img, uint32_t off, uint32_t s
     return 0;
 }
 
-installer_result_t installer_install_image(m68k_cpu_t *cpu,
+static installer_result_t installer_install_image_impl(m68k_cpu_t *cpu,
                                            const uint8_t *image, size_t size,
-                                           char *name_out)
+                                           char *name_out, bool keep_existing)
 {
     ictx_t c;
     memset(&c, 0, sizeof(c));
@@ -582,6 +607,10 @@ installer_result_t installer_install_image(m68k_cpu_t *cpu,
      *    a DB that is currently open cannot be overwritten). */
     step = 2;
     uint32_t existing = dm_find(&c, 0, c.scratch + SC_NAME);
+    if (keep_existing && existing && (existing & BUS_ADDR_MASK) < BUS_RAM_SIZE) {
+        mem_free(&c, c.scratch);
+        return c.aborted ? INSTALLER_ERR_TIMEOUT : INSTALLER_ALREADY_PRESENT;
+    }
     if (existing) {
         uint16_t err = dm_delete(&c, 0, existing);
         if (err == DM_ERR_DATABASE_OPEN) { g_installer_last_dm_err = err; result = INSTALLER_ERR_DB_OPEN; goto done; }
@@ -735,6 +764,13 @@ done:
 
 /* ---- launcher refresh + per-tick install driver --------------------------- */
 
+installer_result_t installer_install_image(m68k_cpu_t *cpu,
+                                           const uint8_t *image, size_t size,
+                                           char *name_out)
+{
+    return installer_install_image_impl(cpu, image, size, name_out, false);
+}
+
 void installer_refresh_launcher(m68k_cpu_t *cpu)
 {
     uint32_t globals = bus_read32(0x122);
@@ -841,12 +877,18 @@ installer_pump_result_t installer_pump(install_set_t *set, m68k_cpu_t *cpu,
      * genuine error — there is no retry, and a too-big DB fails once. */
     install_image_t *im = &set->img[set->next];
     char nm[32] = {0};
-    installer_result_t r = installer_install_image(cpu, im->data, im->size, nm);
+    installer_result_t r = installer_install_image_impl(cpu, im->data, im->size, nm,
+                                                       st->keep_existing);
     memcpy(im->dbname, nm, sizeof(im->dbname));
     im->dbname[sizeof(im->dbname) - 1] = '\0';
     im->result = r;
     im->status = (r == INSTALLER_OK || r == INSTALLER_NEEDS_RESET)
                  ? IMG_INSTALLED : IMG_FAILED;
+    if (r == INSTALLER_ALREADY_PRESENT) im->status = IMG_SKIPPED;
+    /* The queue retains metadata for status reports, not the source images. */
+    free(im->data);
+    im->data = NULL;
+    set->total_bytes -= im->size;
     set->next++;
     res.attempted = im;
     return res;

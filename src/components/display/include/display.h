@@ -32,6 +32,9 @@ void display_show_message(const char *msg);
  * second. May leave light ghosting that a following GC16 (e.g. display_resume_after_wake)
  * clears. */
 void display_show_message_fast(const char *msg);
+/* Temporary operation overlay, independent of emulated RAM/framebuffer. Caller
+ * owns the panel (before tasks start, or with the display task parked). */
+void display_show_progress(const char *title, const char *phase, int percent);
 
 /* Sleep coordination (called from the CPU task around esp_light_sleep_start,
  * while the display task is parked so there is no concurrent SPI). */

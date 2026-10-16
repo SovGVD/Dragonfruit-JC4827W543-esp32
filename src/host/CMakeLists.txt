@@ -27,6 +27,7 @@ set(EMU_SOURCES
     ../components/layout/layout.c
     ../components/display/silkscreen.c
     ../components/display/surface.c
+    ../components/ram_state/ram_state.c
 )
 
 add_executable(dragonfruit ${EMU_SOURCES})
@@ -39,12 +40,19 @@ target_include_directories(dragonfruit PRIVATE
     ../components/installer/include
     ../components/layout/include
     ../components/display                  # silkscreen.h, surface.h
+    ../components/ram_state/include
 )
 
 # Use our shim instead of real ESP headers
 target_compile_definitions(dragonfruit PRIVATE
     HOST_BUILD=1
 )
+set(PALM_RAM_MB "4" CACHE STRING "Emulated Palm RAM in MB (2 or 4)")
+if(NOT PALM_RAM_MB MATCHES "^[24]$")
+    message(FATAL_ERROR "PALM_RAM_MB must be 2 or 4")
+endif()
+math(EXPR PALM_RAM_BYTES "${PALM_RAM_MB} * 1024 * 1024")
+target_compile_definitions(dragonfruit PRIVATE BUS_RAM_SIZE=${PALM_RAM_BYTES})
 
 if(MSVC)
     target_compile_options(dragonfruit PRIVATE
@@ -228,6 +236,15 @@ else()
     target_compile_options(test_spi PRIVATE -Wall -Wextra -UNDEBUG)
 endif()
 add_test(NAME spi COMMAND test_spi)
+
+add_executable(test_ram_state test_ram_state.c ../components/ram_state/ram_state.c)
+target_include_directories(test_ram_state PRIVATE ../components/ram_state/include)
+if(MSVC)
+    target_compile_options(test_ram_state PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_ram_state PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
+add_test(NAME ram_state COMMAND test_ram_state)
 
 # Dual-mode LCD controller (DragonBall EZ + Epson SED1375) and color surface sampler.
 add_executable(test_sed1375

@@ -1,5 +1,6 @@
 #include "message.h"
 #include <string.h>
+#include <stdio.h>
 #define PALM_W 160
 #define PALM_H 160
 #define PALM_STRIDE 20
@@ -17,6 +18,7 @@
 static const char *const font5x7['~' - ' ' + 1][FONT_H] = {
     /* ' ' is left undefined -> blank. */
     ['!' - ' '] = {"..#..","..#..","..#..","..#..","..#..",".....","..#.."},
+    ['%' - ' '] = {"##..#","##.#.","...#.","..#..",".#...",".#.##","#..##"},
     ['(' - ' '] = {"..#..",".#...","#....","#....","#....",".#...","..#.."},
     [')' - ' '] = {"..#..","...#.","....#","....#","....#","...#.","..#.."},
     [',' - ' '] = {".....",".....",".....",".....","..##.","..##.",".#..."},
@@ -117,4 +119,21 @@ void display_message_bitmap(const char *msg, uint8_t *msgfb)
         p = e + 1;
     }
 
+}
+
+void display_progress_bitmap(const char *title, const char *phase, int percent, uint8_t *fb)
+{
+    char text[96];
+    if (percent > 100) percent = 100;
+    if (percent >= 0)
+        snprintf(text, sizeof(text), "%.13s\n%.13s\n%d%%\n\nKEEP POWER ON", title, phase, percent);
+    else
+        snprintf(text, sizeof(text), "%.13s\n%.13s\nPLEASE WAIT\n\nKEEP POWER ON", title, phase);
+    display_message_bitmap(text, fb);
+    const int left = 12, right = 147, top = 136, bottom = 145;
+    for (int x = left; x <= right; x++) { msg_set(fb, x, top); msg_set(fb, x, bottom); }
+    for (int y = top; y <= bottom; y++) { msg_set(fb, left, y); msg_set(fb, right, y); }
+    int filled = percent >= 0 ? (right - left - 1) * percent / 100 : 0;
+    for (int y = top + 1; y < bottom; y++)
+        for (int x = left + 1; x <= left + filled; x++) msg_set(fb, x, y);
 }

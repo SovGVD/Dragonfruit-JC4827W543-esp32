@@ -16,6 +16,7 @@
 #include "input.h"
 #include "installer.h"
 #include "backup.h"
+#include "ram_state.h"
 #include "serial_bridge.h"
 
 /* CPU state lives in main.c; we only ever READ it here (racy across cores, but
@@ -36,6 +37,9 @@ extern volatile bool g_warm_reset_request;   /* main.c: cpu task services a warm
  * arg + the request booleans, which the `backup`/`restore` commands set for the
  * cpu task to service. */
 extern backup_runtime_t g_backup;
+extern volatile bool g_ram_save_request;
+extern volatile unsigned g_ram_save_count;
+extern volatile int g_ram_last_result;
 
 static const char *TAG = "console";
 
@@ -68,6 +72,7 @@ static void cmd_help(void)
     REPLY("  install [list|now|status]  PDB/PRC auto-install from /install");
     REPLY("  backup [NAME|status]       back up RAM DBs to SD /backup (NAME = one DB)");
     REPLY("  restore [NAME|status]      install DBs from SD /backup (NAME = one file)");
+    REPLY("  state [save|status]       checkpoint RAM to SD (auto-restored at boot)");
     REPLY("  reset          warm-reset the emulated Palm (databases preserved)");
 }
 
@@ -79,15 +84,16 @@ static void cmd_install(char *arg)
     static const char *KIND[]  = { "prc", "pdb", "pqa" };
     static const char *PHASE[] = { "idle", "waiting", "running", "done" };
     if (!arg || !strcmp(arg, "status")) {
-        REPLY("OK phase=%s count=%d next=%d ok=%d fail=%d last=%s",
+        REPLY("OK phase=%s count=%d next=%d ok=%d kept=%d fail=%d last=%s",
               PHASE[g_install.phase & 3], g_install.set.count, g_install.set.next,
-              g_install.ok, g_install.fail, installer_result_str(g_install.last));
+              g_install.ok, g_install.skipped, g_install.fail, installer_result_str(g_install.last));
     } else if (!strcmp(arg, "list")) {
         REPLY("OK %d image(s) queued:", g_install.set.count);
         for (int i = 0; i < g_install.set.count; i++) {
             install_image_t *im = &g_install.set.img[i];
             const char *st = im->status == IMG_INSTALLED ? "installed"
-                           : im->status == IMG_FAILED    ? "failed" : "pending";
+                           : im->status == IMG_FAILED    ? "failed"
+                           : im->status == IMG_SKIPPED   ? "kept" : "pending";
             REPLY("  [%d] %s %u %s %s", i, im->name, (unsigned)im->size,
                   KIND[im->kind], st);
         }
@@ -365,6 +371,15 @@ static void dispatch(char *line)
         cmd_br(BR_REQ_BACKUP, strtok(NULL, ""));   /* rest of line = optional DB name */
     } else if (strcmp(cmd, "restore") == 0) {
         cmd_br(BR_REQ_RESTORE, strtok(NULL, ""));  /* rest of line = optional /backup filename */
+    } else if (strcmp(cmd, "state") == 0) {
+        char *arg = strtok(NULL, " \t");
+        if (arg && !strcmp(arg, "save")) {
+            g_ram_save_request = true;
+            REPLY("OK RAM save queued; waits for Palm idle (requires state.enabled=1)");
+        } else if (!arg || !strcmp(arg, "status")) {
+            REPLY("OK RAM=%u KB pending=%d saves=%u last=%s", BUS_RAM_SIZE / 1024,
+                  g_ram_save_request, g_ram_save_count, ram_state_result_str(g_ram_last_result));
+        } else REPLY("ERR usage: state [save|status]");
     } else if (strcmp(cmd, "reset") == 0) {
         /* Request a warm reset; the cpu task (sole CPU-state writer) services it. */
         g_warm_reset_request = true;

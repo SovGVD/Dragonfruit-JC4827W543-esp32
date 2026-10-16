@@ -23,6 +23,53 @@ static unsigned tests;
 #define L(v) { (v), M68K_ARG_L }
 #define CHECK(x) do { tests++; if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); abort(); } } while (0)
 
+/* A real RAM callback executes TRAP #15/AFFF then RTS. The test trap observes
+ * its C arguments above the callback return PC, and can cancel at any offset. */
+static struct {
+    uint32_t total, user, previous, calls, cancel_at;
+    uint16_t error;
+} progress;
+static unsigned custom_imports, custom_exports;
+static uint16_t last_custom_error;
+
+static bool test_trap(m68k_cpu_t *c, uint16_t trap)
+{
+    if (trap == 0xafff) {
+        uint32_t sp = c->regs.a[7];
+        uint32_t total = bus_read32(sp + 4), offset = bus_read32(sp + 8);
+        CHECK(bus_read32(sp + 12) == progress.user);
+        CHECK(total == progress.total && offset <= total);
+        CHECK(progress.calls ? offset > progress.previous : offset == 0);
+        progress.previous = offset;
+        progress.calls++;
+        c->regs.d[0] = offset >= progress.cancel_at ? progress.error : 0;
+        /* Deliberately disturb caller-saved registers. The subcall must restore
+         * the serializer/launcher registers around every callback. */
+        c->regs.d[1] = 0x12345678;
+        c->regs.a[0] = 0x87654321;
+        return true;
+    }
+    unsigned sel = c->regs.d[2] & 0xffff;
+    bool handled = palm_card_trap(c, trap);
+    if (handled && trap == 0xa348 && (sel == 39 || sel == 40)) {
+        if (sel == 39) custom_imports++; else custom_exports++;
+        last_custom_error = c->regs.d[0] & 0xffff;
+    }
+    return handled;
+}
+
+static void reset_progress(uint32_t total, uint32_t cancel_at)
+{
+    memset(&progress, 0, sizeof progress);
+    progress.total = total;
+    progress.user = P(900);
+    progress.cancel_at = cancel_at;
+    progress.error = 0x0507; /* arbitrary callback Err, returned unchanged */
+    bus_write16(P(700), 0x4e4f); /* TRAP #15 */
+    bus_write16(P(702), 0xafff);
+    bus_write16(P(704), 0x4e75); /* RTS */
+}
+
 static uint32_t invoke(uint16_t trap, unsigned selector, const m68k_arg_t *args, int n)
 {
     /* Keep the synthetic return PC in A3, not below SP where nested ROM calls
@@ -261,6 +308,111 @@ static void database_tests(const char *root, const char *app)
     }
 }
 
+static void callback_tests(const char *root)
+{
+    enum { PAYLOAD = 12300, TOTAL = 88 + PAYLOAD };
+    uint8_t *image = calloc(1, TOTAL); CHECK(image);
+    memcpy(image, "CallbackTest", 12); memcpy(image + 60, "DATADFcb", 8);
+    wb16(image + 76, 1); wb32(image + 78, 88); image[85] = 1;
+    for (unsigned i = 0; i < PAYLOAD; i++) image[88 + i] = (uint8_t)i;
+    char file[512]; snprintf(file, sizeof file, "%s/callback.pdb", root);
+    FILE *f = fopen(file, "wb"); CHECK(f);
+    CHECK(fwrite(image, 1, TOTAL, f) == TOTAL); CHECK(!fclose(f));
+    free(image);
+
+    path("/callback.pdb");
+    m68k_arg_t in[] = {W(1),L(P(128)),L(P(64)),L(P(68)),L(P(700)),L(P(900))};
+    text(300,"CallbackTest"); m68k_arg_t find[] = {W(0),L(P(300))};
+    /* Abort before reading, midway through reading, and after installation.
+     * No failing import may leave a database or publish success outputs. */
+    const uint32_t stops[] = {0, 4096, TOTAL};
+    for (unsigned i = 0; i < sizeof stops / sizeof *stops; i++) {
+        reset_progress(TOTAL, stops[i]);
+        bus_write16(P(64), 0xbeef); bus_write32(P(68), 0xdeadbeef);
+        CHECK(api(39,in,6) == progress.error && progress.calls);
+        CHECK(bus_read16(P(64)) == 0xbeef && bus_read32(P(68)) == 0xdeadbeef);
+        CHECK(!rom_call(0xa045,find,2,NULL));
+    }
+    reset_progress(TOTAL,UINT32_MAX);
+    in[4].value = P(701); CHECK(api(39,in,6) == 0x0502 && !progress.calls);
+    in[4].value = BUS_RAM_SIZE; CHECK(api(39,in,6) == 0x0502 && !progress.calls);
+    bus_write16(P(720),0x60fe); /* valid code that never returns */
+    in[4].value = P(720); CHECK(api(39,in,6) == 0x2a02 && !progress.calls);
+    CHECK(!rom_call(0xa045,find,2,NULL));
+    in[4].value = P(700);
+    CHECK(!api(39,in,6));
+    CHECK(progress.calls >= 4 && progress.previous == TOTAL);
+    uint32_t id = bus_read32(P(68)); CHECK(id && !bus_read16(P(64)));
+    reset_progress(TOTAL,UINT32_MAX);
+    CHECK(api(39,in,6) == 0x0219 && bus_read32(P(68)) == id);
+    CHECK(rom_call(0xa045,find,2,NULL) == id); /* duplicate preserved */
+
+    m68k_arg_t out[] = {W(1),L(P(128)),W(0),L(id),L(P(700)),L(P(900))};
+    path("/callback-export.pdb");
+    snprintf(file,sizeof file,"%s/callback-export.pdb",root); remove(file);
+    for (unsigned i = 0; i < sizeof stops / sizeof *stops; i++) {
+        reset_progress(TOTAL, stops[i]);
+        CHECK(api(40,out,6) == progress.error && progress.calls);
+        f = fopen(file,"rb"); CHECK(!f); /* partial/final canceled file removed */
+        CHECK(rom_call(0xa045,find,2,NULL) == id); /* source preserved */
+    }
+    reset_progress(TOTAL,UINT32_MAX);
+    out[4].value = P(701); CHECK(api(40,out,6) == 0x0502 && !progress.calls);
+    out[4].value = P(700);
+    CHECK(!api(40,out,6));
+    CHECK(progress.calls >= 4 && progress.previous == TOTAL);
+    f=fopen(file,"rb"); CHECK(f); CHECK(!fseek(f,0,SEEK_END));
+    CHECK(ftell(f) == TOTAL); CHECK(!fseek(f,88,SEEK_SET));
+    for (unsigned i=0;i<PAYLOAD;i++) CHECK(fgetc(f) == (uint8_t)i);
+    CHECK(!fclose(f));
+    reset_progress(TOTAL,0);
+    CHECK(api(40,out,6) == 0x2a06 && !progress.calls); /* existing file intact */
+    CHECK(palm_card_init(root,true));
+    CHECK(api(40,out,6) == 0x2a05 && !progress.calls);
+    CHECK(palm_card_init(root,false));
+
+    /* Custom selectors also accept NULL callbacks, with opaque user data. */
+    m68k_arg_t del[] = {W(0),L(id)}; CHECK(!rom_call(0xa042,del,2,NULL));
+    path("/callback.pdb"); in[4].value=0; in[5].value=0xffffffff;
+    CHECK(!api(39,in,6)); id=bus_read32(P(68)); CHECK(id);
+    out[3].value=id; out[4].value=0; out[5].value=0xffffffff;
+    path("/callback-null.pdb"); snprintf(file,sizeof file,"%s/callback-null.pdb",root);remove(file);
+    CHECK(!api(40,out,6));
+    del[1].value=id; CHECK(!rom_call(0xa042,del,2,NULL));
+}
+
+static void launcher_copy_tests(const char *root)
+{
+    unsigned imports = custom_imports, exports = custom_exports;
+    /* Starting on the SD Card launcher page, open App > Copy, choose From SD
+     * Card and copy Snake. Blank-area taps drain queued form/menu events. */
+    const int import_steps[][2] = {{8,6},{35,64},{150,140},{79,39},{100,50},
+                                  {150,140},{35,72},{65,147},{150,140}};
+    for (unsigned i=0;i<sizeof import_steps/sizeof *import_steps;i++)
+        tap(import_steps[i][0],import_steps[i][1]);
+    CHECK(custom_imports == imports+1 && last_custom_error == 0);
+    text(300,"Snake 123"); m68k_arg_t find[] = {W(0),L(P(300))};
+    uint32_t id = rom_call(0xa045,find,2,NULL); CHECK(id);
+    screen(root,"copied-to-handheld");
+
+    /* Copy again, decline the replacement prompt, then reverse the direction.
+     * Accept replacing the original card app, exercising launcher delete/export. */
+    const int export_steps[][2] = {{65,147},{150,140},{65,147},{79,39},{100,39},
+                                  {150,140},{35,72},{65,147},{150,140},
+                                  {25,147},{150,140}};
+    for (unsigned i=0;i<sizeof export_steps/sizeof *export_steps;i++)
+        tap(export_steps[i][0],export_steps[i][1]);
+    CHECK(custom_imports == imports+1); /* declined import didn't replace RAM */
+    CHECK(rom_call(0xa045,find,2,NULL) == id);
+    CHECK(custom_exports == exports+1 && last_custom_error == 0);
+    char file[512]; snprintf(file,sizeof file,"%s/PALM/Launcher/app.prc",root);
+    FILE *f=fopen(file,"rb"); CHECK(f); uint8_t header[78];
+    CHECK(fread(header,1,sizeof header,f) == sizeof header); CHECK(!fclose(f));
+    CHECK(!strcmp((char *)header,"Snake 123"));
+    screen(root,"copied-to-card");
+    tap(25,147); tap(150,140); /* Done */
+}
+
 int main(int argc,char **argv)
 {
     CHECK(argc>=2);
@@ -273,7 +425,7 @@ int main(int argc,char **argv)
     bus_init(rom,size);dragonball_init();m68k_init(&cpu);
     cpu.irq_callback=db_interrupt_pending_level;cpu.tick_callback=db_timer_advance;
     cpu.wake_callback=db_iwr_wake_pending;cpu.vector_base_callback=db_int_vector_base;
-    cpu.resume_callback=db_cpu_resume;cpu.palm_trap_callback=palm_card_trap;
+    cpu.resume_callback=db_cpu_resume;cpu.palm_trap_callback=test_trap;
     CHECK(palm_card_init(argv[1],false));
     cpu.regs.sr=0x2700;cpu.regs.a[7]=0x1f0000;
     if (argc>2) {
@@ -289,6 +441,7 @@ int main(int argc,char **argv)
     filesystem_tests(argv[1]);
     if (argc>2) {
         database_tests(argv[1],argc>3?argv[3]:NULL);
+        callback_tests(argv[1]);
         /* Tests reset the card handles; restore manager advertisement. */
         for(unsigned i=0;i<10000 && !palm_card_ready();i++)run_cycles(4000);
         CHECK(palm_card_ready());
@@ -314,6 +467,7 @@ int main(int argc,char **argv)
             installer_refresh_launcher(&cpu);run_cycles(30000000);
             text(300,"Snake 123");m68k_arg_t find[]={W(0),L(P(300))};
             CHECK(!rom_call(0xa045,find,2,NULL));
+            launcher_copy_tests(argv[1]);
         }
         palm_card_reset();dragonball_init();m68k_warm_reset(&cpu);
         run_cycles(160000000);CHECK(palm_card_ready());
@@ -323,6 +477,6 @@ int main(int argc,char **argv)
         uint32_t ref=open_file("/roundtrip.txt",2);close_file(ref);
     }
     palm_card_close();free(rom);
-    printf("PASS Palm card: %u checks%s\n",tests,argc>2?" (real ROM, VFS feature, PRC resource/import/export, restart)":"");
+    printf("PASS Palm card: %u checks%s\n",tests,argc>2?" (real ROM, VFS feature, database callbacks/cancellation, import/export, restart)":"");
     return 0;
 }

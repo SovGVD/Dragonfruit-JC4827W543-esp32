@@ -308,7 +308,7 @@ static void host_run_backup(void)
         snprintf(path, sizeof(path), "%s/%s", host_backup_dir, fname);
         FILE *bf = fopen(path, "wb");
         if (!bf) { fprintf(stderr, "backup: cannot create %s\n", path); fail++; continue; }
-        backup_sink_t sink = { backup_file_sink, bf };
+        backup_sink_t sink = { .write = backup_file_sink, .ctx = bf };
         backup_result_t r = backup_serialize_db(&cpu, &dbs[i], &sink);
         fclose(bf);
         if (r == BACKUP_OK) {

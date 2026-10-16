@@ -71,6 +71,7 @@ typedef struct {
 static card_handle_t handles[MAX_HANDLES];
 static char card_root[PATH_CAP], card_label[LABEL_CAP] = "SD Card";
 static bool configured, read_only, initialized, rejected;
+static bool db_transfer_active;
 static uint32_t next_ref;
 bool (*palm_card_space)(uint32_t *used, uint32_t *total);
 
@@ -574,7 +575,56 @@ static uint16_t db_info(m68k_cpu_t *cpu, card_handle_t *h, args_t *a)
     return OK;
 }
 
-static uint16_t import_db(m68k_cpu_t *cpu, uint32_t name, uint32_t card, uint32_t dbid)
+typedef struct {
+    m68k_cpu_t *cpu;
+    uint32_t proc, user, total, offset, reported;
+    uint16_t error;
+    FILE *file;
+} db_progress_t;
+
+/* VFSImport/ExportProcPtr(totalBytes, offset, userDataP) returns an Err.
+ * Launcher callbacks are RAM code. Drive them with the same saved-register
+ * subcall machinery as ROM traps, without resolving them through the trap table. */
+static uint16_t db_progress(db_progress_t *p, uint32_t offset)
+{
+    p->offset = offset;
+    p->reported = offset;
+    if (!p->proc || p->error) return p->error;
+    if ((p->proc & 1) || !readable(p->proc, 2)) return p->error = BAD_PARAM;
+    m68k_arg_t args[] = {L(p->total), L(offset), L(p->user)};
+    bool timeout = false;
+    uint32_t err = m68k_call_trap(p->cpu, p->proc, args, 3, NULL, &timeout);
+    return p->error = timeout ? IO_ERROR : (uint16_t)err;
+}
+
+static bool export_begin(void *ctx, uint32_t total)
+{
+    db_progress_t *p = ctx;
+    p->total = total;
+    return !db_progress(p, 0);
+}
+
+static bool export_write(void *ctx, const void *data, uint32_t len)
+{
+    db_progress_t *p = ctx;
+    const uint8_t *bytes = data;
+    while (len) {
+        uint32_t n = len > IO_CHUNK ? IO_CHUNK : len;
+        if (fwrite(bytes, 1, n, p->file) != n) { p->error = IO_ERROR; return false; }
+        bytes += n;
+        len -= n;
+        /* Report completion only after the serializer closes its database and
+         * the output has been synced. A callback error then removes the file. */
+        uint32_t offset = p->offset + n;
+        if (offset < p->total && offset - p->reported >= IO_CHUNK) {
+            if (db_progress(p, offset)) return false;
+        } else p->offset = offset;
+    }
+    return true;
+}
+
+static uint16_t import_db(m68k_cpu_t *cpu, uint32_t name, uint32_t card, uint32_t dbid,
+                          db_progress_t *progress)
 {
     if ((card && !writable(card, 2)) || (dbid && !writable(dbid, 4))) return BAD_PARAM;
     char path[PATH_CAP];
@@ -587,8 +637,20 @@ static uint16_t import_db(m68k_cpu_t *cpu, uint32_t name, uint32_t card, uint32_
     if (n < 78 || n > DB_LIMIT || fseek(f, 0, SEEK_SET)) { fclose(f); return BAD_DATA; }
     uint8_t *image = malloc((size_t)n);
     if (!image) { fclose(f); return NO_MEMORY; }
-    size_t got = fread(image, 1, (size_t)n, f);
+    progress->total = (uint32_t)n;
+    err = db_progress(progress, 0);
+    size_t got = 0;
+    while (!err && got < (size_t)n) {
+        size_t chunk = (size_t)n - got;
+        if (chunk > IO_CHUNK) chunk = IO_CHUNK;
+        size_t count = fread(image + got, 1, chunk, f);
+        got += count;
+        if (count != chunk) { err = IO_ERROR; break; }
+        if (got < (size_t)n) err = db_progress(progress, (uint32_t)got);
+        if (g_installer_yield) g_installer_yield();
+    }
     fclose(f);
+    if (err) { free(image); return err; }
     if (got != n || !memchr(image, 0, 32)) { free(image); return BAD_DATA; }
     uint32_t p = alloc_ptr(cpu, 32);
     if (!p) { free(image); return NO_MEMORY; }
@@ -604,12 +666,20 @@ static uint16_t import_db(m68k_cpu_t *cpu, uint32_t name, uint32_t card, uint32_
     free_ptr(cpu, p);
     if (result != INSTALLER_OK && result != INSTALLER_NEEDS_RESET && result != INSTALLER_ALREADY_PRESENT)
         return result == INSTALLER_ERR_OUT_OF_MEMORY ? NO_MEMORY : BAD_DATA;
+    if (!existing && (err = db_progress(progress, (uint32_t)n))) {
+        /* The final callback can cancel too. Never leave a newly installed DB
+         * behind on failure, and never remove an already-present database. */
+        m68k_arg_t del[] = {W(0), L(id)};
+        call(cpu, 0xa042, del, 2, NULL);
+        return err;
+    }
     if (card) bus_write16(card, 0);
     if (dbid) bus_write32(dbid, id);
     return result == INSTALLER_ALREADY_PRESENT ? 0x0219 : OK; /* dmErrAlreadyExists */
 }
 
-static uint16_t export_db(m68k_cpu_t *cpu, uint32_t name, uint16_t card, uint32_t id)
+static uint16_t export_db(m68k_cpu_t *cpu, uint32_t name, uint16_t card, uint32_t id,
+                          db_progress_t *progress)
 {
     if (read_only) return DENIED;
     if (card) return BAD_PARAM;
@@ -626,14 +696,16 @@ static uint16_t export_db(m68k_cpu_t *cpu, uint32_t name, uint16_t card, uint32_
     if (index < 0) { free(dbs); return BAD_DATA; }
     FILE *f = fopen(path, "wb");
     if (!f) { free(dbs); return os_error(); }
-    backup_sink_t sink = {backup_file_sink, f};
+    progress->file = f;
+    backup_sink_t sink = { .write = export_write, .ctx = progress, .begin = export_begin };
     backup_result_t r = backup_serialize_db(cpu, &dbs[index], &sink);
     free(dbs);
     bool failed = r != BACKUP_OK;
     if (fflush(f)) failed = true;
     if (fsync(fileno(f))) failed = true;
     if (fclose(f)) failed = true;
-    if (failed) { remove(path); return IO_ERROR; }
+    if (!failed && db_progress(progress, progress->total)) failed = true;
+    if (failed) { remove(path); return progress->error ? progress->error : IO_ERROR; }
     return OK;
 }
 
@@ -669,13 +741,23 @@ static uint16_t vfs(m68k_cpu_t *cpu, uint16_t sel, args_t *a)
         if (sel == 3) { uint16_t mode = aw(a); uint32_t out = al(a); return file_open(vol, p, mode, out); }
         if (sel == 34 || sel == 39) {
             uint32_t card = al(a), id = al(a);
-            if (sel == 39 && al(a)) return UNIMPLEMENTED; /* callback ABI not implemented */
-            return import_db(cpu, p, card, id);
+            db_progress_t progress = { .cpu = cpu };
+            if (sel == 39) { progress.proc = al(a); progress.user = al(a); }
+            if (db_transfer_active) return STILL_OPEN;
+            db_transfer_active = true;
+            uint16_t err = import_db(cpu, p, card, id, &progress);
+            db_transfer_active = false;
+            return err;
         }
         if (sel == 35 || sel == 40) {
             uint16_t card = aw(a); uint32_t id = al(a);
-            if (sel == 40 && al(a)) return UNIMPLEMENTED;
-            return export_db(cpu, p, card, id);
+            db_progress_t progress = { .cpu = cpu };
+            if (sel == 40) { progress.proc = al(a); progress.user = al(a); }
+            if (db_transfer_active) return STILL_OPEN;
+            db_transfer_active = true;
+            uint16_t err = export_db(cpu, p, card, id, &progress);
+            db_transfer_active = false;
+            return err;
         }
         if (sel == 28) {
             if (!writable(p, 28)) return BAD_PARAM;

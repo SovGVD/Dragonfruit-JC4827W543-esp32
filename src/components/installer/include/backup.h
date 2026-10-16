@@ -60,6 +60,9 @@ typedef enum {
 typedef struct backup_sink {
     bool (*write)(void *ctx, const void *data, uint32_t len);
     void *ctx;
+    /* Optional: exact serialized size, after gathering entries and before the
+     * first write. Returning false aborts through the normal cleanup path. */
+    bool (*begin)(void *ctx, uint32_t total);
 } backup_sink_t;
 
 /* One card-0 database's header metadata, as read by backup_enumerate. */

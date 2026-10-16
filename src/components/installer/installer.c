@@ -1338,6 +1338,7 @@ backup_result_t backup_serialize_db(m68k_cpu_t *cpu, const backup_db_info_t *inf
 
     /* Output must remain installable by installer_install_image. */
     if (cursor > INSTALL_MAX_FILE_BYTES) { result = BACKUP_ERR_BAD_DB; goto done; }
+    if (sink->begin && !sink->begin(sink->ctx, cursor)) { result = BACKUP_ERR_IO; goto done; }
 
     /* PASS 2a: header. */
     uint8_t hdr[HDR_SIZE];
@@ -1618,7 +1619,7 @@ backup_result_t backup_run_to_sd(m68k_cpu_t *cpu, const char *name,
         snprintf(path, sizeof(path), "%s/%s", BACKUP_DIR, fname);
         FILE *f = fopen(path, "wb");
         if (!f) { (*fail)++; ESP_LOGW(TAG, "backup: cannot create %s", path); continue; }
-        backup_sink_t sink = { backup_file_sink, f };
+        backup_sink_t sink = { .write = backup_file_sink, .ctx = f };
         backup_result_t r = backup_serialize_db(cpu, d, &sink);
         fclose(f);
         if (r == BACKUP_OK) {

@@ -76,6 +76,8 @@ static void ppp_status(ppp_pcb *pcb, int error, void *ctx)
     if (error == PPPERR_NONE) {
         ip_napt_enable(ip4_addr_get_u32(netif_ip4_addr(&ppp_netif)), 1);
         atomic_store(&palm_ip, ip4_addr_get_u32(netif_ip4_gw(&ppp_netif)));
+        ESP_LOGI(TAG, "PPP up: our=%s", ip4addr_ntoa(netif_ip4_addr(&ppp_netif)));
+        ESP_LOGI(TAG, "PPP up: palm=%s", ip4addr_ntoa(netif_ip4_gw(&ppp_netif)));
     } else {
         ip_napt_enable_no(ppp_netif.num, 0);
         atomic_store(&palm_ip, 0);
@@ -88,6 +90,9 @@ static void ppp_task(void *arg)
     (void)arg;
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     bool running = false;
+    bool in_ppp = false;
+    char at_buf[64] = {0};
+    size_t at_len = 0;
     uint32_t generation = 0;
     uint8_t input[128];
     size_t pending = 0;
@@ -109,12 +114,16 @@ static void ppp_task(void *arg)
             portEXIT_CRITICAL(&handoff_lock);
             pending = 0;
             running = false;
+            in_ppp = false;
+            at_len = 0;
         }
         if (!running && want_open) {
             atomic_store(&ppp_dead, false);
             if (pppapi_listen(ppp) == ERR_OK) {
                 generation = want_generation;
                 running = true;
+                in_ppp = false;
+                at_len = 0;
                 portENTER_CRITICAL(&handoff_lock);
                 ready_generation = generation;
                 ready = true;
@@ -123,7 +132,36 @@ static void ppp_task(void *arg)
         }
         if (running) {
             if (!pending) pending = xStreamBufferReceive(from_palm, input, sizeof(input), 0);
-            if (pending && pppos_input_tcpip(ppp, input, (int)pending) == ERR_OK) pending = 0;
+            if (pending) {
+                if (!in_ppp) {
+                    char resp[64];
+                    size_t resp_len = 0;
+                    bool found_hdlc = false;
+                    size_t pre = portal_ppp_preamble(input, pending,
+                                                     at_buf, sizeof(at_buf), &at_len,
+                                                     resp, sizeof(resp), &resp_len,
+                                                     &found_hdlc);
+                    if (resp_len) {
+                        xStreamBufferSend(to_palm, resp, resp_len, 0);
+                    }
+                    if (found_hdlc) {
+                        in_ppp = true;
+                        size_t ppp_bytes = pending - pre;
+                        if (ppp_bytes > 0 && pppos_input_tcpip(ppp, input + pre, (int)ppp_bytes) == ERR_OK) {
+                            pending = 0;
+                        } else if (ppp_bytes > 0) {
+                            memmove(input, input + pre, ppp_bytes);
+                            pending = ppp_bytes;
+                        } else {
+                            pending = 0;
+                        }
+                    } else {
+                        pending = 0;
+                    }
+                } else {
+                    if (pppos_input_tcpip(ppp, input, (int)pending) == ERR_OK) pending = 0;
+                }
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
@@ -301,8 +339,10 @@ static void manage_wifi(void)
 
 static bool send_all(int sock, const char *data, size_t len)
 {
+    uint32_t since = now_ms();
     while (len) {
         int n = send(sock, data, len, 0);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && now_ms() - since < 30000) continue;
         if (n <= 0) return false;
         data += n; len -= (size_t)n;
     }
@@ -316,7 +356,10 @@ static void page(int sock, const char *status, const char *body)
         "HTTP/1.0 %s\r\nContent-Type: text/html; charset=ISO-8859-1\r\n"
         "Content-Length: %u\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         status, (unsigned)strlen(body));
-    if (send_all(sock, header, (size_t)n)) send_all(sock, body, strlen(body));
+    uint32_t t0 = now_ms();
+    bool ok = send_all(sock, header, (size_t)n) && send_all(sock, body, strlen(body));
+    ESP_LOGI(TAG, "HTTP tx '%s' body=%u ok=%d errno=%d in %u ms", status, (unsigned)strlen(body), ok, ok ? 0 : errno,
+             (unsigned)(now_ms() - t0));
 }
 
 static void append(char *out, size_t cap, const char *fmt, ...)
@@ -335,14 +378,21 @@ static void serve_http(int sock)
     size_t used = 0, content_len = 0;
     int header_len = 0;
     uint32_t since = now_ms();
-    while (used < sizeof(request) - 1 && now_ms() - since < 5000) {
+    while (used < sizeof(request) - 1 && now_ms() - since < 20000) {
         int n = recv(sock, request + used, sizeof(request) - 1 - used, 0);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (n <= 0) break;
         used += (size_t)n;
         request[used] = 0;
         header_len = portal_http_headers(request, used, &content_len);
         if (header_len < 0) break;
         if (header_len && used >= (size_t)header_len + content_len) break;
+    }
+    {
+        const char *eol = memchr(request, '\r', used);
+        ESP_LOGI(TAG, "HTTP rx used=%u hdr=%d body=%u after %u ms: %.*s", (unsigned)used, header_len,
+                 (unsigned)content_len, (unsigned)(now_ms() - since),
+                 (int)(eol ? eol - request : (used > 80 ? 80 : used)), request);
     }
     if (header_len <= 0 || used < (size_t)header_len + content_len) {
         page(sock, "400 Bad Request", "<html><body>Invalid or oversized request.</body></html>");
@@ -496,6 +546,7 @@ static void http_task(void *arg)
         socklen_t size = sizeof(peer);
         int client = accept(listener, (struct sockaddr *)&peer, &size);
         if (client < 0) continue;
+        ESP_LOGI(TAG, "HTTP accept from " IPSTR, IP2STR((esp_ip4_addr_t *)&peer.sin_addr.s_addr));
         if (peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip)) {
             struct timeval timeout = {.tv_sec = 2};
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -543,12 +594,20 @@ static void dns_task(void *arg)
             struct sockaddr_in peer;
             socklen_t size = sizeof(peer);
             int len = recvfrom(listener, pkt, PORTAL_DNS_MAX + 1, 0, (struct sockaddr *)&peer, &size);
-            char name[254];
-            if (len > 0 && peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip) &&
-                portal_dns_question(pkt, (size_t)len, name, sizeof(name))) {
+            char name[254] = "";
+            size_t qend = len > 0 ? portal_dns_question(pkt, (size_t)len, name, sizeof(name)) : 0;
+            ESP_LOGI(TAG, "DNS rx len=%d from=" IPSTR " palm=" IPSTR " flags=%02x%02x qd=%d parsed=%u name='%s' wifi=%d proxy=%d",
+                     len, IP2STR((esp_ip4_addr_t *)&peer.sin_addr.s_addr),
+                     IP2STR((esp_ip4_addr_t *)&(uint32_t){atomic_load(&palm_ip)}),
+                     len > 3 ? pkt[2] : 0, len > 3 ? pkt[3] : 0, len > 5 ? (pkt[4] << 8 | pkt[5]) : -1,
+                     (unsigned)qend, name, (int)atomic_load(&wifi_up), (int)atomic_load(&proxy_enabled));
+            if (len > 0) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, len > 64 ? 64 : len, ESP_LOG_INFO);
+            if (len > 0 && peer.sin_addr.s_addr == atomic_load(&palm_ip) && atomic_load(&palm_ip) && qend) {
                 if (!strcmp(name, PALM_PORTAL_HOST) || !atomic_load(&wifi_up) || atomic_load(&proxy_enabled)) {
                     size_t n = portal_dns_answer(pkt, (size_t)len, sizeof(pkt), gateway, false);
-                    if (n) sendto(listener, pkt, n, 0, (struct sockaddr *)&peer, size);
+                    int sent = n ? sendto(listener, pkt, n, 0, (struct sockaddr *)&peer, size) : -1;
+                    ESP_LOGI(TAG, "DNS tx local n=%u sent=%d", (unsigned)n, sent);
+                    if (n) ESP_LOG_BUFFER_HEX_LEVEL(TAG, pkt, n, ESP_LOG_INFO);
                 } else {
                     lookup_t *slot = NULL;
                     for (int i = 0; i < DNS_PENDING; i++) if (pending[i].sock < 0) { slot = &pending[i]; break; }

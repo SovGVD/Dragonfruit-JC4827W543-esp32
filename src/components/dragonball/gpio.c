@@ -87,17 +87,21 @@ uint8_t db_gpio_read8(uint16_t offset)
         uint8_t puen = db.port_puen[p];
         uint8_t val = (db.port_data[p] & dir) | (~dir & puen);
         /* Port F bit 1 is PENIRQ — driven externally by ADS7846.
-         * Override pull-up with actual pen state from port_data. */
+         * Override pull-up with actual pen state from port_data.
+         * On Palm IIIc (Austin), Port F bit 0 (LCDPowered) and bit 7 (IXTRNL2,
+         * active-low modem sync-port ID) are inputs that must read high so the
+         * ROM does not mistake the cradle port for a modem or hang in wake. */
         if (p == 5)
-            val = (val & ~PF_PENIRQ) | (db.port_data[5] & PF_PENIRQ);
+            val = ((val & ~PF_PENIRQ) | (db.port_data[5] & PF_PENIRQ)) | (~dir & 0x81);
         if (p == 3) {
             /* Bits 0-3 = scanned keyboard columns for the selected rows.
-             * Bits 4 (Dock button, aka IRQ1) and 7 (Power Fail) are active-low
-             * inputs forced HIGH (deasserted): if Power Fail reads low the
-             * ROM's battery code powers the device down, and a low Dock bit
-             * makes HotSync use the modem instead of serial. */
+             * Bits 4 (Dock button, aka IRQ1), 6 (AdapterInstalled on IIIc), and
+             * 7 (Power Fail) are active-low inputs forced HIGH (deasserted): if
+             * Power Fail reads low the ROM's battery code powers the device
+             * down, and a low Dock bit makes HotSync use the modem instead of
+             * serial. */
             val = (val & ~(PD_KBD_COLS | PD_DOCK_IRQ1 | PD_POWER_FAIL))
-                  | db_kbd_columns() | PD_DOCK_IRQ1 | PD_POWER_FAIL;
+                  | db_kbd_columns() | PD_DOCK_IRQ1 | PD_POWER_FAIL | (~dir & 0x40);
         }
         return val;
     }

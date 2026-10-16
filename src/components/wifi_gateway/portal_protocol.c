@@ -204,3 +204,62 @@ int portal_http_header_value(const char *r, size_t len, const char *name, char *
     }
     return found;
 }
+
+size_t portal_ppp_preamble(const uint8_t *src, size_t len,
+                           char *at_buf, size_t at_cap, size_t *at_len,
+                           char *resp, size_t resp_cap, size_t *resp_len,
+                           bool *found_hdlc)
+{
+    *found_hdlc = false;
+    *resp_len = 0;
+    size_t i = 0;
+    for (; i < len; i++) {
+        uint8_t b = src[i];
+        if (b == 0x7E) {
+            *found_hdlc = true;
+            break;
+        }
+        if (b == '\r' || b == '\n') {
+            at_buf[*at_len] = '\0';
+            const char *p = at_buf;
+            while (*p == ' ' || *p == '\t') p++;
+            if (!strncasecmp(p, "ATD", 3)) {
+                const char c[] = "\r\nCONNECT\r\n";
+                size_t clen = sizeof(c) - 1;
+                if (*resp_len + clen < resp_cap) {
+                    memcpy(resp + *resp_len, c, clen);
+                    *resp_len += clen;
+                    resp[*resp_len] = '\0';
+                }
+            } else if (!strncasecmp(p, "AT", 2)) {
+                const char c[] = "\r\nOK\r\n";
+                size_t clen = sizeof(c) - 1;
+                if (*resp_len + clen < resp_cap) {
+                    memcpy(resp + *resp_len, c, clen);
+                    *resp_len += clen;
+                    resp[*resp_len] = '\0';
+                }
+            }
+            *at_len = 0;
+        } else {
+            if (*at_len + 1 < at_cap) {
+                at_buf[(*at_len)++] = (char)b;
+                at_buf[*at_len] = '\0';
+                if (!strcasecmp(at_buf, "CLIENT")) {
+                    const char c[] = "CLIENTSERVER";
+                    size_t clen = sizeof(c) - 1;
+                    if (*resp_len + clen < resp_cap) {
+                        memcpy(resp + *resp_len, c, clen);
+                        *resp_len += clen;
+                        resp[*resp_len] = '\0';
+                    }
+                    *at_len = 0;
+                }
+            } else {
+                *at_len = 0;
+            }
+        }
+    }
+    return i;
+}
+

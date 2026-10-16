@@ -158,7 +158,9 @@
 #define UTX_FIFOEMPTY   0x8000
 #define UTX_FIFOHALF    0x4000
 #define UTX_AVAIL       0x2000
+#define UTX_SENDBREAK   0x1000
 #define UTX_IGNORECTS   0x0800
+#define UTX_BUSY        0x0400
 #define UTX_CTSSTATUS   0x0200
 #define UTX_DATA        0x00FF
 /* UBAUD */
@@ -366,7 +368,9 @@ void     db_cpu_resume(void);
 /* UART (MC68EZ328) — register access (called by the bus) plus the byte-pipe API
  * used by the firmware transport / debug console. RX bytes are pushed by a
  * producer task; the CPU task drains URX and raises INT_UART. */
+uint8_t  db_uart_read8(uint16_t offset);
 uint16_t db_uart_read16(uint16_t offset);
+void     db_uart_write8(uint16_t offset, uint8_t val);
 void     db_uart_write16(uint16_t offset, uint16_t val);
 void     db_uart_rx_push(const uint8_t *data, uint32_t len);  /* producer -> RX ring */
 uint32_t db_uart_tx_pop(uint8_t *out, uint32_t max);          /* TX ring -> consumer */

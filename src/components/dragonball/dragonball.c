@@ -15,6 +15,7 @@ void dragonball_init(void)
     /* MC68EZ328 reset defaults */
     db.scr = 0x14;              /* EZ328 chip ID */
     db.imr = 0x00FFFFFF;        /* All interrupts masked */
+    db.iwr = 0xFFFFFFFF;        /* EZ328 wakes from STOP on any unmasked IRQ */
     db.ivr = 0x40;
 
     /* PLL: report 16.58 MHz */
@@ -78,7 +79,9 @@ extern void     db_gpio_write8(uint16_t offset, uint8_t val);
 extern uint16_t db_spi_read16(uint16_t offset);
 extern void     db_spi_write16(uint16_t offset, uint16_t val);
 
+extern uint8_t  db_uart_read8(uint16_t offset);
 extern uint16_t db_uart_read16(uint16_t offset);
+extern void     db_uart_write8(uint16_t offset, uint8_t val);
 extern void     db_uart_write16(uint16_t offset, uint16_t val);
 
 /* --- Dispatch reads --- */
@@ -89,6 +92,7 @@ uint8_t dragonball_read8(uint16_t offset)
     if (offset >= 0x300 && offset < 0x320) return db_int_read8(offset);
     if (offset >= 0x400 && offset < 0x450) return db_gpio_read8(offset);
     if (offset >= 0x600 && offset < 0x620) return db_timer_read8(offset);
+    if (offset >= 0x900 && offset < 0x910) return db_uart_read8(offset);
     if (offset >= 0xA00 && offset < 0xA40) return db_lcd_read8(offset);
     if (offset >= 0xB00 && offset < 0xB20) return db_rtc_read8(offset);
 
@@ -143,6 +147,7 @@ void dragonball_write8(uint16_t offset, uint8_t val)
     if (offset >= 0x300 && offset < 0x320) { db_int_write8(offset, val); return; }
     if (offset >= 0x400 && offset < 0x450) { db_gpio_write8(offset, val); return; }
     if (offset >= 0x600 && offset < 0x620) { db_timer_write8(offset, val); return; }
+    if (offset >= 0x900 && offset < 0x910) { db_uart_write8(offset, val); return; }
     if (offset >= 0xA00 && offset < 0xA40) { db_lcd_write8(offset, val); return; }
     if (offset >= 0xB00 && offset < 0xB20) { db_rtc_write8(offset, val); return; }
     if (offset == REG_PCTLR) { db.pctlr = val; return; }

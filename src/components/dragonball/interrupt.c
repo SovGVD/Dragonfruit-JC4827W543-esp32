@@ -80,12 +80,15 @@ uint32_t db_int_vector_base(void)
 
 uint32_t db_int_ivr_raw(void) { return db.ivr; }
 
+uint16_t db_int_read16(uint16_t offset);
+void     db_int_write16(uint16_t offset, uint16_t val);
+
 uint8_t db_int_read8(uint16_t offset)
 {
-    switch (offset) {
-    case REG_IVR: return db.ivr;
-    default: return 0;
-    }
+    if (offset == REG_IVR) return db.ivr;
+    if (offset == REG_IVR + 1) return 0;
+    uint16_t w = db_int_read16((uint16_t)(offset & ~1u));
+    return (offset & 1) ? (uint8_t)(w & 0xFF) : (uint8_t)(w >> 8);
 }
 
 uint16_t db_int_read16(uint16_t offset)
@@ -122,7 +125,20 @@ uint32_t db_int_read32(uint16_t offset)
 
 void db_int_write8(uint16_t offset, uint8_t val)
 {
-    if (offset == REG_IVR) db.ivr = val;
+    if (offset == REG_IVR) { db.ivr = val; return; }
+    if (offset == REG_IVR + 1) return;
+    /* ISR is write-1-to-clear: only set clear bits in the written byte. */
+    if (offset >= REG_ISR && offset < REG_ISR + 4) {
+        uint16_t mask = (offset & 1) ? (uint16_t)val : ((uint16_t)val << 8);
+        db_int_write16((uint16_t)(offset & ~1u), mask);
+        return;
+    }
+    uint16_t base = (uint16_t)(offset & ~1u);
+    uint16_t cur  = db_int_read16(base);
+    uint16_t next = (offset & 1)
+                        ? ((cur & 0xFF00) | val)
+                        : (((uint16_t)val << 8) | (cur & 0x00FF));
+    db_int_write16(base, next);
 }
 
 void db_int_write16(uint16_t offset, uint16_t val)
@@ -133,11 +149,8 @@ void db_int_write16(uint16_t offset, uint16_t val)
     case REG_IMR + 2:   db.imr = (db.imr & 0xFFFF0000) | val; break;
     case REG_IWR:       db.iwr = ((uint32_t)(val | (1u << (INT_PEN - 16))) << 16) | (db.iwr & 0xFFFF); break;
     case REG_IWR + 2:
-        /* Keep timer and PEN bits in IWR so both can wake from STOP.
-         * The ROM's doze function clears IWR to only allow keyboard
-         * wake during deep idle, but we need the timer for tick
-         * advancement and PEN for digitizer responsiveness. */
-        db.iwr = (db.iwr & 0xFFFF0000) | (val | (1u << INT_TMR));
+        /* Keep timer, UART, and PEN bits in IWR so they can wake from STOP. */
+        db.iwr = (db.iwr & 0xFFFF0000) | (val | (1u << INT_TMR) | (1u << INT_UART));
         break;
     case REG_ISR:       db.isr &= ~((uint32_t)val << 16); break;
     case REG_ISR + 2:   db.isr &= ~val; break;
@@ -148,7 +161,7 @@ void db_int_write32(uint16_t offset, uint32_t val)
 {
     switch (offset) {
     case REG_IMR: db.imr = val; break;
-    case REG_IWR: db.iwr = val | (1u << INT_TMR) | (1u << INT_PEN); break;
+    case REG_IWR: db.iwr = val | (1u << INT_TMR) | (1u << INT_UART) | (1u << INT_PEN); break;
     case REG_ISR: db.isr &= ~val; break;  /* Write-1-to-clear */
     }
 }

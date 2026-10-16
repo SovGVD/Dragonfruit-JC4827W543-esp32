@@ -50,6 +50,31 @@ int main(void)
     db_uart_set_loopback(true); /* Cannot add a second producer to PPP's ring. */
     db_uart_write16(REG_UTX, 0x7e);
     assert(!db_uart_rx_ring_nonempty());
-    puts("UART PPP buffering and reset tests passed");
+
+    /* 8-bit UART register access tests */
+    db_uart_reset();
+    db_uart_set_cpu_transport(true);
+    db.ustcnt = USTCNT_UARTEN | USTCNT_RXEN | USTCNT_TXEN;
+    uint8_t one = 0x42;
+    db_uart_rx_push(&one, 1);
+    /* High byte read of URX ($904) reports DATARDY status without popping the byte */
+    uint8_t st = db_uart_read8(REG_URX);
+    assert((st & (URX_DATARDY >> 8)) != 0);
+    assert(db_uart_rx_ring_nonempty());
+    /* Low byte read of URX ($905) pops the byte */
+    uint8_t byte_read = db_uart_read8(REG_URX + 1);
+    assert(byte_read == 0x42);
+    assert(!db_uart_rx_ring_nonempty());
+
+    /* 8-bit write to high byte of UTX ($906) sets control flags without transmitting */
+    db_uart_write8(REG_UTX, (uint8_t)(UTX_IGNORECTS >> 8));
+    assert((db_uart_read16(REG_UTX) & UTX_IGNORECTS) != 0);
+    assert(db_uart_tx_pop(data, sizeof(data)) == 0);
+
+    /* 8-bit write to low byte of UTX ($907) transmits a byte */
+    db_uart_write8(REG_UTX + 1, 0x55);
+    assert(db_uart_tx_pop(data, sizeof(data)) == 1 && data[0] == 0x55);
+
+    puts("UART PPP buffering, 8-bit access and reset tests passed");
     return 0;
 }

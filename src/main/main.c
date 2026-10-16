@@ -719,6 +719,7 @@ static void cpu_task(void *param)
         }
         /* A drained TX ring must also reassert TX-ready interrupts. */
         db_uart_update_irq();
+        m68k_set_irq(&cpu, db_interrupt_pending_level());
         if (db_uart_rx_ring_nonempty()) {
             extern dragonball_state_t db;
             if (db.ustcnt & USTCNT_RXEN)

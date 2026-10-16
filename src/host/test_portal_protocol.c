@@ -98,6 +98,54 @@ int main(void)
         for (size_t j = 0; j <= qlen; j++)
             portal_dns_question(pkt, j, name, sizeof(name));
     }
-    puts("portal form, HTTP framing and DNS tests passed");
+
+    /* Pre-PPP modem and handshake emulation tests */
+    char at_buf[64] = {0};
+    size_t at_len = 0;
+    char resp[64] = {0};
+    size_t resp_len = 0;
+    bool found_hdlc = false;
+
+    /* Direct Serial: immediately starts with 0x7E */
+    const uint8_t ppp_frame[] = { 0x7e, 0xff, 0x03, 0xc0, 0x21 };
+    size_t pre = portal_ppp_preamble(ppp_frame, sizeof(ppp_frame),
+                                     at_buf, sizeof(at_buf), &at_len,
+                                     resp, sizeof(resp), &resp_len, &found_hdlc);
+    assert(pre == 0 && found_hdlc && resp_len == 0);
+
+    /* Modem init command */
+    const uint8_t at_cmd[] = "AT&FX4\r";
+    pre = portal_ppp_preamble(at_cmd, strlen((const char *)at_cmd),
+                              at_buf, sizeof(at_buf), &at_len,
+                              resp, sizeof(resp), &resp_len, &found_hdlc);
+    assert(pre == strlen((const char *)at_cmd) && !found_hdlc);
+    assert(resp_len == 6 && !strcmp(resp, "\r\nOK\r\n"));
+
+    /* Modem dial command */
+    const uint8_t atd_cmd[] = "ATDT00\r";
+    pre = portal_ppp_preamble(atd_cmd, strlen((const char *)atd_cmd),
+                              at_buf, sizeof(at_buf), &at_len,
+                              resp, sizeof(resp), &resp_len, &found_hdlc);
+    assert(pre == strlen((const char *)atd_cmd) && !found_hdlc);
+    assert(resp_len == 11 && !strcmp(resp, "\r\nCONNECT\r\n"));
+
+    /* Windows RAS handshake */
+    const uint8_t client_cmd[] = "CLIENT";
+    pre = portal_ppp_preamble(client_cmd, strlen((const char *)client_cmd),
+                              at_buf, sizeof(at_buf), &at_len,
+                              resp, sizeof(resp), &resp_len, &found_hdlc);
+    assert(pre == strlen((const char *)client_cmd) && !found_hdlc);
+    assert(resp_len == 12 && !strcmp(resp, "CLIENTSERVER"));
+
+    /* AT followed immediately by 0x7E in the same buffer */
+    const uint8_t mixed[] = "AT\r\x7e\xff\x03";
+    pre = portal_ppp_preamble(mixed, sizeof(mixed) - 1,
+                              at_buf, sizeof(at_buf), &at_len,
+                              resp, sizeof(resp), &resp_len, &found_hdlc);
+    assert(pre == 3 && found_hdlc);
+    assert(resp_len == 6 && !strcmp(resp, "\r\nOK\r\n"));
+
+    puts("portal form, HTTP framing, DNS and pre-PPP modem tests passed");
     return 0;
 }
+

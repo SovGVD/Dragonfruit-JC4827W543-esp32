@@ -138,6 +138,16 @@ void db_uart_update_irq(void)
 
 /* --- Register access (called by the bus, i.e. on the CPU task) --- */
 
+static uint16_t urx_status_flags(uint16_t rx_n)
+{
+    uint16_t v = 0;
+    if (rx_n > 0)              v |= URX_DATARDY;
+    if (rx_n >= UART_RING / 2) v |= URX_FIFOHALF;
+    if (rx_n >= UART_MASK)     v |= URX_FIFOFULL;
+    if (rx_overrun)            v |= URX_OVRUN;
+    return v;
+}
+
 uint16_t db_uart_read16(uint16_t offset)
 {
     switch (offset) {
@@ -163,9 +173,10 @@ uint16_t db_uart_read16(uint16_t offset)
     case REG_UTX: {
         /* Status read (the ROM polls this before writing a byte). We "transmit"
          * instantly into the TX ring, so the FIFO is normally empty/available.
-         * Report CTS asserted for a simple 3-wire link. */
+         * Report CTS asserted for a simple 3-wire link and preserve writable
+         * control bits (SEND_BREAK, IGNORE_CTS). */
         uint16_t tx_n = ring_used(tx_head, tx_tail);
-        uint16_t v = UTX_CTSSTATUS;
+        uint16_t v = (db.utx & (UTX_SENDBREAK | UTX_IGNORECTS)) | UTX_CTSSTATUS;
         if (tx_n == 0)             v |= UTX_FIFOEMPTY;
         if (tx_n <  UART_RING / 2) v |= UTX_FIFOHALF;
         if (tx_n <  UART_MASK)     v |= UTX_AVAIL;
@@ -175,6 +186,20 @@ uint16_t db_uart_read16(uint16_t offset)
     case REG_UMISC: return db.umisc;
     default: return 0;
     }
+}
+
+uint8_t db_uart_read8(uint16_t offset)
+{
+    /* Reading the high byte of URX ($904, status flags, e.g. via BTST) must NOT
+     * pop a byte from the RX FIFO; only reading $905 (RX_DATA) or a 16-bit read
+     * of $904 consumes the queued byte. */
+    if (offset == REG_URX)
+        return (uint8_t)(urx_status_flags(ring_used(rx_head, rx_tail)) >> 8);
+    if (offset == REG_URX + 1)
+        return (uint8_t)(db_uart_read16(REG_URX) & 0xFF);
+
+    uint16_t w = db_uart_read16((uint16_t)(offset & ~1u));
+    return (offset & 1) ? (uint8_t)(w & 0xFF) : (uint8_t)(w >> 8);
 }
 
 void db_uart_write16(uint16_t offset, uint16_t val)
@@ -220,4 +245,26 @@ void db_uart_write16(uint16_t offset, uint16_t val)
          * the `serloop` debug command; the bridge forces it off while active. */
         break;
     }
+}
+
+void db_uart_write8(uint16_t offset, uint8_t val)
+{
+    /* Writing the high byte of UTX ($906, e.g. BSET/BCLR on IGNORE_CTS or
+     * SEND_BREAK) updates control bits only and must NOT enqueue a byte into
+     * the TX FIFO; writing the low byte ($907, TX_DATA) transmits the byte. */
+    if (offset == REG_UTX) {
+        db.utx = ((uint16_t)val << 8) | (db.utx & 0x00FF);
+        return;
+    }
+    if (offset == REG_UTX + 1) {
+        db_uart_write16(REG_UTX, (db.utx & 0xFF00) | val);
+        return;
+    }
+
+    uint16_t base = (uint16_t)(offset & ~1u);
+    uint16_t cur  = db_uart_read16(base);
+    uint16_t next = (offset & 1)
+                        ? ((cur & 0xFF00) | val)
+                        : (((uint16_t)val << 8) | (cur & 0x00FF));
+    db_uart_write16(base, next);
 }

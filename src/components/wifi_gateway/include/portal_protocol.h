@@ -29,3 +29,13 @@ int portal_http_headers(const char *request, size_t len, size_t *body_len);
 /* 1=present, 0=missing, -1=duplicate, invalid or too long. */
 int portal_http_header_value(const char *request, size_t header_len,
                               const char *name, char *out, size_t cap);
+
+/* Pre-PPP modem/handshake emulation for Palm OS network connections.
+ * Inspects incoming bytes prior to PPP framing (0x7E):
+ * - If 0x7E is found, sets *found_hdlc=true and returns offset of the 0x7E flag.
+ * - Non-PPP ASCII commands (AT..., ATD..., CLIENT) generate synthetic modem
+ *   responses (OK, CONNECT, CLIENTSERVER) in resp. */
+size_t portal_ppp_preamble(const uint8_t *src, size_t len,
+                           char *at_buf, size_t at_cap, size_t *at_len,
+                           char *resp, size_t resp_cap, size_t *resp_len,
+                           bool *found_hdlc);

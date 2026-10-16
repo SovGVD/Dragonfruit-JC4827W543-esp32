@@ -3,6 +3,7 @@
 #include "lwip/dns.h"
 #include "lwip/timeouts.h"
 #include "netif/ppp/pppos.h"
+#include "lwip/udp.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,43 @@ typedef struct {
     bool up;
 } endpoint_t;
 static endpoint_t gateway, client;
+
+static bool udp_rx_called = false;
+static bool cl_rx_called = false;
+static void test_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                          const ip_addr_t *addr, u16_t port)
+{
+    (void)arg;
+    udp_rx_called = true;
+    struct pbuf *resp = pbuf_alloc(PBUF_TRANSPORT, 44, PBUF_RAM);
+    assert(resp);
+    printf("dest: %s\n", ip4addr_ntoa(ip_2_ip4(addr)));
+    for (struct netif *n = netif_list; n != NULL; n = n->next) {
+        char s_ip[16], s_nm[16], s_gw[16];
+        ip4addr_ntoa_r(netif_ip4_addr(n), s_ip, sizeof(s_ip));
+        ip4addr_ntoa_r(netif_ip4_netmask(n), s_nm, sizeof(s_nm));
+        ip4addr_ntoa_r(netif_ip4_gw(n), s_gw, sizeof(s_gw));
+        printf("netif %c%c%d: up=%d link=%d bc=%d ip=%s nm=%s gw=%s\n",
+               n->name[0], n->name[1], n->num,
+               netif_is_up(n), netif_is_link_up(n), (n->flags & NETIF_FLAG_BROADCAST) != 0,
+               s_ip, s_nm, s_gw);
+    }
+    fflush(stdout);
+    err_t err = udp_sendto(pcb, resp, addr, port);
+    printf("udp_sendto error: %d, addr: %s, port: %d\n", (int)err, ip4addr_ntoa(ip_2_ip4(addr)), port);
+    fflush(stdout);
+    assert(err == ERR_OK);
+    pbuf_free(resp);
+    pbuf_free(p);
+}
+
+static void test_cl_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                         const ip_addr_t *addr, u16_t port)
+{
+    (void)arg; (void)pcb; (void)addr; (void)port;
+    cl_rx_called = true;
+    pbuf_free(p);
+}
 static u32_t clock_ms;
 u32_t sys_now(void) { return clock_ms; }
 u32_t sys_jiffies(void) { return clock_ms; }
@@ -77,6 +115,36 @@ int main(void)
         assert(ip4_addr_cmp(netif_ip4_gw(&client.netif), &addr));
         assert(ip4_addr_cmp(netif_ip4_addr(&gateway.netif), &addr));
         assert(ip4_addr_cmp(ip_2_ip4(dns_getserver(0)), &addr));
+
+        struct udp_pcb *gw_udp = udp_new();
+        assert(gw_udp);
+        ip_addr_t gw_ip;
+        ip4addr_aton(PALM_GATEWAY_IP, &gw_ip);
+        assert(udp_bind(gw_udp, &gw_ip, 53) == ERR_OK);
+        udp_bind_netif(gw_udp, &gateway.netif);
+        udp_recv(gw_udp, test_udp_recv, NULL);
+
+        struct udp_pcb *cl_udp = udp_new();
+        assert(cl_udp);
+        udp_bind_netif(cl_udp, &client.netif);
+        udp_recv(cl_udp, test_cl_recv, NULL);
+        struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, 28, PBUF_RAM);
+        assert(p);
+        udp_rx_called = false;
+        cl_rx_called = false;
+        assert(udp_sendto(cl_udp, p, &gw_ip, 53) == ERR_OK);
+        pbuf_free(p);
+        for (int pass = 0; pass < 20 && (!udp_rx_called || !cl_rx_called); pass++) {
+            transfer(&client, &gateway);
+            transfer(&gateway, &client);
+            clock_ms += 10;
+            sys_check_timeouts();
+        }
+        assert(udp_rx_called);
+        assert(cl_rx_called);
+        udp_remove(gw_udp);
+        udp_remove(cl_udp);
+
         assert(ppp_close(client.pcb, 1) == ERR_OK);
         assert(ppp_close(gateway.pcb, 1) == ERR_OK);
         assert(!gateway.up && !client.up);

@@ -207,6 +207,24 @@ add_executable(test_h8s test_h8s.c ../components/h8s/h8s.c)
 target_include_directories(test_h8s PRIVATE ../components/h8s/include)
 add_test(NAME h8s COMMAND test_h8s)
 
+set(CYBIKO_SOURCES
+    ../components/cybiko/cybiko.c
+    ../components/cybiko/cy_periph.c
+    ../components/cybiko/cy_devices.c
+    ../components/h8s/h8s.c
+)
+add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})
+target_include_directories(test_cybiko PRIVATE ../components/cybiko/include ../components/h8s/include)
+add_test(NAME cybiko COMMAND test_cybiko)
+
+# Headless runner for the real Cybiko Xtreme ROM/flash dumps (see cybiko_host.c)
+add_executable(cybiko_host cybiko_host.c ${CYBIKO_SOURCES})
+target_include_directories(cybiko_host PRIVATE ../components/cybiko/include ../components/h8s/include)
+if(NOT MSVC)
+    target_compile_options(test_cybiko PRIVATE -O2 -Wall -Wextra)
+    target_compile_options(cybiko_host PRIVATE -O2 -Wall -Wextra)
+endif()
+
 add_test(NAME layout COMMAND test_layout)
 add_test(NAME touch_config COMMAND test_touch_config)
 add_test(NAME jit_cache COMMAND test_jit_cache)

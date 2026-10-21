@@ -69,11 +69,18 @@ struct h8s_cpu {
     volatile bool irq_check;
 
     int32_t  icount;      /* states left in the current run slice */
+    int32_t  slice;       /* length of the current run slice */
     uint64_t cycles;      /* total states executed */
     uint32_t ppc;         /* address of the instruction being executed */
 
     uint8_t *rpage[H8S_PAGES];
     uint8_t *wpage[H8S_PAGES];
+    /* Host memory for [fine_base, fine_base + fine_size), checked only when
+     * the page table sends an access to the slow path. It serves on-chip
+     * RAM that shares its 64 KB page with I/O registers. fine_size 0 (the
+     * default) turns it off. fine_base and fine_size must be even. */
+    uint32_t fine_base, fine_size;
+    uint8_t *fine_mem;
     h8s_bus_t bus;
     void *ctx;
 };
@@ -89,12 +96,27 @@ void h8s_reset(h8s_cpu_t *c);
  * slow path. `host` NULL sends both directions to the slow path. */
 void h8s_map(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t *host,
              uint32_t host_size, bool writable);
-/* Execute until `states` have elapsed or c->icount is forced to <= 0.
- * Returns the number of states actually executed. */
+/* Execute until `states` have elapsed, the CPU sleeps (the rest of the
+ * slice then counts as idle time) or h8s_end_slice is called. Returns the
+ * number of states that elapsed. */
 int32_t h8s_run(h8s_cpu_t *c, int32_t states);
 /* Take exception `vector` now (used for NMI-style events by the machine and
  * internally for interrupts and TRAPA). */
 void h8s_exception(h8s_cpu_t *c, int vector);
+
+/* States executed so far, including the part of the slice in progress, so
+ * peripherals can catch up from inside a bus callback. */
+static inline uint64_t h8s_time(const h8s_cpu_t *c)
+{
+    return c->cycles + (uint64_t)(int64_t)(c->slice - c->icount);
+}
+/* Make h8s_run return after the current instruction, counting only the
+ * states really executed (for a machine whose next event moved closer). */
+static inline void h8s_end_slice(h8s_cpu_t *c)
+{
+    c->slice -= c->icount;
+    c->icount = 0;
+}
 
 /* Memory helpers for machine code and tests (go through the page tables). */
 uint8_t  h8s_read8(h8s_cpu_t *c, uint32_t a);

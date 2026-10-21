@@ -47,6 +47,7 @@ INLINE uint8_t rd8(h8s_cpu_t *c, uint32_t a)
     c->icount--;
     const uint8_t *p = c->rpage[a >> 16];
     if (LIKELY(p != NULL)) return p[a & 0xffff];
+    if (a - c->fine_base < c->fine_size) return c->fine_mem[a - c->fine_base];
     return c->bus.read8(c->ctx, a);
 }
 
@@ -58,6 +59,10 @@ INLINE uint16_t rd16(h8s_cpu_t *c, uint32_t a)
     const uint8_t *p = c->rpage[a >> 16];
     if (LIKELY(p != NULL)) {
         p += a & 0xffff;
+        return (uint16_t)(p[0] << 8 | p[1]);
+    }
+    if (a - c->fine_base < c->fine_size) {
+        p = c->fine_mem + (a - c->fine_base);
         return (uint16_t)(p[0] << 8 | p[1]);
     }
     return c->bus.read16(c->ctx, a);
@@ -74,6 +79,7 @@ INLINE void wr8(h8s_cpu_t *c, uint32_t a, uint8_t v)
     c->icount--;
     uint8_t *p = c->wpage[a >> 16];
     if (LIKELY(p != NULL)) p[a & 0xffff] = v;
+    else if (a - c->fine_base < c->fine_size) c->fine_mem[a - c->fine_base] = v;
     else c->bus.write8(c->ctx, a, v);
 }
 
@@ -85,6 +91,10 @@ INLINE void wr16(h8s_cpu_t *c, uint32_t a, uint16_t v)
     uint8_t *p = c->wpage[a >> 16];
     if (LIKELY(p != NULL)) {
         p += a & 0xffff;
+        p[0] = (uint8_t)(v >> 8);
+        p[1] = (uint8_t)v;
+    } else if (a - c->fine_base < c->fine_size) {
+        p = c->fine_mem + (a - c->fine_base);
         p[0] = (uint8_t)(v >> 8);
         p[1] = (uint8_t)v;
     } else {
@@ -1124,6 +1134,7 @@ static void execute(h8s_cpu_t *c)
 
 int32_t h8s_run(h8s_cpu_t *c, int32_t states)
 {
+    c->slice = states;
     c->icount = states;
     while (c->icount > 0) {
         if (UNLIKELY(c->irq_check)) {
@@ -1142,7 +1153,8 @@ int32_t h8s_run(h8s_cpu_t *c, int32_t states)
         }
         execute(c);
     }
-    int32_t done = states - c->icount;
+    int32_t done = c->slice - c->icount;
     c->cycles += (uint64_t)done;
+    c->slice = c->icount = 0;
     return done;
 }

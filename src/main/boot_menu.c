@@ -7,6 +7,9 @@
  * in NVS and starts by itself after a short countdown unless the user touches
  * the screen or the button first.
  *
+ * The button in the top-left corner switches the Cybiko screen between
+ * portrait (the default) and landscape.
+ *
  * The CALIBRATE button opens the touch calibration. It also opens by itself
  * when no calibration has been made yet (none saved, none in palm.cfg), and
  * when BOOT is held for two seconds as the menu appears, for a panel so far
@@ -58,6 +61,11 @@ static card_t cards[BOOT_SYSTEM_COUNT] = {
 #define CAL_W 90
 #define CAL_H 28
 #define COLOR_BUTTON UI_RGB(0x3a, 0x3a, 0x4c)
+/* The Cybiko orientation button, top left. */
+#define ORI_X 6
+#define ORI_Y 6
+#define ORI_W 120
+#define ORI_H 28
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
@@ -93,11 +101,20 @@ static void draw_footer(int countdown)
                   COLOR_DIM, COLOR_BG);
 }
 
+static void draw_orientation(void)
+{
+    display_ui_fill(ORI_X, ORI_Y, ORI_W, ORI_H, COLOR_BUTTON);
+    text_centered(ORI_X + ORI_W / 2, ORI_Y + 10,
+                  cybiko_app_portrait() ? "CYBIKO: PORTRAIT" : "CYBIKO: LANDSCAPE", 1,
+                  COLOR_TITLE, COLOR_BUTTON);
+}
+
 static void draw_all(int selected, int countdown)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COLOR_BG);
     text_centered(BOARD_PANEL_W / 2, 10, "DRAGONFRUIT", 3, COLOR_TITLE, COLOR_BG);
     text_centered(BOARD_PANEL_W / 2, 40, "CHOOSE A SYSTEM", 2, COLOR_DIM, COLOR_BG);
+    draw_orientation();
     display_ui_fill(CAL_X, CAL_Y, CAL_W, CAL_H, COLOR_BUTTON);
     text_centered(CAL_X + CAL_W / 2, CAL_Y + 10, "CALIBRATE", 1, COLOR_TITLE, COLOR_BUTTON);
     for (int i = 0; i < BOOT_SYSTEM_COUNT; i++)
@@ -128,6 +145,11 @@ static void save_last(int system)
 static bool calibrate_at(int x, int y)
 {
     return x >= CAL_X && x < CAL_X + CAL_W && y >= CAL_Y && y < CAL_Y + CAL_H;
+}
+
+static bool orientation_at(int x, int y)
+{
+    return x >= ORI_X && x < ORI_X + ORI_W && y >= ORI_Y && y < ORI_Y + ORI_H;
 }
 
 static int card_at(int x, int y)
@@ -191,7 +213,7 @@ boot_system_t boot_menu_run(void)
     TickType_t start = xTaskGetTickCount(), pressed_at = 0;
     bool touching = false, was_pressed = input_boot_button_held(), held_fired = false;
     int touched = -1;
-    bool cal_touched = false;
+    bool cal_touched = false, ori_touched = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         TickType_t now = xTaskGetTickCount();
@@ -204,12 +226,17 @@ boot_system_t boot_menu_run(void)
             if (!touching) {
                 touched = hit;
                 cal_touched = calibrate_at(x, y);
+                ori_touched = orientation_at(x, y);
             }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
                 selected = hit;
                 draw_card(selected, true);
             }
+        } else if (touching && ori_touched) {
+            cybiko_app_set_portrait(!cybiko_app_portrait());
+            draw_orientation();
+            draw_footer(0);
         } else if (touching && cal_touched) {
             touch_calib_run();
             draw_all(selected, 0);

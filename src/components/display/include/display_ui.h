@@ -11,6 +11,10 @@
 
 #define UI_RGB(r, g, b) ((uint16_t)((((r) & 0xf8) << 8) | (((g) & 0xfc) << 3) | ((b) >> 3)))
 
+/* Row `row` (0..UI_FONT_H-1) of the glyph for `c`: 5 bits, 0x10 = leftmost
+ * dot. For callers that draw text themselves, such as rotated text. */
+int display_font_row(char c, int row);
+
 void display_ui_fill(int x, int y, int w, int h, uint16_t color);
 /* Draws `s` in the built-in 5x7 font, `scale` pixels per font dot, with each
  * character cell (including the 1-dot gap) filled with `bg`. '\n' is not

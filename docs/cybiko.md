@@ -35,9 +35,32 @@ empty RAM disk, delete `ramdisk.bin`.
 
 ## Controls
 
-The LCD is shown at 2× (320×200) in the top-left corner. If taps land in the
-wrong place, run the touch calibration from the boot menu (**CALIBRATE**, see
+The Cybiko starts in **portrait**: hold the board upright with USB at the
+bottom. The button in the top-left corner of the boot menu switches between
+**CYBIKO: PORTRAIT** and **CYBIKO: LANDSCAPE**, and the choice is remembered.
+The boot menu itself is always landscape. The Cybiko LCD is only ever zoomed by
+whole numbers, so its pixels stay square: 1× in portrait, 2× in landscape. If
+taps land in the wrong place, run the touch calibration from the boot menu
+(**CALIBRATE**, see
 [Calibrate resistive touch](jc4827w543.md#calibrate-resistive-touch)).
+
+Portrait (272×480), every key on one page:
+
+```text
++-------------------------+
+|   Cybiko LCD (160x100)  |
+| F1 F2 F3 F4 F5 F6 F7 AS |
+|      UP     | ESC  HELP |
+| LEFT SEL RIGHT| TAB DEL |
+|     DOWN    |  ON/OFF   |
+| Q W E R T Y U I O P     |
+| A S D F G H J K L .     |
+| SHIFT Z X C V B N M FN  |
+| SPACE           ENTER   |
++-------------------------+
+```
+
+Landscape (480×272), LCD at 2×:
 
 ```text
 +--------------------------+----------------+
@@ -52,7 +75,7 @@ wrong place, run the touch calibration from the boot menu (**CALIBRATE**, see
 +-------------------------------------------+
 ```
 
-- **MORE** shows F1–F7, AS and ON/OFF; **ABC** goes back.
+- In landscape, **MORE** shows F1–F7, AS and ON/OFF; **ABC** goes back.
 - The touchscreen sees one finger at a time, so **SHIFT** and **FN** latch: tap
   one, then the key. They release with that key.
 - **BOOT** is the Cybiko On/Off key. **Hold BOOT for 3 seconds** to save and

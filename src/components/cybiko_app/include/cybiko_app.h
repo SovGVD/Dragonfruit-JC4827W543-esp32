@@ -16,3 +16,8 @@ bool cybiko_app_find_files(char *rom_path, char *flash_path, size_t cap);
  * input_init() must already have run. On a fatal error the reason is shown
  * on the panel and the function returns without starting anything. */
 void cybiko_app_start(void);
+
+/* Screen orientation for Cybiko mode, kept in NVS and chosen in the boot
+ * menu: true (the default) is portrait, false landscape. */
+bool cybiko_app_portrait(void);
+void cybiko_app_set_portrait(bool portrait);

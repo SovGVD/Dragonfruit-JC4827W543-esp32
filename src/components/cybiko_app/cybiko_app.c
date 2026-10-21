@@ -25,6 +25,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -209,6 +210,30 @@ void cybiko_app_key(int key, bool down)
 }
 
 cybiko_t *cybiko_app_machine(void) { return &machine; }
+
+/* ------------------------------------------------------------------ */
+/* Orientation                                                         */
+/* ------------------------------------------------------------------ */
+
+bool cybiko_app_portrait(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 1;
+    if (nvs_open("cybiko", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "portrait", &v);
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
+void cybiko_app_set_portrait(bool portrait)
+{
+    nvs_handle_t h;
+    if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "portrait", portrait);
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 /* ------------------------------------------------------------------ */
 /* Start                                                               */

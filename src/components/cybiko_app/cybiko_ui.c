@@ -1,4 +1,23 @@
-/* Cybiko screen and on-screen keyboard on the 480x272 panel.
+/* Cybiko screen and on-screen keyboard on the 480x272 panel, in portrait
+ * (the default: the board held with its long edge vertical and USB at the
+ * bottom, like the Palm compact layout) or landscape. The boot menu picks one
+ * (cybiko_app_portrait()).
+ *
+ * Portrait, 272x480, every key on one page, LCD at 1x:
+ *
+ *        +-----------------------+
+ *        |   Cybiko LCD 160x100  |
+ *        | F1 F2 F3 F4 F5 F6 F7 AS|
+ *        |    UP     | ESC  HELP |
+ *        | LEFT SEL RIGHT TAB DEL|
+ *        |   DOWN    |  ON/OFF   |
+ *        | Q W E R T Y U I O P   |
+ *        | A S D F G H J K L .   |
+ *        | SHIFT Z X C V B N M FN|
+ *        | SPACE          ENTER  |
+ *        +-----------------------+
+ *
+ * Landscape, LCD at 2x:
  *
  *   +--------------------------+----------------+
  *   |                          | ESC   UP  HELP |
@@ -11,10 +30,12 @@
  *   | SHIFT Z X  C  V  B  N  M  FN  MORE        |
  *   +--------------------------------------------+
  *
- * MORE swaps the bottom block to F1-F7, AS and ON/OFF. Touch is single
- * point, so SHIFT and FN latch: they apply to the next key and release
- * with it. The BOOT button is the On/Off key; holding it 3 s saves to SD
- * and restarts to the boot menu. */
+ * MORE swaps the bottom block to F1-F7, AS and ON/OFF. Only whole-number LCD
+ * zoom is used, so every Cybiko pixel stays square. Key positions are in
+ * "logical" coordinates (272x480 in portrait), turned onto the panel when
+ * drawn and when a touch is read. Touch is single point, so SHIFT and FN
+ * latch: they apply to the next key and release with it. The BOOT button is
+ * the On/Off key; holding it 3 s saves to SD and restarts to the boot menu. */
 #include <string.h>
 #include "cybiko_ui.h"
 #include "display_ui.h"
@@ -23,12 +44,11 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "cybiko_app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define LCD_X 0
-#define LCD_Y 0
-#define LCD_SCALE 2
 #define PAD_X 320
 #define PAD_W 160
 #define KB_Y 200
@@ -90,7 +110,90 @@ static const ui_key_t page_more[] = {
 
 #define COUNT(a) (int)(sizeof(a) / sizeof((a)[0]))
 
-static int page;                     /* 0 letters, 1 more */
+typedef struct {
+    const ui_key_t *fixed;
+    int n_fixed;
+    const ui_key_t *pages[2];     /* the bottom block; pages[1] NULL if none */
+    int n_pages[2];
+    int lcd_x, lcd_y, lcd_scale;
+} ui_layout_t;
+
+static const ui_layout_t layout_landscape = {
+    pad_keys, COUNT(pad_keys), { page_letters, page_more },
+    { COUNT(page_letters), COUNT(page_more) }, 0, 0, 2,
+};
+
+/* Portrait keys are laid out at start-up; see build_portrait(). */
+#define P_W BOARD_PANEL_H
+#define P_H BOARD_PANEL_W
+static ui_key_t portrait_keys[64];
+static ui_layout_t layout_portrait = { portrait_keys, 0, { NULL, NULL }, { 0, 0 }, 56, 10, 1 };
+
+static void add_key(int x, int y, int w, int h, int key, int kind, bool alt, const char *label)
+{
+    if (layout_portrait.n_fixed == COUNT(portrait_keys)) return;
+    portrait_keys[layout_portrait.n_fixed++] =
+        (ui_key_t){ (int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h, (int16_t)key, (uint8_t)kind,
+                    alt, label };
+}
+
+typedef struct { int16_t key; const char *label; } key_label_t;
+
+/* A row of keys spread evenly over x0..x1 (whole pixels, no gaps). */
+static void add_row(const key_label_t *keys, int n, int x0, int x1, int y, int h)
+{
+    for (int i = 0; i < n; i++) {
+        int a = x0 + (x1 - x0) * i / n, b = x0 + (x1 - x0) * (i + 1) / n;
+        add_key(a, y, b - a, h, keys[i].key, K_NORMAL, false, keys[i].label);
+    }
+}
+
+static void build_portrait(void)
+{
+    static const key_label_t fkeys[] = {
+        { CYK_F1, "F1" }, { CYK_F2, "F2" }, { CYK_F3, "F3" }, { CYK_F4, "F4" },
+        { CYK_F5, "F5" }, { CYK_F6, "F6" }, { CYK_F7, "F7" }, { CYK_AS, "AS" },
+    };
+    static const key_label_t row0[] = {
+        { CYK_Q, "Q" }, { CYK_W, "W" }, { CYK_E, "E" }, { CYK_R, "R" }, { CYK_T, "T" },
+        { CYK_Y, "Y" }, { CYK_U, "U" }, { CYK_I, "I" }, { CYK_O, "O" }, { CYK_P, "P" },
+    };
+    static const key_label_t row1[] = {
+        { CYK_A, "A" }, { CYK_S, "S" }, { CYK_D, "D" }, { CYK_F, "F" }, { CYK_G, "G" },
+        { CYK_H, "H" }, { CYK_J, "J" }, { CYK_K, "K" }, { CYK_L, "L" }, { CYK_DOT, "." },
+    };
+    static const key_label_t row2[] = {
+        { CYK_Z, "Z" }, { CYK_X, "X" }, { CYK_C, "C" }, { CYK_V, "V" }, { CYK_B, "B" },
+        { CYK_N, "N" }, { CYK_M, "M" },
+    };
+    layout_portrait.n_fixed = 0;
+    add_row(fkeys, COUNT(fkeys), 0, P_W, 122, 36);
+    /* gamepad: a cross of 40 px keys */
+    const int c = 40, gx = 8, gy = 166;
+    add_key(gx + c, gy, c, c, CYK_UP, K_NORMAL, true, "UP");
+    add_key(gx, gy + c, c, c, CYK_LEFT, K_NORMAL, true, "LEFT");
+    add_key(gx + c, gy + c, c, c, CYK_SELECT, K_NORMAL, true, "SEL");
+    add_key(gx + 2 * c, gy + c, c, c, CYK_RIGHT, K_NORMAL, true, "RIGHT");
+    add_key(gx + c, gy + 2 * c, c, c, CYK_DOWN, K_NORMAL, true, "DOWN");
+    add_key(132, gy, 70, c, CYK_ESC, K_NORMAL, true, "ESC");
+    add_key(202, gy, 70, c, CYK_HELP, K_NORMAL, true, "HELP");
+    add_key(132, gy + c, 70, c, CYK_TAB, K_NORMAL, true, "TAB");
+    add_key(202, gy + c, 70, c, CYK_DEL, K_NORMAL, true, "DEL");
+    add_key(132, gy + 2 * c, 140, c, CYK_ONOFF, K_NORMAL, true, "ON/OFF");
+    /* keyboard: four 47 px rows down to the bottom edge */
+    const int ky = 292, kh = 47;
+    add_row(row0, COUNT(row0), 0, P_W, ky, kh);
+    add_row(row1, COUNT(row1), 0, P_W, ky + kh, kh);
+    add_key(0, ky + 2 * kh, 40, kh, CYK_SHIFT, K_SHIFT, false, "SHIFT");
+    add_row(row2, COUNT(row2), 40, P_W - 40, ky + 2 * kh, kh);
+    add_key(P_W - 40, ky + 2 * kh, 40, kh, CYK_FN, K_FN, false, "FN");
+    add_key(0, ky + 3 * kh, 204, kh, CYK_SPACE, K_NORMAL, false, "SPACE");
+    add_key(204, ky + 3 * kh, P_W - 204, kh, CYK_ENTER, K_NORMAL, false, "ENTER");
+}
+
+static const ui_layout_t *L;
+static bool portrait;
+static int page;                     /* 0 letters, 1 more (landscape only) */
 static bool shift_on, fn_on;
 static const ui_key_t *held;         /* key whose press is in progress */
 static int64_t held_since;
@@ -99,26 +202,81 @@ static int64_t held_since;
 /* Drawing                                                             */
 /* ------------------------------------------------------------------ */
 
+/* Scratch image for one key or box, big-endian RGB565, in PSRAM. */
+#define BOX_MAX_PX (BOARD_PANEL_W * 48)
+static uint8_t *box;
+static uint8_t line[BOARD_PANEL_W * 2];
+
+/* Logical rectangle to panel window. Portrait turns the picture 90 degrees
+ * clockwise: logical (u, v) lands on panel (479 - v, u). */
+static void window(int x, int y, int w, int h)
+{
+    if (portrait) display_ui_window(BOARD_PANEL_W - y - h, x, h, w);
+    else display_ui_window(x, y, w, h);
+}
+
+/* Writes a w x h logical image to logical (x, y). */
+static void blit(int x, int y, int w, int h, const uint8_t *img)
+{
+    window(x, y, w, h);
+    if (!portrait) {
+        for (int j = 0; j < h; j++) display_ui_write_row(img + j * w * 2, w);
+        return;
+    }
+    for (int i = 0; i < w; i++) {            /* each logical column is a panel row */
+        uint8_t *d = line;
+        for (int j = h - 1; j >= 0; j--, d += 2) {
+            d[0] = img[(j * w + i) * 2];
+            d[1] = img[(j * w + i) * 2 + 1];
+        }
+        display_ui_write_row(line, h);
+    }
+}
+
+static void box_put(int w, int x, int y, uint16_t c)
+{
+    box[(y * w + x) * 2] = (uint8_t)(c >> 8);
+    box[(y * w + x) * 2 + 1] = (uint8_t)c;
+}
+
+/* A framed box with a centred label, drawn at logical (x, y). */
+static void draw_box(int x, int y, int w, int h, uint16_t bg, const char *label)
+{
+    if (!box || w * h > BOX_MAX_PX) return;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            box_put(w, i, j, i == 0 || j == 0 || i == w - 1 || j == h - 1 ? COL_EDGE : bg);
+    if (label[0]) {
+        int scale = display_ui_text_width(label, 2) <= w - 6 && h >= 20 ? 2 : 1;
+        int tw = display_ui_text_width(label, scale) - scale, th = UI_FONT_H * scale;
+        int tx = (w - tw) / 2, ty = (h - th) / 2;
+        for (int n = 0; label[n]; n++) {
+            for (int r = 0; r < th; r++) {
+                int bits = display_font_row(label[n], r / scale);
+                for (int c = 0; c < 5 * scale; c++) {
+                    int px = tx + n * 6 * scale + c, py = ty + r;
+                    if ((bits & (0x10 >> (c / scale))) && px >= 0 && px < w && py >= 0 && py < h)
+                        box_put(w, px, py, COL_LABEL);
+                }
+            }
+        }
+    }
+    blit(x, y, w, h, box);
+}
+
 static void draw_key(const ui_key_t *k, bool lit)
 {
     uint16_t bg = lit ? COL_KEY_ON : k->alt ? COL_KEY_ALT : COL_KEY;
     if (k->kind == K_SHIFT && shift_on) bg = COL_KEY_ON;
     if (k->kind == K_FN && fn_on) bg = COL_KEY_ON;
     if (k->kind == K_NONE) bg = COL_BG;
-    display_ui_fill(k->x, k->y, k->w, k->h, COL_EDGE);
-    display_ui_fill(k->x + 1, k->y + 1, k->w - 2, k->h - 2, bg);
-    if (!k->label[0]) return;
-    int scale = display_ui_text_width(k->label, 2) <= k->w - 6 && k->h >= 20 ? 2 : 1;
-    int tw = display_ui_text_width(k->label, scale) - scale;
-    int th = UI_FONT_H * scale;
-    display_ui_text(k->x + (k->w - tw) / 2, k->y + (k->h - th) / 2, k->label, scale, COL_LABEL, bg);
+    draw_box(k->x, k->y, k->w, k->h, bg, k->label);
 }
 
 static const ui_key_t *page_keys(int *n)
 {
-    if (page) { *n = COUNT(page_more); return page_more; }
-    *n = COUNT(page_letters);
-    return page_letters;
+    *n = L->n_pages[page];
+    return L->pages[page];
 }
 
 static void draw_keyboard(void)
@@ -131,7 +289,7 @@ static void draw_keyboard(void)
 static void draw_all(void)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COL_BG);
-    for (int i = 0; i < COUNT(pad_keys); i++) draw_key(&pad_keys[i], false);
+    for (int i = 0; i < L->n_fixed; i++) draw_key(&L->fixed[i], false);
     draw_keyboard();
 }
 
@@ -153,17 +311,27 @@ static void build_lut(void)
 
 static void draw_lcd(const uint8_t *lum)
 {
-    static uint8_t row[CY_LCD_W * LCD_SCALE * 2];
-    display_ui_window(LCD_X, LCD_Y, CY_LCD_W * LCD_SCALE, CY_LCD_H * LCD_SCALE);
-    for (int y = 0; y < CY_LCD_H; y++) {
-        const uint8_t *src = lum + y * CY_LCD_W;
-        uint8_t *d = row;
-        for (int x = 0; x < CY_LCD_W; x++) {
-            const uint8_t *c = lut[src[x]];
-            d[0] = c[0]; d[1] = c[1]; d[2] = c[0]; d[3] = c[1];
-            d += 4;
+    const int s = L->lcd_scale, w = CY_LCD_W * s, h = CY_LCD_H * s;
+    window(L->lcd_x, L->lcd_y, w, h);
+    if (!portrait) {
+        for (int y = 0; y < CY_LCD_H; y++) {
+            const uint8_t *src = lum + y * CY_LCD_W;
+            uint8_t *d = line;
+            for (int x = 0; x < w; x++, d += 2) {
+                const uint8_t *c = lut[src[x / s]];
+                d[0] = c[0]; d[1] = c[1];
+            }
+            for (int i = 0; i < s; i++) display_ui_write_row(line, w);
         }
-        for (int i = 0; i < LCD_SCALE; i++) display_ui_write_row(row, CY_LCD_W * LCD_SCALE);
+        return;
+    }
+    for (int i = 0; i < w; i++) {            /* each LCD column is a panel row */
+        uint8_t *d = line;
+        for (int j = h - 1; j >= 0; j--, d += 2) {
+            const uint8_t *c = lut[lum[(j / s) * CY_LCD_W + i / s]];
+            d[0] = c[0]; d[1] = c[1];
+        }
+        display_ui_write_row(line, h);
     }
 }
 
@@ -173,9 +341,10 @@ static void draw_lcd(const uint8_t *lum)
 
 static const ui_key_t *hit(int x, int y)
 {
-    for (int i = 0; i < COUNT(pad_keys); i++) {
-        const ui_key_t *k = &pad_keys[i];
-        if (x >= k->x && x < k->x + k->w && y >= k->y && y < k->y + k->h) return k;
+    for (int i = 0; i < L->n_fixed; i++) {
+        const ui_key_t *k = &L->fixed[i];
+        if (x >= k->x && x < k->x + k->w && y >= k->y && y < k->y + k->h)
+            return k->kind == K_NONE ? NULL : k;
     }
     int n;
     const ui_key_t *keys = page_keys(&n);
@@ -187,8 +356,9 @@ static const ui_key_t *hit(int x, int y)
     return NULL;
 }
 
-static void touch_down(int x, int y)
+static void touch_down(int px, int py)
 {
+    int x = portrait ? py : px, y = portrait ? BOARD_PANEL_W - 1 - px : py;
     const ui_key_t *k = hit(x, y);
     if (!k) return;
     switch (k->kind) {
@@ -201,7 +371,7 @@ static void touch_down(int x, int y)
         draw_key(k, false);
         return;
     case K_PAGE:
-        page ^= 1;
+        if (L->pages[1]) page ^= 1;
         draw_keyboard();
         return;
     default:
@@ -224,7 +394,11 @@ static void release_held(void)
     shift_on = fn_on = false;
     draw_key(held, false);
     held = NULL;
-    if (redraw) draw_keyboard();
+    if (redraw) {
+        for (int i = 0; i < L->n_fixed; i++)
+            if (L->fixed[i].kind == K_SHIFT || L->fixed[i].kind == K_FN) draw_key(&L->fixed[i], false);
+        draw_keyboard();
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -239,6 +413,10 @@ static void ui_task(void *arg)
     int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0;
 
     build_lut();
+    portrait = cybiko_app_portrait();
+    if (portrait) build_portrait();
+    L = portrait ? &layout_portrait : &layout_landscape;
+    box = heap_caps_malloc(BOX_MAX_PX * 2, MALLOC_CAP_SPIRAM);
     draw_all();
     for (;;) {
         int64_t now = esp_timer_get_time();
@@ -260,8 +438,7 @@ static void ui_task(void *arg)
         }
         if (boot && now - boot_since > 3000000) {
             if (onoff_held) cybiko_app_key(CYK_ONOFF, false);
-            display_ui_fill(0, 0, CY_LCD_W * LCD_SCALE, CY_LCD_H * LCD_SCALE, COL_BG);
-            display_ui_text(40, 90, "SAVING...", 3, COL_LABEL, COL_BG);
+            draw_box(L->lcd_x, L->lcd_y, CY_LCD_W, CY_LCD_H, COL_BG, "SAVING...");
             cybiko_app_save(false);
             esp_restart();
         }

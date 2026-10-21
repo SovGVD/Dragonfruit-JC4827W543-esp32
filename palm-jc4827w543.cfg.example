@@ -24,16 +24,19 @@ sound.volume = 60
 # Native panel coordinates, x=0..479, y=0..271; rotation 0 is upright.
 # The portrait preset renders the LCD at native 160x160 (1:1), with no enlargement.
 
-# Resistive XPT2046 calibration. Starting values; tune to your panel.
+# Resistive XPT2046 calibration. Normally done on the board instead: the boot
+# menu's CALIBRATE button (or BOOT held at power-on), saved in flash, overrides
+# the ranges below. Leave touch.x_min commented out so the calibration screen
+# opens by itself on the first start. Starting values:
 # Raw X = D0 ADC, raw Y = 90 ADC. Min/max apply AFTER swap_xy.
 # Pixel inversion is applied after mapping min..max to 0..width/height-1.
-touch.x_min = 200
-touch.x_max = 3900
-touch.y_min = 200
-touch.y_max = 3900
-touch.swap_xy = 0
-touch.invert_x = 1
-touch.invert_y = 1
+# touch.x_min = 200
+# touch.x_max = 3900
+# touch.y_min = 200
+# touch.y_max = 3900
+# touch.swap_xy = 0
+# touch.invert_x = 1
+# touch.invert_y = 1
 touch.pressure_min = 400
 # Set to 1 to log raw coordinates at most 5 times/second while drawing.
 touch.log_raw = 0

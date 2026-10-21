@@ -18,6 +18,21 @@ esp_err_t input_init(void);
  * keyboard). Samples the controller directly; returns false while untouched.
  * Not for use while the input task is polling. XPT2046 only; others return false. */
 bool input_touch_panel(int *x, int *y);
+/* Resistive touch calibration (XPT2046 only; elsewhere these do nothing and
+ * report TOUCH_CAL_DEFAULT / false). Where the calibration in use came from: */
+typedef enum { TOUCH_CAL_DEFAULT, TOUCH_CAL_CONFIG, TOUCH_CAL_SAVED } touch_cal_source_t;
+/* Loads the calibration saved by the on-screen calibration from NVS, if any; it
+ * replaces the touch.* bounds from palm.cfg. Call after nvs_flash_init(). */
+touch_cal_source_t input_touch_load_saved(void);
+/* Raw {D0, 90} conversion pair while touched, like input_touch_panel(). */
+bool input_touch_raw(int *raw_x, int *raw_y);
+/* Works out a calibration from taps on four targets at the corners of
+ * (x0,y0)-(x1,y1): top-left, top-right, bottom-right, bottom-left. On success
+ * it is used at once, so the caller can check it, then
+ * input_touch_calibration_commit(true) saves it to NVS and false goes back to
+ * the previous one. Returns false if the taps were inconsistent. */
+bool input_touch_calibration_try(const int raw[4][2], int x0, int y0, int x1, int y1);
+void input_touch_calibration_commit(bool keep);
 /* Live level of the BOOT/power button (true while held). */
 bool input_boot_button_held(void);
 void input_poll(void);

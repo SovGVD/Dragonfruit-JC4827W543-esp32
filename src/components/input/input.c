@@ -507,4 +507,12 @@ void input_poll(void)
 
 /* The GT911 path reports touches through the Palm layout only. */
 bool input_touch_panel(int *x, int *y) { (void)x; (void)y; return false; }
+touch_cal_source_t input_touch_load_saved(void) { return TOUCH_CAL_DEFAULT; }
+bool input_touch_raw(int *raw_x, int *raw_y) { (void)raw_x; (void)raw_y; return false; }
+bool input_touch_calibration_try(const int raw[4][2], int x0, int y0, int x1, int y1)
+{
+    (void)raw; (void)x0; (void)y0; (void)x1; (void)y1;
+    return false;
+}
+void input_touch_calibration_commit(bool keep) { (void)keep; }
 bool input_boot_button_held(void) { return !gpio_get_level(PIN_BTN_M); }

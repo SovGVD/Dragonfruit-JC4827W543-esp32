@@ -5,13 +5,19 @@
  * Tap a card to start it. The BOOT button cycles the selection with a short
  * press and starts it with a one-second hold. The last system started is kept
  * in NVS and starts by itself after a short countdown unless the user touches
- * the screen or the button first. */
+ * the screen or the button first.
+ *
+ * The CALIBRATE button opens the touch calibration. It also opens by itself
+ * when no calibration has been made yet (none saved, none in palm.cfg), and
+ * when BOOT is held for two seconds as the menu appears, for a panel so far
+ * off that the button can't be hit. */
 #include "boot_menu.h"
 #include "board.h"
 #include "display_ui.h"
 #include "input.h"
 #include "m5_sd.h"
 #include "cybiko_app.h"
+#include "touch_calib.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -25,6 +31,7 @@ static const char *TAG = "boot_menu";
 
 #define AUTOBOOT_SECONDS 5
 #define HOLD_MS 1000
+#define CALIB_HOLD_MS 2000
 
 #define COLOR_BG     UI_RGB(0x14, 0x14, 0x1c)
 #define COLOR_TITLE  UI_RGB(0xff, 0xff, 0xff)
@@ -44,6 +51,13 @@ static card_t cards[BOOT_SYSTEM_COUNT] = {
     [BOOT_SYSTEM_PALM]   = { "PALM OS", "/PALMOS", "NO PALM.ROM", UI_RGB(0x2c, 0x5a, 0x34) },
     [BOOT_SYSTEM_CYBIKO] = { "CYBIKO",  "/CYBIKO", "NO ROM/FLASH", UI_RGB(0x28, 0x40, 0x78) },
 };
+
+/* The CALIBRATE button, top right. */
+#define CAL_X 384
+#define CAL_Y 6
+#define CAL_W 90
+#define CAL_H 28
+#define COLOR_BUTTON UI_RGB(0x3a, 0x3a, 0x4c)
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
@@ -84,6 +98,8 @@ static void draw_all(int selected, int countdown)
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COLOR_BG);
     text_centered(BOARD_PANEL_W / 2, 10, "DRAGONFRUIT", 3, COLOR_TITLE, COLOR_BG);
     text_centered(BOARD_PANEL_W / 2, 40, "CHOOSE A SYSTEM", 2, COLOR_DIM, COLOR_BG);
+    display_ui_fill(CAL_X, CAL_Y, CAL_W, CAL_H, COLOR_BUTTON);
+    text_centered(CAL_X + CAL_W / 2, CAL_Y + 10, "CALIBRATE", 1, COLOR_TITLE, COLOR_BUTTON);
     for (int i = 0; i < BOOT_SYSTEM_COUNT; i++)
         draw_card(i, i == selected);
     draw_footer(countdown);
@@ -107,6 +123,11 @@ static void save_last(int system)
     nvs_set_u8(h, "last", (uint8_t)system);
     nvs_commit(h);
     nvs_close(h);
+}
+
+static bool calibrate_at(int x, int y)
+{
+    return x >= CAL_X && x < CAL_X + CAL_W && y >= CAL_Y && y < CAL_Y + CAL_H;
 }
 
 static int card_at(int x, int y)
@@ -136,6 +157,16 @@ boot_system_t boot_menu_run(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+    bool calibrate = input_touch_load_saved() == TOUCH_CAL_DEFAULT;
+    if (!calibrate && input_boot_button_held()) {
+        TickType_t t0 = xTaskGetTickCount();
+        while (input_boot_button_held() && !calibrate) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            calibrate = xTaskGetTickCount() - t0 >= pdMS_TO_TICKS(CALIB_HOLD_MS);
+        }
+    }
+    if (calibrate) touch_calib_run();
+
     /* Without a card the Palm path shows the "no SD card" screen. */
     if (!scan_card()) return BOOT_SYSTEM_PALM;
 
@@ -160,6 +191,7 @@ boot_system_t boot_menu_run(void)
     TickType_t start = xTaskGetTickCount(), pressed_at = 0;
     bool touching = false, was_pressed = input_boot_button_held(), held_fired = false;
     int touched = -1;
+    bool cal_touched = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         TickType_t now = xTaskGetTickCount();
@@ -169,12 +201,19 @@ boot_system_t boot_menu_run(void)
         if (down) {
             countdown = 0;
             int hit = card_at(x, y);
-            if (!touching) touched = hit;
+            if (!touching) {
+                touched = hit;
+                cal_touched = calibrate_at(x, y);
+            }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
                 selected = hit;
                 draw_card(selected, true);
             }
+        } else if (touching && cal_touched) {
+            touch_calib_run();
+            draw_all(selected, 0);
+            was_pressed = false;
         } else if (touching) {
             /* Start on release over the card the touch began on. */
             if (touched >= 0 && touched == selected && cards[selected].ready) break;

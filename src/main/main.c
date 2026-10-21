@@ -1085,8 +1085,8 @@ void app_main(void)
     ESP_LOGI(TAG, "=== Dragonfruit on %s ===", BOARD_NAME);
 
 #if CONFIG_BOARD_JC4827W543
-    /* Touch first: the boot menu needs it. Its calibration comes from
-     * /PalmOS/palm.cfg and applies to both systems. */
+    /* Touch first: the boot menu needs it. Its calibration (on-screen, saved
+     * in NVS, else the touch.* keys of /PalmOS/palm.cfg) serves both systems. */
     err = input_init();
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Input init failed: %s", esp_err_to_name(err));

@@ -35,9 +35,9 @@ empty RAM disk, delete `ramdisk.bin`.
 
 ## Controls
 
-The LCD is shown at 2× (320×200) in the top-left corner. Touch uses the
-calibration from `/PalmOS/palm.cfg`, so calibrate once in Palm mode if taps
-land in the wrong place.
+The LCD is shown at 2× (320×200) in the top-left corner. If taps land in the
+wrong place, run the touch calibration from the boot menu (**CALIBRATE**, see
+[Calibrate resistive touch](jc4827w543.md#calibrate-resistive-touch)).
 
 ```text
 +--------------------------+----------------+

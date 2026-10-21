@@ -1,6 +1,6 @@
 set(main_srcs "main.c" "debug_console.c" "serial_bridge.c")
 if(CONFIG_BOARD_JC4827W543)
-    list(APPEND main_srcs "boot_menu.c")
+    list(APPEND main_srcs "boot_menu.c" "touch_calib.c")
 endif()
 
 idf_component_register(

@@ -19,10 +19,11 @@ images. They are the MAME `cybikoxt` set:
 | Boot ROM | 32 KB | `bootrom.bin`, `cyrom150.bin`, `xtreme-rom.bin` |
 | CyOS flash | 512 KB | `flash.bin`, `cyos_v1508.bin`, `xtreme-flash.bin` |
 
+Games and apps go in `/Cybiko/apps` (see [Games and apps](#games-and-apps)).
 The firmware writes these itself:
 
 ```text
-ramdisk.bin   the 512 KB battery-backed RAM disk where CyOS keeps user files
+ramdisk.bin   the RAM disk where CyOS keeps user files, 4 MB by default
 state.bin     the Cybiko clock, so the time survives restarts
 flash.bin     only if CyOS reprograms its flash (an OS update); being the
               first flash name, it then replaces the original image
@@ -30,8 +31,58 @@ cybiko.cfg    optional settings, written by you (see below)
 ```
 
 The RAM disk is saved within 30 seconds of a change, once the screen has not
-been touched for 2 seconds, and when you hold BOOT to leave. To start from an
-empty RAM disk, delete `ramdisk.bin`.
+been touched for 2 seconds, and when you hold BOOT to leave. Only the parts
+that changed are written. To start from an empty RAM disk, delete
+`ramdisk.bin`.
+
+## Storage
+
+A real Cybiko Xtreme keeps user files in a 512 KB battery-backed RAM disk.
+Here the RAM disk is bigger, 4 MB by default, and lives in `ramdisk.bin` on
+the SD card. Set its size in `cybiko.cfg`:
+
+```ini
+disk.size = 4    # MB, 1-6 (default 4)
+```
+
+The disk only grows: an existing `ramdisk.bin` that is bigger than
+`disk.size` keeps its size. A 512 KB `ramdisk.bin` from older firmware keeps
+its files and grows to the new size on the first start. A bigger disk makes
+CyOS take longer to start: it checks every page of the disk, which adds about
+2 seconds per MB at full speed.
+
+How it works: CyOS 1.5.08 sets up its RAM disk with a fixed address and size.
+The firmware patches those two numbers in the kernel after the boot loader
+has unpacked it and before it runs, and moves the disk to addresses the real
+machine leaves free (`800000`-`dfffff`, so at most 6 MB). The format on the
+disk is unchanged.
+
+The Xtreme's MP3 player add-on also stored files, on a SmartMedia card. It
+was a separate computer (its own H8S CPU and firmware, linked through the
+expansion connector), and CyOS 1.5.08 has its memory card support stubbed
+out, so it is not emulated; the bigger RAM disk takes its place.
+
+## Games and apps
+
+Put Cybiko Xtreme programs (`.app` files) and the files that come with them
+in `/Cybiko/apps` on the SD card:
+
+```text
+/Cybiko/apps/game.app
+/Cybiko/apps/game.dat
+```
+
+At start the firmware copies each file there onto the RAM disk if the disk
+does not have a file of that name yet. Files already on the disk are left
+alone, so game saves and other changes CyOS makes are kept. To update a
+program, delete it on the Cybiko (or delete `ramdisk.bin`) and it is copied
+again on the next start. A program you delete on the Cybiko comes back on the
+next start while it is still in `/Cybiko/apps`. Names can be up to 58
+characters long. Files that do not fit on the RAM disk are skipped and
+reported on the serial monitor.
+
+These must be programs for the Cybiko Xtreme. Programs for the original
+Cybiko (Classic) do not run on it.
 
 ## Controls
 
@@ -134,7 +185,10 @@ build-host/cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin \
 It prints the text on SCI1 and SCI2 to stdout and bytes on SCI0 to stderr as
 hex, then a summary: emulation speed and anything the model saw but
 does not cover (unmapped accesses, undefined opcodes, DMA DREQ use, watchdog
-resets). `--ramdisk FILE` loads and saves a RAM disk as on the board.
+resets). `--ramdisk FILE` loads and saves a RAM disk as on the board,
+`--disk-size KB` makes it bigger as the firmware does (the board uses 4096),
+`--install FILE` copies a file onto it first, and `--ls` lists its files at
+the end.
 
 ## Status and limits
 
@@ -146,11 +200,15 @@ resets). `--ramdisk FILE` loads and saves a RAM disk as on the board.
   Software DTC activation and the DREQ pins are not; the runner counts DREQ
   use.
 - The USB controller ignores writes.
+- The bigger RAM disk is found by matching the RAM disk set-up code of CyOS
+  1.5.08. With another CyOS version that code may differ; the disk then stays
+  at 512 KB, and the serial monitor says "CyOS RAM disk set-up not recognised".
 
 ## Future improvements
 
 - **MP3 module.** The Xtreme had an optional MP3 player add-on (CY65P10).
   Emulating it through the board's speaker is planned but has low priority.
+  Its storage is covered by the bigger RAM disk (see [Storage](#storage)).
 - **Mesh network and internet gateway.** Cybikos formed a mesh, and one device
   connected to a PC could share internet access, including the WAP browser,
   with all the others. The plan is to emulate the radio over ESP-NOW and let a

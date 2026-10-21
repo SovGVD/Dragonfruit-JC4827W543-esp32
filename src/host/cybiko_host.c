@@ -4,7 +4,11 @@
  *   cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin [options]
  *
  *   --seconds S        emulated seconds to run (default 20)
- *   --ramdisk FILE     load the 512 KB RAM disk from FILE and save it back
+ *   --ramdisk FILE     load the RAM disk from FILE and save it back
+ *   --disk-size KB     move the RAM disk to 800000 and make it KB kilobytes
+ *                      (a multiple of 64), as the firmware does
+ *   --install FILE     copy FILE onto the RAM disk before starting (repeatable)
+ *   --ls               list the files on the RAM disk at the end
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
  *                      (checked every 100 ms of emulated time)
@@ -21,6 +25,7 @@
 #include <strings.h>
 #include <time.h>
 #include <ctype.h>
+#include <libgen.h>
 #include "cybiko.h"
 
 static const struct { const char *name; int key; } key_names[] = {
@@ -37,6 +42,17 @@ static const struct { const char *name; int key; } key_names[] = {
     { "shift", CYK_SHIFT }, { "fn", CYK_FN }, { "help", CYK_HELP }, { "dot", CYK_DOT },
     { "onoff", CYK_ONOFF },
 };
+
+#define MAX_INSTALL 32
+static const char *installs[MAX_INSTALL];
+static int ninstalls;
+
+static bool print_file(void *user, const cy_disk_file_t *f)
+{
+    (void)user;
+    fprintf(stderr, "  %7u  %s\n", (unsigned)f->size, f->name);
+    return true;
+}
 
 #define MAX_PRESSES 64
 static struct { int key; uint64_t at, until; bool down; } presses[MAX_PRESSES];
@@ -87,6 +103,8 @@ int main(int argc, char **argv)
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
     const char *shot = NULL, *frames = NULL;
     double seconds = 20;
+    unsigned disk_kb = 0;
+    bool ls = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--rom") && v) { rom_path = v; i++; }
@@ -95,6 +113,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--seconds") && v) { seconds = atof(v); i++; }
         else if (!strcmp(a, "--screenshot") && v) { shot = v; i++; }
         else if (!strcmp(a, "--frames") && v) { frames = v; i++; }
+        else if (!strcmp(a, "--disk-size") && v) { disk_kb = (unsigned)atoi(v); i++; }
+        else if (!strcmp(a, "--install") && v && ninstalls < MAX_INSTALL) { installs[ninstalls++] = v; i++; }
+        else if (!strcmp(a, "--ls")) ls = true;
         else if (!strcmp(a, "--press") && v && npresses < MAX_PRESSES) {
             char name[32];
             unsigned ms, dur = 200;
@@ -109,7 +130,8 @@ int main(int argc, char **argv)
             i++;
         } else {
             fprintf(stderr, "usage: %s --rom FILE --flash FILE [--ramdisk FILE] [--seconds S]\n"
-                            "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n", argv[0]);
+                            "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n"
+                            "       [--disk-size KB] [--install FILE]... [--ls]\n", argv[0]);
             return 2;
         }
     }
@@ -124,18 +146,33 @@ int main(int argc, char **argv)
     free(r);
     uint8_t *flash = load(flash_path, CY_FLASH_SIZE, NULL, true);
     uint8_t *ram = calloc(1, CY_RAM_SIZE);
+    uint32_t disk_size = disk_kb ? disk_kb * 1024u : CY_RAMDISK_SIZE;
+    uint8_t *disk = disk_kb ? calloc(1, disk_size) : ram;
     if (ramdisk_path) {
         FILE *f = fopen(ramdisk_path, "rb");
         if (f) {
-            size_t n = fread(ram, 1, CY_RAMDISK_SIZE, f);
+            size_t n = fread(disk, 1, disk_size, f);
             fclose(f);
             fprintf(stderr, "ramdisk: loaded %zu bytes\n", n);
         }
+    }
+    for (int i = 0; i < ninstalls; i++) {
+        size_t len;
+        uint8_t *data = load(installs[i], 8u << 20, &len, false);
+        char path[512];
+        snprintf(path, sizeof path, "%s", installs[i]);
+        const char *name = basename(path);
+        uint32_t date = (uint32_t)(time(NULL) + 2208988800LL);
+        int r = cy_disk_write(disk, disk_size, name, data, (uint32_t)len, date);
+        fprintf(stderr, "install %s (%zu bytes): %s\n", name, len,
+                r == 0 ? "ok" : r == -1 ? "no room" : "bad name");
+        free(data);
     }
 
     static cybiko_t m;
     cy_host_t host = { .serial_tx = on_tx, .wall_time = wall };
     cybiko_init(&m, &host, rom, flash, ram);
+    if (disk_kb) cybiko_set_disk(&m, disk, disk_size);
 
     static uint8_t lum[CY_LCD_W * CY_LCD_H];
     uint32_t last_version = 0xffffffff;
@@ -177,8 +214,14 @@ int main(int argc, char **argv)
     }
     if (ramdisk_path) {
         FILE *f = fopen(ramdisk_path, "wb");
-        if (f) { fwrite(ram, 1, CY_RAMDISK_SIZE, f); fclose(f); }
+        if (f) { fwrite(disk, 1, disk_size, f); fclose(f); }
     }
+    if (ls) {
+        fprintf(stderr, "RAM disk (%u KB, %u bytes free):\n", (unsigned)(disk_size / 1024),
+                (unsigned)cy_disk_free(disk, disk_size));
+        cy_disk_list(disk, disk_size, print_file, NULL);
+    }
+    if (disk_kb) fprintf(stderr, "kernel patched %u time(s) for the bigger RAM disk\n", m.disk_patched);
     if (m.flash.dirty) {
         fprintf(stderr, "note: the OS wrote to flash (not saved by this runner)\n");
     }

@@ -274,6 +274,11 @@ static void bus_write16(void *ctx, uint32_t a, uint16_t v)
         return;
     }
     if (a >= FLASH_BASE && a < 0x800000u) { cy_flash_write16(m, (a - FLASH_BASE) & (CY_FLASH_SIZE - 1), v); return; }
+    if (a - CY_DISK_BASE < m->disk_size) {
+        cy_disk_write8(m, a - CY_DISK_BASE, (uint8_t)(v >> 8));
+        cy_disk_write8(m, a - CY_DISK_BASE + 1, (uint8_t)v);
+        return;
+    }
     if (a == 0x100000u) {
         cy_lcd_write(&m->lcd, 0, (uint8_t)(v >> 8));
         cy_lcd_write(&m->lcd, 1, (uint8_t)v);
@@ -296,6 +301,7 @@ static void bus_write8(void *ctx, uint32_t a, uint8_t v)
         return;
     }
     if (a >= 0x200000u && a < 0x200004u) return;
+    if (a - CY_DISK_BASE < m->disk_size) { cy_disk_write8(m, a - CY_DISK_BASE, v); return; }
     if (a < 0x40000u) return;
     m->unmapped_writes++;
 }

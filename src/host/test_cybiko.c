@@ -360,6 +360,61 @@ static void test_dma(void)
     CHECK(m.pend[82 >> 5] & 1u << (82 & 31));
 }
 
+/* Files in a RAM disk image, and moving the RAM disk out of main RAM. */
+static void test_disk(void)
+{
+    static uint8_t disk[CY_RAMDISK_SIZE], data[1000], back[1200];
+    memset(disk, 0, sizeof disk);
+    for (size_t i = 0; i < sizeof data; i++) data[i] = (uint8_t)(i * 7);
+    uint32_t free0 = cy_disk_free(disk, sizeof disk);
+    CHECK(free0 == 178 + (CY_RAMDISK_SIZE / 258 - 5 - 1) * 250);
+    CHECK(cy_disk_write(disk, sizeof disk, "game.app", data, sizeof data, 3155673600u) == 0);
+    CHECK(cy_disk_write(disk, sizeof disk, "notes.txt", (const uint8_t *)"hi", 2, 0) == 0);
+    cy_disk_file_t f;
+    CHECK(cy_disk_find(disk, sizeof disk, "game.app", &f) && f.size == 1000 && f.id == 0);
+    CHECK(cy_disk_find(disk, sizeof disk, "notes.txt", &f) && f.size == 2 && f.id == 5);
+    CHECK(cy_disk_read(disk, sizeof disk, "game.app", back, sizeof back) == 1000);
+    CHECK(memcmp(back, data, sizeof data) == 0);
+    /* first page of game.app: header fields as CyOS writes them */
+    const uint8_t *b = disk + 5 * 258 + 2;
+    CHECK(b[0] == 0x80 && b[1] == 178 && b[6] == 0x20 && !strcmp((const char *)b + 7, "game.app"));
+    CHECK(b[0x45] == 0x7b && b[0x46] == 0xff && b[0x47] == 0xff);
+    CHECK(b[0x4a] == 0xbc && b[0x4b] == 0x17 && b[0x4c] == 0xc2 && b[0x4d] == 0x00);
+    CHECK(cy_disk_free(disk, sizeof disk) == free0 - 6 * 250);
+    /* replacing reuses the freed pages; the id follows the first block */
+    CHECK(cy_disk_write(disk, sizeof disk, "game.app", data, 100, 0) == 0);
+    CHECK(cy_disk_find(disk, sizeof disk, "game.app", &f) && f.size == 100 && f.id == 0);
+    CHECK(cy_disk_read(disk, sizeof disk, "notes.txt", back, sizeof back) == 2 && !memcmp(back, "hi", 2));
+    CHECK(cy_disk_delete(disk, sizeof disk, "notes.txt"));
+    CHECK(!cy_disk_find(disk, sizeof disk, "notes.txt", NULL));
+    CHECK(cy_disk_write(disk, sizeof disk, "huge", disk, sizeof disk, 0) == -1);
+    CHECK(!cy_disk_find(disk, sizeof disk, "huge", NULL));
+    CHECK(cy_disk_write(disk, sizeof disk, "", data, 1, 0) == -2);
+
+    /* The kernel's RAM disk set-up is patched when the loader says
+     * "Starting 0x"; the disk then answers at CY_DISK_BASE. */
+    static const unsigned char idle[] = { 0x00, 0x00, 0x01, 0x00, 0x40, 0xfe };  /* reset vector, bra . */
+    boot(idle, sizeof idle);
+    static const uint8_t ctor[] = {
+        0x7a, 0x02, 0x00, 0x00, 0x07, 0xd0, 0x01, 0x00, 0x6d, 0xf2, 0x79, 0x02, 0x01, 0x00,
+        0x01, 0x00, 0x6d, 0xf2, 0x7a, 0x02, 0x00, 0x08, 0x00, 0x00, 0x7a, 0x01, 0x00, 0x40, 0x00, 0x00,
+    };
+    memcpy(ram + 0xa3512, ctor, sizeof ctor);
+    static uint8_t big[0x200000];
+    cybiko_set_disk(&m, big, sizeof big);
+    for (const char *c = "Starting 0x4a3bf8...\n"; *c; c++) cy_disk_console(&m, (uint8_t)*c);
+    CHECK(m.disk_patched == 1);
+    const uint8_t *k = ram + 0xa3512;
+    CHECK(k[4] == 0x7f && k[5] == 0xff);
+    CHECK(k[20] == 0x00 && k[21] == 0x20 && k[22] == 0x00 && k[23] == 0x00);
+    CHECK(k[26] == 0x00 && k[27] == 0x80 && k[28] == 0x00 && k[29] == 0x00);
+    h8s_write16(&m.cpu, CY_DISK_BASE + 0x1234, 0xabcd);
+    h8s_write8(&m.cpu, CY_DISK_BASE + 0x1fffff, 0x5a);
+    CHECK(big[0x1234] == 0xab && big[0x1235] == 0xcd && big[0x1fffff] == 0x5a);
+    CHECK(h8s_read16(&m.cpu, CY_DISK_BASE + 0x1234) == 0xabcd);
+    CHECK(m.disk_dirty[0] == 0x2 && m.disk_dirty[511 / 32] == 1u << (511 % 32));
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -375,6 +430,7 @@ int main(void)
     test_watchdog();
     test_speaker();
     test_dma();
+    test_disk();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

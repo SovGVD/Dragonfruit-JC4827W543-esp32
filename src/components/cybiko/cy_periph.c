@@ -497,6 +497,7 @@ static void sci_advance(cybiko_t *m, uint32_t states)
             if (left < s->tx_left) { s->tx_left -= left; break; }
             left -= s->tx_left;
             s->tx_busy = false;
+            if (n == 1) cy_disk_console(m, s->tsr);
             if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
             if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
                 sci_tx_start(m, n);

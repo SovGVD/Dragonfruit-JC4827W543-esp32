@@ -14,6 +14,7 @@
  *   200000-200003  USB controller (writes ignored)
  *   400000-5fffff  2 MB RAM; the first 512 KB is the battery-backed RAM disk
  *   600000-7fffff  SST39VF400A 512 KB flash (cyos_v1508.bin), mirrored
+ *   800000-dfffff  optional bigger RAM disk (cybiko_set_disk, not real hardware)
  *   e00000-efffff  keyboard matrix
  *   ffdc00-fffbff  8 KB on-chip RAM
  *   fffe80-ffffff  on-chip I/O registers */
@@ -30,6 +31,9 @@
 #define CY_FLASH_SIZE  0x80000u
 #define CY_RAM_SIZE    0x200000u
 #define CY_RAMDISK_SIZE 0x80000u     /* part of RAM kept across power cycles */
+#define CY_DISK_BASE   0x800000u     /* where cybiko_set_disk puts the RAM disk */
+#define CY_DISK_MAX    0x600000u     /* 6 MB: up to the keyboard at e00000 */
+#define CY_DISK_CHUNK  4096u         /* dirty-tracking granularity */
 
 /* Keys are (row << 4) | bit in the keyboard matrix, as MAME's A.0-A.8. CyOS
  * scans rows 0-9 only, with every higher address bit low, so Help, "." and P
@@ -176,6 +180,13 @@ typedef struct cybiko {
     uint64_t spk_since;        /* start of the current edge-count window */
     float spk_freq, spk_duty;  /* last tone reported to the host */
 
+    /* bigger RAM disk (cy_disk.c) */
+    uint8_t *disk;
+    uint32_t disk_size;
+    uint32_t disk_dirty[CY_DISK_MAX / CY_DISK_CHUNK / 32];  /* chunks written */
+    uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
+    uint8_t disk_patched;      /* kernel patches applied since power-on */
+
     /* diagnostics: things a ROM used that the model does not cover */
     uint32_t unmapped_reads, unmapped_writes, illegal_ops;
     uint32_t dtc_dma_use;      /* DMA transfers started by the DREQ pins (not wired) */
@@ -202,6 +213,42 @@ bool cybiko_serial_rx(cybiko_t *m, int port, uint8_t byte);
  * CY_LCD_H, row 0 at the top. Returns lcd.version so callers can skip
  * unchanged frames. */
 uint32_t cybiko_lcd_render(const cybiko_t *m, uint8_t *lum);
+
+/* ---- bigger RAM disk ----
+ * CyOS 1.5 keeps user files in a RAM disk of 512 KB at 400000. After
+ * cybiko_set_disk the machine moves it to CY_DISK_BASE and gives it `size`
+ * bytes (a multiple of 64 KB, at most CY_DISK_MAX): when the boot loader
+ * prints "Starting 0x" on SCI1 the freshly unpacked kernel is patched before
+ * it runs, so its RAM disk driver uses the new place and size. The disk keeps
+ * the RAM disk's format (pages of 258 bytes from the start), so a 512 KB
+ * ramdisk.bin loaded at the start of `disk` keeps its files. Call after
+ * cybiko_init. Writes set bits in disk_dirty, one per CY_DISK_CHUNK. */
+void cybiko_set_disk(cybiko_t *m, uint8_t *disk, uint32_t size);
+
+/* Files in a RAM disk image (`size` bytes, the old 512 KB one or a bigger
+ * disk), for use while the machine is not running. Names are at most
+ * CY_DISK_NAME_MAX characters. */
+#define CY_DISK_NAME_MAX 58
+typedef struct {
+    char name[CY_DISK_NAME_MAX + 1];
+    uint32_t size;
+    uint16_t id;
+} cy_disk_file_t;
+/* Calls fn for each file; stops early when fn returns false. */
+void cy_disk_list(const uint8_t *disk, uint32_t size,
+                  bool (*fn)(void *user, const cy_disk_file_t *f), void *user);
+bool cy_disk_find(const uint8_t *disk, uint32_t size, const char *name, cy_disk_file_t *out);
+/* Bytes that can still be stored in one new file. */
+uint32_t cy_disk_free(const uint8_t *disk, uint32_t size);
+/* Store a file, replacing one with the same name. `date` is in seconds since
+ * 1900-01-01, as CyOS keeps it. Returns 0, -1 when it does not fit (nothing
+ * changes) or -2 for a bad name. */
+int cy_disk_write(uint8_t *disk, uint32_t size, const char *name,
+                  const uint8_t *data, uint32_t len, uint32_t date);
+/* Read a file into buf (at most cap bytes). Returns its length or -1. */
+int32_t cy_disk_read(const uint8_t *disk, uint32_t size, const char *name,
+                     uint8_t *buf, uint32_t cap);
+bool cy_disk_delete(uint8_t *disk, uint32_t size, const char *name);
 
 /* True once the OS has put the CPU into software standby (switched off). */
 static inline bool cybiko_is_off(const cybiko_t *m) { return m->standby; }

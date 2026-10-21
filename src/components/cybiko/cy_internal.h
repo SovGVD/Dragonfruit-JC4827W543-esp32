@@ -30,6 +30,10 @@ void cy_dma_control(cybiko_t *m);
 /* Bring every peripheral up to the CPU's current time. */
 void cy_sync(cybiko_t *m);
 
+/* cy_disk.c */
+void cy_disk_console(cybiko_t *m, uint8_t b);
+void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
+
 /* cy_periph.c: TPU, TMR, WDT, SCI and A/D converter */
 void cy_periph_reset(cybiko_t *m);
 void cy_periph_advance(cybiko_t *m, uint32_t states);

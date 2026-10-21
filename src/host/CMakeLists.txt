@@ -212,6 +212,7 @@ set(CYBIKO_SOURCES
     ../components/cybiko/cy_periph.c
     ../components/cybiko/cy_devices.c
     ../components/cybiko/cy_dma.c
+    ../components/cybiko/cy_disk.c
     ../components/h8s/h8s.c
 )
 add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})

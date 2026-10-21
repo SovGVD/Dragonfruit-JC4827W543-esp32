@@ -11,6 +11,7 @@ void dragonball_init(void)
     memset(&db, 0, sizeof(db));
     db_spi_reset();
     db_uart_reset();
+    db_pwm_reset();
 
     /* MC68EZ328 reset defaults */
     db.scr = 0x14;              /* EZ328 chip ID */
@@ -76,6 +77,11 @@ extern void     db_rtc_write32(uint16_t offset, uint32_t val);
 extern uint8_t  db_gpio_read8(uint16_t offset);
 extern void     db_gpio_write8(uint16_t offset, uint8_t val);
 
+extern uint8_t  db_pwm_read8(uint16_t offset);
+extern uint16_t db_pwm_read16(uint16_t offset);
+extern void     db_pwm_write8(uint16_t offset, uint8_t val);
+extern void     db_pwm_write16(uint16_t offset, uint16_t val);
+
 extern uint16_t db_spi_read16(uint16_t offset);
 extern void     db_spi_write16(uint16_t offset, uint16_t val);
 
@@ -91,6 +97,7 @@ uint8_t dragonball_read8(uint16_t offset)
     if (offset == REG_SCR) return db.scr;
     if (offset >= 0x300 && offset < 0x320) return db_int_read8(offset);
     if (offset >= 0x400 && offset < 0x450) return db_gpio_read8(offset);
+    if (offset >= 0x500 && offset < 0x506) return db_pwm_read8(offset);
     if (offset >= 0x600 && offset < 0x620) return db_timer_read8(offset);
     if (offset >= 0x900 && offset < 0x910) return db_uart_read8(offset);
     if (offset >= 0xA00 && offset < 0xA40) return db_lcd_read8(offset);
@@ -119,6 +126,7 @@ uint16_t dragonball_read16(uint16_t offset)
         return db.pllfsr;
     }
     if (offset >= 0x300 && offset < 0x320) return db_int_read16(offset);
+    if (offset >= 0x500 && offset < 0x506) return db_pwm_read16(offset);
     if (offset >= 0x600 && offset < 0x620) return db_timer_read16(offset);
     if (offset >= 0x800 && offset < 0x810) return db_spi_read16(offset);
     if (offset >= 0x900 && offset < 0x910) return db_uart_read16(offset);
@@ -146,6 +154,7 @@ void dragonball_write8(uint16_t offset, uint8_t val)
     if (offset == REG_SCR) { db.scr = val; return; }
     if (offset >= 0x300 && offset < 0x320) { db_int_write8(offset, val); return; }
     if (offset >= 0x400 && offset < 0x450) { db_gpio_write8(offset, val); return; }
+    if (offset >= 0x500 && offset < 0x506) { db_pwm_write8(offset, val); return; }
     if (offset >= 0x600 && offset < 0x620) { db_timer_write8(offset, val); return; }
     if (offset >= 0x900 && offset < 0x910) { db_uart_write8(offset, val); return; }
     if (offset >= 0xA00 && offset < 0xA40) { db_lcd_write8(offset, val); return; }
@@ -167,6 +176,7 @@ void dragonball_write16(uint16_t offset, uint16_t val)
     if (offset == REG_PLLCR) { db.pllcr = val; return; }
     if (offset == REG_PLLFSR) { db.pllfsr = val; return; }
     if (offset >= 0x300 && offset < 0x320) { db_int_write16(offset, val); return; }
+    if (offset >= 0x500 && offset < 0x506) { db_pwm_write16(offset, val); return; }
     if (offset >= 0x600 && offset < 0x620) { db_timer_write16(offset, val); return; }
     if (offset >= 0x800 && offset < 0x810) { db_spi_write16(offset, val); return; }
     if (offset >= 0x900 && offset < 0x910) { db_uart_write16(offset, val); return; }

@@ -22,6 +22,7 @@ set(EMU_SOURCES
     ../components/dragonball/gpio.c
     ../components/dragonball/spi.c
     ../components/dragonball/uart.c
+    ../components/dragonball/pwm.c
     ../components/dragonball/rtc.c
     ../components/installer/installer.c
     ../components/layout/layout.c
@@ -298,7 +299,12 @@ target_include_directories(test_portal_protocol PRIVATE ../components/wifi_gatew
 add_executable(test_uart test_uart.c ../components/dragonball/uart.c)
 target_include_directories(test_uart PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
     ../components/dragonball/include)
-foreach(target test_portal_protocol test_uart)
+add_executable(test_pwm test_pwm.c ../components/dragonball/pwm.c)
+target_include_directories(test_pwm PRIVATE ../components/dragonball/include)
+if(NOT MSVC)
+    target_link_libraries(test_pwm PRIVATE m)
+endif()
+foreach(target test_portal_protocol test_uart test_pwm)
     if(MSVC)
         target_compile_options(${target} PRIVATE /UNDEBUG)
     else()
@@ -307,6 +313,7 @@ foreach(target test_portal_protocol test_uart)
 endforeach()
 add_test(NAME portal_protocol COMMAND test_portal_protocol)
 add_test(NAME uart COMMAND test_uart)
+add_test(NAME pwm COMMAND test_pwm)
 
 add_executable(test_web_proxy test_web_proxy.c ../components/wifi_gateway/web_proxy.c)
 target_include_directories(test_web_proxy PRIVATE ../components/wifi_gateway/include)

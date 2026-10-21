@@ -203,6 +203,10 @@ if(NOT MSVC)
 endif()
 
 enable_testing()
+add_executable(test_h8s test_h8s.c ../components/h8s/h8s.c)
+target_include_directories(test_h8s PRIVATE ../components/h8s/include)
+add_test(NAME h8s COMMAND test_h8s)
+
 add_test(NAME layout COMMAND test_layout)
 add_test(NAME touch_config COMMAND test_touch_config)
 add_test(NAME jit_cache COMMAND test_jit_cache)

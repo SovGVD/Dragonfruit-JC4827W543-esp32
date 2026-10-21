@@ -153,6 +153,11 @@ static uint8_t port_read(cybiko_t *m, int p)
 static void port_output(cybiko_t *m, int p)
 {
     uint8_t data = (uint8_t)((m->dr[p] | ~m->ddr[p]) & ~port_mask(p));
+    if (p == 0) {
+        /* P15 is the speaker; count edges software makes on it */
+        if ((data ^ m->spk_pin) & 0x20) m->spk_edges++;
+        m->spk_pin = data;
+    }
     if (p == 14) {
         /* PF1 drives the RTC clock; SDA follows MAME's wiring: the line is
          * pulled low while PF6 outputs 1 or floats. */
@@ -377,6 +382,8 @@ void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
     cybiko_reset(m);
 }
 
+static void speaker_update(cybiko_t *m);
+
 int32_t cybiko_run(cybiko_t *m, int32_t states)
 {
     int32_t done = 0;
@@ -399,7 +406,31 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
             m->wdt_rst = rst;      /* WOVF survives the reset it caused */
         }
     }
+    speaker_update(m);
     return done;
+}
+
+/* Work out the speaker tone, from the TPU if it drives the pin, else from
+ * the rate software toggles P15, and tell the host when it changes. */
+static void speaker_update(cybiko_t *m)
+{
+    if (!m->host.speaker) return;
+    uint64_t now = m->cpu.cycles;
+    float duty = 0.5f, f = m->standby ? 0 : cy_tpu_speaker_tone(m, &duty);
+    if (f == 0) {
+        uint64_t span = now - m->spk_since;
+        if (span < CY_CLOCK_HZ / 50) return;          /* measure over 20 ms */
+        f = m->spk_edges >= 4 ? (float)m->spk_edges * CY_CLOCK_HZ / 2.0f / (float)span : 0;
+        if (f < 20 || f > 20000) f = 0;
+        m->spk_edges = 0;
+        m->spk_since = now;
+    }
+    if (f == 0) duty = 0;
+    if (f != m->spk_freq || duty != m->spk_duty) {
+        m->spk_freq = f;
+        m->spk_duty = duty;
+        m->host.speaker(m->host.user, f, duty);
+    }
 }
 
 void cybiko_key(cybiko_t *m, int key, bool down)

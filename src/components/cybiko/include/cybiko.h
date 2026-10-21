@@ -67,6 +67,9 @@ typedef struct {
     int64_t (*wall_time)(void *user);
     /* 10-bit value for A/D channel 0-7. NULL reads 0, as in MAME. */
     uint16_t (*adc_read)(void *user, int channel);
+    /* The speaker tone changed: a rectangle wave of freq_hz with the given
+     * duty, or silence when freq_hz is 0. Matches audio_tone(). */
+    void (*speaker)(void *user, float freq_hz, float duty);
 } cy_host_t;
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
@@ -148,6 +151,12 @@ typedef struct cybiko {
     int adc_ch;
 
     uint64_t synced;           /* CPU state count the peripherals have reached */
+
+    /* speaker (P1 bit 5, TIOCB1) */
+    uint32_t spk_edges;        /* P15 toggles written by software */
+    uint8_t spk_pin;           /* last port 1 output level */
+    uint64_t spk_since;        /* start of the current edge-count window */
+    float spk_freq, spk_duty;  /* last tone reported to the host */
 
     /* diagnostics: things a ROM used that the model does not cover */
     uint32_t unmapped_reads, unmapped_writes, illegal_ops, dtc_dma_use;

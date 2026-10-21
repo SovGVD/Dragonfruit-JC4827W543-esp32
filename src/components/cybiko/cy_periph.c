@@ -186,6 +186,26 @@ static bool tpu_write(cybiko_t *m, uint32_t a, uint8_t v)
     return false;
 }
 
+float cy_tpu_speaker_tone(const cybiko_t *m, float *duty)
+{
+    int s = tpu_shift(m, 1);
+    if (s < 0) return 0;
+    const cy_tpu_ch_t *t = &m->tpu[1];
+    uint8_t iob = t->tior[0] >> 4;
+    uint32_t cycle = tpu_cycle(m, 1);
+    float f = (float)(CY_CLOCK_HZ >> s);
+    if ((t->tmdr & 0x0f) == 0x03 && (iob & 3) && !(iob & 8)) {   /* PWM mode 2 */
+        if (tpu_clear_tgr(m, 1) == 1) return 0;                 /* B is the period */
+        *duty = (float)((uint32_t)t->tgr[1] + 1) / (float)cycle;
+        return f / (float)cycle;
+    }
+    if ((iob & 3) == 3 && !(iob & 8) && (uint32_t)t->tgr[1] < cycle) {  /* toggle on match */
+        *duty = 0.5f;
+        return f / (2.0f * (float)cycle);
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* TMR (8-bit timers)                                                  */
 /* ------------------------------------------------------------------ */

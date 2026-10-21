@@ -12,7 +12,8 @@
  *   rf = espnow        # default: off
  *   rf.port = 0        # SCI channel to carry (0-1; 2 is the debug console)
  *   rf.channel = 1     # Wi-Fi channel, the same on every board */
-void cybiko_link_init(void);
+/* cfg is the text of /Cybiko/cybiko.cfg, or NULL when there is none. */
+void cybiko_link_init(const char *cfg);
 /* CPU task: a byte the emulated CPU sent on SCI `port`. */
 void cybiko_link_serial_tx(int port, uint8_t b);
 /* CPU task: send what is buffered and hand received bytes to the machine. */

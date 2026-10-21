@@ -8,8 +8,10 @@
  *   flash.bin    written only if CyOS reprograms its flash; it is the first
  *                flash name searched, so it then replaces the original image
  *   state.bin    the Cybiko clock, so the time survives restarts
- *   cybiko.cfg   optional settings (see cybiko_link.c for the radio keys) */
+ *   cybiko.cfg   optional settings: sound.volume = 0-100 (default 60) and
+ *                the radio keys described in cybiko_link.h */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "cybiko_app.h"
@@ -18,6 +20,8 @@
 #include "cybiko.h"
 #include "display.h"
 #include "m5_sd.h"
+#include "palm_config.h"
+#include "audio.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -31,6 +35,7 @@ static const char *TAG = "cybiko";
 #define RAMDISK_PATH CYBIKO_SD_DIR "/ramdisk.bin"
 #define FLASH_SAVE_PATH CYBIKO_SD_DIR "/flash.bin"
 #define STATE_PATH CYBIKO_SD_DIR "/state.bin"
+#define CFG_PATH CYBIKO_SD_DIR "/cybiko.cfg"
 
 #define CHUNK_STATES (CY_CLOCK_HZ / 1000)   /* run 1 ms of Cybiko time at a go */
 
@@ -66,6 +71,12 @@ static void on_serial_tx(void *user, int port, uint8_t b)
         return;
     }
     cybiko_link_serial_tx(port, b);
+}
+
+static void on_speaker(void *user, float freq_hz, float duty)
+{
+    (void)user;
+    audio_tone(freq_hz, duty);
 }
 
 static int64_t wall_time(void *user)
@@ -254,9 +265,22 @@ void cybiko_app_start(void)
         fclose(f);
     }
 
-    cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time };
+    /* Optional settings: sound.volume (0-100, default 60) and the radio
+     * keys described in cybiko_link.h. */
+    static char cfg[1024];
+    size_t cfg_len;
+    bool have_cfg = config_read_file(CFG_PATH, cfg, sizeof cfg, &cfg_len) == CONFIG_OK;
+    int volume = 60;
+    char v[16];
+    if (have_cfg && config_get_value(cfg, "sound.volume", v, sizeof v)) {
+        volume = atoi(v);
+        if (volume < 0 || volume > 100) volume = 60;
+    }
+    if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
+
+    cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker };
     cybiko_init(&machine, &host, rom, flash, ram);
-    cybiko_link_init();
+    cybiko_link_init(have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));
     cybiko_ui_start();

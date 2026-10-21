@@ -1,15 +1,18 @@
 # Dragonfruit for JC4827W543
 
 This checkout targets the **JC4827W543 with resistive XPT2046 touchscreen**.
-It loads the Palm ROM from a FAT32 SD card. See the
-[board setup, build, flash and touch calibration guide](docs/jc4827w543.md) and
+It boots into a menu that starts either **Palm OS** or a **Cybiko Xtreme**
+emulator, each loading its ROM from its own folder on a FAT32 SD card. See the
+[board setup, build, flash and touch calibration guide](docs/jc4827w543.md),
+the [Cybiko Xtreme guide](docs/cybiko.md) and the
 [example SD configuration](palm-jc4827w543.cfg.example).
 
 ```sh
 ./tools/build-jc4827w543.sh
 ```
 
-Copy your Palm IIIx ROM to the SD root as `palm.rom`. The build creates
+Copy your Palm IIIx ROM to the SD card as `/PalmOS/palm.rom`, and the Cybiko
+ROM and flash images to `/Cybiko`. The build creates
 `build-jc4827w543/dragonfruit-jc4827w543.bin` for flashing at address `0x0`.
 
 The upstream overview below describes the emulator and its original hardware.
@@ -163,29 +166,30 @@ because Docker Desktop on Windows cannot pass through COM ports.
 ```
 
 The ROM is not embedded in the firmware. Copy a Palm IIIx ROM to a FAT32 SD card as
-`palm.rom` and insert it before powering on. At boot the firmware mounts the card (it shares
+`/PalmOS/palm.rom` and insert it before powering on. At boot the firmware mounts the card (it shares
 the e-ink SPI bus), reads the ROM into PSRAM, then unmounts. If the card or file is missing or
 invalid, the device prints the reason on the e-ink panel and halts.
 
 #### What goes on the SD card
 
-The firmware reads everything from the card's root. Only `palm.rom` is required; the rest are
-optional and can be added later.
+The firmware reads everything for Palm OS from the `/PalmOS` folder (the Cybiko uses
+`/Cybiko`). Only `palm.rom` is required; the rest are optional and can be added later.
 
 ```
-palm.rom         (required)  The Palm IIIx ROM image, read into PSRAM at boot.
-palm.cfg         (optional)  On-screen layout (relocate/rotate/magnify the silkscreen) plus
-                             serial-bridge settings.
-digitizer.cfg    (optional)  Touch-sensitivity tuning. If absent, the firmware writes one
-                             from the panel's current values on first boot, ready to edit.
-install/         (optional)  A directory of .prc / .pdb / .pqa files installed into Palm RAM.
-                             Files stay on SD; existing databases are kept after RAM restore.
-backup/          (optional)  Destination for database backups. Hold the UP side button for a
-                             second to back up here; hold DOWN to restore.
+PalmOS/
+  palm.rom         (required)  The Palm IIIx ROM image, read into PSRAM at boot.
+  palm.cfg         (optional)  On-screen layout (relocate/rotate/magnify the silkscreen) plus
+                               serial-bridge settings.
+  digitizer.cfg    (optional)  Touch-sensitivity tuning. If absent, the firmware writes one
+                               from the panel's current values on first boot, ready to edit.
+  install/         (optional)  A directory of .prc / .pdb / .pqa files installed into Palm RAM.
+                               Files stay on SD; existing databases are kept after RAM restore.
+  backup/          (optional)  Destination for database backups. Hold the UP side button for a
+                               second to back up here; hold DOWN to restore.
 ```
 
-To customize the layout, copy [`palm.cfg.example`](palm.cfg.example) to the card as `palm.cfg`
-and edit it.
+To customize the layout, copy [`palm.cfg.example`](palm.cfg.example) to the card as
+`/PalmOS/palm.cfg` and edit it.
 
 Requirements: Docker Desktop, and on the host Python with `esptool` and `pyserial`
 (`pip install esptool pyserial`).

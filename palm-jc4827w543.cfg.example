@@ -1,4 +1,4 @@
-# Copy to the FAT32 SD root as palm.cfg. Optional: this layout is the
+# Copy to the FAT32 SD card as /PalmOS/palm.cfg. Optional: this layout is the
 # automatic portrait default for the JC4827W543 (USB connector at bottom).
 preset = jc4827w543
 
@@ -11,8 +11,8 @@ serial.baud = 57600
 # goes to sleep (BOOT or Palm auto-off); no timed saves during active use.
 state.enabled = 1
 
-# Palm OS 4 virtual expansion card, backed by /palm-card on this SD card.
-# PRCs in /palm-card/PALM/Launcher appear under Palm's SD Card category.
+# Palm OS 4 virtual expansion card, backed by /PalmOS/palm-card on this SD card.
+# PRCs in /PalmOS/palm-card/PALM/Launcher appear under Palm's SD Card category.
 card.enabled = 1
 card.read_only = 0
 

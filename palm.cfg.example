@@ -1,7 +1,7 @@
 # palm.cfg — optional screen-layout config for the M5Paper Palm IIIx emulator.
 #
-# Copy this to the ROOT of the SD card as  palm.cfg  (the exact name, next to
-# palm.rom) to customize how the Palm interface is placed on the e-ink panel.
+# Copy this to the PalmOS folder of the SD card as  palm.cfg  (the exact name,
+# next to palm.rom) to customize how the Palm interface is placed on the e-ink panel.
 # WITHOUT this file the emulator uses the stock centered-portrait layout, so
 # this file is purely opt-in and deleting it always restores the default.
 #

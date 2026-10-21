@@ -28,6 +28,16 @@ static void on_tx(void *user, int port, uint8_t b)
     }
 }
 
+static float spk_freq, spk_duty;
+static int spk_calls;
+static void on_speaker(void *user, float f, float duty)
+{
+    (void)user;
+    spk_freq = f;
+    spk_duty = duty;
+    spk_calls++;
+}
+
 static int64_t fake_now = 1700000000;  /* 2023-11-14 22:13:20 UTC, a Tuesday */
 static int64_t wall(void *user) { (void)user; return fake_now; }
 
@@ -38,7 +48,9 @@ static void boot(const unsigned char *prog, size_t len)
     memset(flash, 0xff, sizeof flash);
     memset(ram, 0, CY_RAM_SIZE);
     tx_len = 0;
-    cy_host_t host = { .serial_tx = on_tx, .wall_time = wall };
+    spk_freq = spk_duty = 0;
+    spk_calls = 0;
+    cy_host_t host = { .serial_tx = on_tx, .wall_time = wall, .speaker = on_speaker };
     cybiko_init(&m, &host, rom, flash, ram);
 }
 
@@ -277,6 +289,24 @@ static void test_memory_map(void)
     CHECK(h8s_read8(&m.cpu, 0xffff39) == 0x01);      /* SYSCR */
 }
 
+static void test_speaker(void)
+{
+    boot(prog_tpu_tone, sizeof prog_tpu_tone);
+    cybiko_run(&m, 10000);
+    printf("speaker (TPU): %.1f Hz duty %.2f\n", spk_freq, spk_duty);
+    CHECK(spk_freq > 999.0f && spk_freq < 1001.0f);
+    CHECK(spk_duty == 0.5f);
+
+    boot(prog_beep_soft, sizeof prog_beep_soft);
+    for (int i = 0; i < 10; i++) cybiko_run(&m, CY_CLOCK_HZ / 100);
+    printf("speaker (software): %.1f Hz\n", spk_freq);
+    CHECK(spk_freq > 7800.0f && spk_freq < 8200.0f);
+
+    boot(prog_spin, sizeof prog_spin);
+    for (int i = 0; i < 5; i++) cybiko_run(&m, CY_CLOCK_HZ / 100);
+    CHECK(spk_calls == 0);                       /* silent machine: no calls */
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -290,6 +320,7 @@ int main(void)
     test_flash();
     test_rtc();
     test_watchdog();
+    test_speaker();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

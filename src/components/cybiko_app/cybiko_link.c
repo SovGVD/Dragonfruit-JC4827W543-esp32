@@ -4,9 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "cybiko_link.h"
-#include "cybiko_app.h"
 #include "palm_config.h"
-#include "m5_sd.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
@@ -17,7 +15,6 @@
 
 static const char *TAG = "cybiko_rf";
 
-#define CFG_PATH CYBIKO_SD_DIR "/cybiko.cfg"
 #define FRAME_PAYLOAD 240
 
 static bool enabled;
@@ -57,18 +54,15 @@ static bool start_radio(int channel)
     return err == ESP_OK;
 }
 
-void cybiko_link_init(void)
+void cybiko_link_init(const char *text)
 {
-    static char text[1024];
     char value[16];
-    size_t len;
-    if (config_read_file(CFG_PATH, text, sizeof text, &len) != CONFIG_OK) return;
-    if (!config_get_value(text, "rf", value, sizeof value) || strcmp(value, "espnow") != 0) return;
+    if (!text || !config_get_value(text, "rf", value, sizeof value) || strcmp(value, "espnow") != 0) return;
     int channel = 1;
     if (config_get_value(text, "rf.port", value, sizeof value)) rf_port = atoi(value);
     if (config_get_value(text, "rf.channel", value, sizeof value)) channel = atoi(value);
     if (rf_port < 0 || rf_port > 1 || channel < 1 || channel > 13) {
-        ESP_LOGW(TAG, "bad rf.port/rf.channel in %s", CFG_PATH);
+        ESP_LOGW(TAG, "bad rf.port/rf.channel in cybiko.cfg");
         return;
     }
     rx_stream = xStreamBufferCreate(2048, 1);

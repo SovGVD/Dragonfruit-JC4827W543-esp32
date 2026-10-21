@@ -30,6 +30,9 @@ bool cy_periph_read(cybiko_t *m, uint32_t a, uint8_t *v);
 bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v);
 bool cy_periph_write16(cybiko_t *m, uint32_t a, uint16_t v);
 void cy_sci_kick(cybiko_t *m);
+/* Tone the TPU drives on TIOCB1 (the speaker pin), 0 if it is not driving
+ * a periodic wave there. */
+float cy_tpu_speaker_tone(const cybiko_t *m, float *duty);
 
 /* cy_devices.c: HD66421 LCD, PCF8593 RTC, SST39VF400A flash */
 void cy_lcd_reset(cy_lcd_t *l);

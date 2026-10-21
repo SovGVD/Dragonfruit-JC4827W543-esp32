@@ -1,6 +1,13 @@
 #include "m68k.h"
 #include "bus.h"
 
+/* ea_resolve / ea_read / ea_write are the force-inlined forms, used by the hot
+ * opcode handlers that fold into the dispatch loop (MOVE, ADD/SUB/CMP, ADDQ,
+ * JSR/JMP...). There GCC would otherwise keep them as calls: each MOVE paid up
+ * to four windowed calls and returned its ea_result_t through memory. Colder
+ * handlers call the out-of-line m68k_* wrappers at the end of this file, which
+ * keeps the IRAM footprint of the interpreter in check. */
+
 static int ea_increment_size(int reg, int size)
 {
     if (size == SIZE_BYTE)
@@ -9,7 +16,7 @@ static int ea_increment_size(int reg, int size)
     return 4;
 }
 
-ea_result_t m68k_resolve_ea(m68k_cpu_t *cpu, int mode, int reg, int size)
+M68K_AINLINE ea_result_t ea_resolve(m68k_cpu_t *cpu, int mode, int reg, int size)
 {
     ea_result_t ea = { .type = EA_MEMORY, .addr = 0, .reg = 0 };
 
@@ -111,7 +118,7 @@ ea_result_t m68k_resolve_ea(m68k_cpu_t *cpu, int mode, int reg, int size)
     return ea;
 }
 
-uint32_t m68k_read_ea(m68k_cpu_t *cpu, ea_result_t *ea, int size)
+M68K_AINLINE uint32_t ea_read(m68k_cpu_t *cpu, ea_result_t *ea, int size)
 {
     switch (ea->type) {
     case EA_DATA_REG:
@@ -132,7 +139,7 @@ uint32_t m68k_read_ea(m68k_cpu_t *cpu, ea_result_t *ea, int size)
     return 0;
 }
 
-void m68k_write_ea(m68k_cpu_t *cpu, ea_result_t *ea, uint32_t val, int size)
+M68K_AINLINE void ea_write(m68k_cpu_t *cpu, ea_result_t *ea, uint32_t val, int size)
 {
     switch (ea->type) {
     case EA_DATA_REG: {
@@ -155,4 +162,19 @@ void m68k_write_ea(m68k_cpu_t *cpu, ea_result_t *ea, uint32_t val, int size)
             bus_write32(ea->addr, val);
         return;
     }
+}
+
+ea_result_t m68k_resolve_ea(m68k_cpu_t *cpu, int mode, int reg, int size)
+{
+    return ea_resolve(cpu, mode, reg, size);
+}
+
+uint32_t m68k_read_ea(m68k_cpu_t *cpu, ea_result_t *ea, int size)
+{
+    return ea_read(cpu, ea, size);
+}
+
+void m68k_write_ea(m68k_cpu_t *cpu, ea_result_t *ea, uint32_t val, int size)
+{
+    ea_write(cpu, ea, val, size);
 }

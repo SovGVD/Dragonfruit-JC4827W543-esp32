@@ -1,0 +1,19 @@
+menu "68k emulator"
+    config M68K_JIT
+        bool "68k -> Xtensa JIT"
+        depends on IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
+        default y
+        help
+            Compile hot ROM blocks to native Xtensa code on core 1's behalf
+            (the compiler runs on core 0). Needs an executable heap, so on the
+            ESP32-S3 it also needs ESP_SYSTEM_MEMPROT disabled. The code cache
+            takes up to 104 KB of internal RAM; on the S3 it is sized to leave
+            M68K_JIT_KEEP_INTERNAL_KB free for Wi-Fi and drivers. Turn it off
+            to run the pure interpreter and keep that RAM.
+
+    config M68K_JIT_KEEP_INTERNAL_KB
+        int "Internal RAM to leave free when sizing the JIT cache (KB)"
+        depends on M68K_JIT
+        default 96 if IDF_TARGET_ESP32S3
+        default 0
+endmenu

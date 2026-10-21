@@ -1,5 +1,9 @@
-# Only the classic ESP32 executable-memory backend is supported. S3 and RISC-V
-# targets use the interpreter until their memory/codegen backend is validated.
+# The Xtensa backend runs on the classic ESP32 (LX6) and the ESP32-S3 (LX7): both
+# cores share the windowed ABI and the base ISA the translator emits, and both
+# expose internal SRAM through an instruction-bus alias for the code cache. The
+# S3 additionally needs CONFIG_ESP_SYSTEM_MEMPROT off so heap memory can be
+# executable (see sdkconfig.defaults.jc4827w543). RISC-V targets use the
+# interpreter until their backend is written.
 # The JIT is split into an architecture-neutral core (driver + block cache) and a
 # per-ISA code-generation backend + chip-specific executable-memory unit, selected
 # at build time by the target arch. Adding a RISC-V target (e.g. ESP32-P4) means
@@ -13,16 +17,23 @@ set(m68k_srcs
     "m68k_jit_core.c"       # neutral JIT driver (dispatch, async compiler, install)
     "m68k_jit_cache.c"      # neutral block hash + presence bitmap + segmented ring
 )
-if(CONFIG_IDF_TARGET_ESP32)
-    list(APPEND m68k_srcs
-        "m68k_jit_backend_xtensa.c"   # 68k -> Xtensa translator
-        "jit_execmem_esp32.c")        # classic-ESP32 D/IRAM executable memory
-elseif(CONFIG_IDF_TARGET_ARCH_RISCV)
+if(CONFIG_IDF_TARGET_ARCH_RISCV)
     list(APPEND m68k_srcs "m68k_jit_backend_riscv.c" "jit_execmem_riscv.c")
+elseif(NOT CONFIG_M68K_JIT)
+    # JIT turned off in menuconfig, or a target without an Xtensa backend.
+    list(APPEND m68k_srcs
+        "m68k_jit_backend_disabled.c"    # placeholder: no codegen (interpreter-only)
+        "jit_execmem_disabled.c")        # placeholder: no executable cache
+elseif(CONFIG_IDF_TARGET_ESP32S3 AND CONFIG_ESP_SYSTEM_MEMPROT)
+    # An sdkconfig generated before memory protection was turned off in the
+    # defaults keeps it on; build interpreter-only rather than fail.
+    message(WARNING "m68k JIT disabled: set CONFIG_ESP_SYSTEM_MEMPROT=n (or delete "
+                    "the generated sdkconfig) to enable it on the ESP32-S3")
+    list(APPEND m68k_srcs "m68k_jit_backend_disabled.c" "jit_execmem_disabled.c")
 else()
     list(APPEND m68k_srcs
-        "m68k_jit_backend_disabled.c"    # placeholder: no codegen yet (interpreter-only)
-        "jit_execmem_disabled.c")        # placeholder: no executable cache yet
+        "m68k_jit_backend_xtensa.c"   # 68k -> Xtensa translator
+        "jit_execmem_esp32.c")        # ESP32 / ESP32-S3 D/IRAM executable memory
 endif()
 
 idf_component_register(
@@ -31,3 +42,12 @@ idf_component_register(
     LDFRAGMENTS "linker.lf"
     REQUIRES bus esp_hw_support
 )
+
+# ESP-IDF compiles everything with -fno-jump-tables -fno-tree-switch-conversion
+# (so IRAM code never indexes a table in flash). That turns every switch in the
+# interpreter — the per-opcode group dispatch, EA modes, condition codes — into
+# a chain of compares and branches. Here it is safe to undo: linker.lf places
+# this whole component "noflash", which puts its .rodata (where GCC emits the
+# tables) in internal DRAM next to the IRAM code. These flags come after the
+# global ones on the command line, so they win.
+target_compile_options(${COMPONENT_LIB} PRIVATE -fjump-tables -ftree-switch-conversion)

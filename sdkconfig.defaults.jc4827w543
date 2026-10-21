@@ -4,6 +4,9 @@ CONFIG_TOUCH_XPT2046=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+# The 68k JIT writes native code into internal RAM and runs it from there, which
+# needs an executable heap; S3 memory protection (PMS) forbids that.
+# CONFIG_ESP_SYSTEM_MEMPROT is not set
 # JC4827W543 N4R8: 4 MB flash, 8 MB octal PSRAM.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

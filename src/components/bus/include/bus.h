@@ -50,6 +50,7 @@ extern uint8_t       *g_bus_ram;
 extern uint8_t       *g_bus_vram;
 extern const uint8_t *g_bus_rom;
 extern uint32_t       g_bus_rom_end;   /* BUS_ROM_LO + rom_size */
+extern uint32_t       g_bus_rom_size;  /* loaded ROM image size in bytes */
 
 /* Bumped on every access to a DragonBall peripheral register (the only thing
  * a running instruction can do to change pending-interrupt state mid-batch).
@@ -78,8 +79,20 @@ static inline bool bus_addr_in_rom(uint32_t addr)
     return addr >= BUS_ROM_LO && addr < g_bus_rom_end;
 }
 
+/* Each accessor first tries the two canonical, unaliased forms Palm OS uses for
+ * nearly every access: RAM at 0x00000000 and the ROM at BUS_ROM_BASE
+ * (0x10C08000, where every instruction fetch lands). Either takes one compare
+ * and needs no 24-bit masking. Anything else (the SED1375 window, the 24-bit
+ * aliases, peripherals) falls through to the general decode below, which gives
+ * the same result for those two ranges, so the shortcut changes nothing but the
+ * cost. */
+#define BUS_FAST_RAM(addr) ((addr) < BUS_RAM_SIZE)
+#define BUS_FAST_ROM(addr) (((addr) - BUS_ROM_BASE) < g_bus_rom_size)
+
 static inline uint8_t bus_read8(uint32_t addr)
 {
+    if (BUS_FAST_RAM(addr)) return g_bus_ram[addr];
+    if (BUS_FAST_ROM(addr)) return g_bus_rom[addr - BUS_ROM_BASE];
     if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
         return bus_read8_slow(addr);
     addr &= BUS_ADDR_MASK;
@@ -92,11 +105,12 @@ static inline uint8_t bus_read8(uint32_t addr)
 
 static inline uint16_t bus_read16(uint32_t addr)
 {
-    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
-        return bus_read16_slow(addr);
-    addr &= BUS_ADDR_MASK;
     const uint8_t *p;
-    if (addr < BUS_RAM_SIZE)            p = g_bus_ram + addr;
+    if (BUS_FAST_RAM(addr))      p = g_bus_ram + addr;
+    else if (BUS_FAST_ROM(addr)) p = g_bus_rom + (addr - BUS_ROM_BASE);
+    else if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
+        return bus_read16_slow(addr);
+    else if ((addr &= BUS_ADDR_MASK) < BUS_RAM_SIZE) p = g_bus_ram + addr;
     else if (addr >= BUS_ROM_LO && addr < g_bus_rom_end)
                                         p = g_bus_rom + (addr - BUS_ROM_LO);
     else                                return bus_read16_slow(addr);
@@ -105,11 +119,12 @@ static inline uint16_t bus_read16(uint32_t addr)
 
 static inline uint32_t bus_read32(uint32_t addr)
 {
-    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
-        return bus_read32_slow(addr);
-    addr &= BUS_ADDR_MASK;
     const uint8_t *p;
-    if (addr < BUS_RAM_SIZE)            p = g_bus_ram + addr;
+    if (BUS_FAST_RAM(addr))      p = g_bus_ram + addr;
+    else if (BUS_FAST_ROM(addr)) p = g_bus_rom + (addr - BUS_ROM_BASE);
+    else if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE)
+        return bus_read32_slow(addr);
+    else if ((addr &= BUS_ADDR_MASK) < BUS_RAM_SIZE) p = g_bus_ram + addr;
     else if (addr >= BUS_ROM_LO && addr < g_bus_rom_end)
                                         p = g_bus_rom + (addr - BUS_ROM_LO);
     else                                return bus_read32_slow(addr);
@@ -119,6 +134,7 @@ static inline uint32_t bus_read32(uint32_t addr)
 
 static inline void bus_write8(uint32_t addr, uint8_t val)
 {
+    if (BUS_FAST_RAM(addr)) { g_bus_ram[addr] = val; return; }
     if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
         bus_write8_slow(addr, val);
         return;
@@ -130,11 +146,13 @@ static inline void bus_write8(uint32_t addr, uint8_t val)
 
 static inline void bus_write16(uint32_t addr, uint16_t val)
 {
-    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
-        bus_write16_slow(addr, val);
-        return;
+    if (!BUS_FAST_RAM(addr)) {
+        if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+            bus_write16_slow(addr, val);
+            return;
+        }
+        addr &= BUS_ADDR_MASK;
     }
-    addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE) {
         uint8_t *p = g_bus_ram + addr;
         p[0] = (uint8_t)(val >> 8);
@@ -146,11 +164,13 @@ static inline void bus_write16(uint32_t addr, uint16_t val)
 
 static inline void bus_write32(uint32_t addr, uint32_t val)
 {
-    if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
-        bus_write32_slow(addr, val);
-        return;
+    if (!BUS_FAST_RAM(addr)) {
+        if ((addr - BUS_SED1375_BASE) < BUS_SED1375_SIZE) {
+            bus_write32_slow(addr, val);
+            return;
+        }
+        addr &= BUS_ADDR_MASK;
     }
-    addr &= BUS_ADDR_MASK;
     if (addr < BUS_RAM_SIZE) {
         uint8_t *p = g_bus_ram + addr;
         p[0] = (uint8_t)(val >> 24);

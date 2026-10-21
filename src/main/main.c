@@ -1058,7 +1058,7 @@ void app_main(void)
      * the cpu task samples a hot PC, long after this, so the ROM need not be loaded
      * yet. The 68k->Xtensa burst JIT is interpreter-primary; set g_m68k_accel_mode
      * = 0 for the pure interpreter. */
-#if CONFIG_IDF_TARGET_ESP32
+#if CONFIG_M68K_JIT
     g_m68k_accel_mode = 1;
 #else
     g_m68k_accel_mode = 0;

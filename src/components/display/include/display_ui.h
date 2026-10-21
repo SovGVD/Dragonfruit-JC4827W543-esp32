@@ -6,6 +6,9 @@
  * are native panel pixels. Callers own the panel: the boot menu runs before any
  * task starts, and in Cybiko mode only the display task draws. */
 
+/* Height of the built-in font in dots (glyphs are 5 dots wide plus a gap). */
+#define UI_FONT_H 7
+
 #define UI_RGB(r, g, b) ((uint16_t)((((r) & 0xf8) << 8) | (((g) & 0xfc) << 3) | ((b) >> 3)))
 
 void display_ui_fill(int x, int y, int w, int h, uint16_t color);

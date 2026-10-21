@@ -36,6 +36,12 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "cybiko";
 
@@ -439,7 +445,7 @@ void cybiko_app_start(void)
 
     /* Optional settings: sound.volume (0-100, default 60), disk.size and
      * the radio keys described in cybiko_link.h. */
-    static char cfg[1024];
+    static EXT_RAM_BSS_ATTR char cfg[1024];
     size_t cfg_len;
     bool have_cfg = config_read_file(CFG_PATH, cfg, sizeof cfg, &cfg_len) == CONFIG_OK;
     if (!load_disk(have_cfg ? cfg : NULL)) { fail("CYBIKO\n\nOUT OF MEMORY"); return; }

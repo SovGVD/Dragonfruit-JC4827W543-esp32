@@ -48,6 +48,12 @@
 #include "cybiko_app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 #define PAD_X 320
 #define PAD_W 160
@@ -126,7 +132,7 @@ static const ui_layout_t layout_landscape = {
 /* Portrait keys are laid out at start-up; see build_portrait(). */
 #define P_W BOARD_PANEL_H
 #define P_H BOARD_PANEL_W
-static ui_key_t portrait_keys[64];
+static EXT_RAM_BSS_ATTR ui_key_t portrait_keys[64];
 static ui_layout_t layout_portrait = { portrait_keys, 0, { NULL, NULL }, { 0, 0 }, 56, 10, 1 };
 
 static void add_key(int x, int y, int w, int h, int key, int kind, bool alt, const char *label)

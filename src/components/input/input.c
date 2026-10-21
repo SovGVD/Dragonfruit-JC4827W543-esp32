@@ -14,6 +14,12 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "input";
 
@@ -171,7 +177,7 @@ static void gt911_sync_sensitivity(void)
     gt911_sens_t cur;
     gt911_sens_from_block(block, &cur);
 
-    static char text[1024];
+    static EXT_RAM_BSS_ATTR char text[1024];
     size_t len = 0;
     config_load_result_t r = config_read_file(DIGITIZER_CFG_PATH, text, sizeof(text), &len);
 

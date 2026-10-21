@@ -36,6 +36,12 @@
 #include "m5_sd.h"
 #include "palm_card.h"
 #include "audio.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "emu";
 
@@ -1142,7 +1148,7 @@ void app_main(void)
         uint16_t pw = BOARD_PANEL_W, ph = BOARD_PANEL_H;
         if (display_ok) display_get_panel_size(&pw, &ph);
 
-        static char cfg_text[LAYOUT_CFG_MAX];
+        static EXT_RAM_BSS_ATTR char cfg_text[LAYOUT_CFG_MAX];
         size_t cfg_len = 0;
         config_load_result_t cr = config_load_from_sd(cfg_text, sizeof(cfg_text), &cfg_len);
         if (cr == CONFIG_OK)

@@ -24,6 +24,12 @@
 #include "netif/ppp/pppos.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 #define SAVED_MAX 5
 #define SCAN_MAX 10
@@ -433,7 +439,7 @@ static void append(char *out, size_t cap, const char *fmt, ...)
 static void serve_http(int sock)
 {
     /* Static because this single-client server does not need per-request stacks. */
-    static char request[2048], body[10240];
+    static EXT_RAM_BSS_ATTR char request[2048], body[10240];
     size_t used = 0, content_len = 0;
     int header_len = 0;
     uint32_t since = now_ms();
@@ -630,7 +636,7 @@ static void dns_task(void *arg)
 {
     (void)arg;
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    static lookup_t pending[DNS_PENDING];
+    static EXT_RAM_BSS_ATTR lookup_t pending[DNS_PENDING];
     for (int i = 0; i < DNS_PENDING; i++) pending[i].sock = -1;
     static uint8_t pkt[PORTAL_DNS_MAX + 16];
     static const uint8_t gateway[] = {192,168,99,1};

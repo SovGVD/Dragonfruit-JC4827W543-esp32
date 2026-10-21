@@ -15,8 +15,8 @@
 
 #define FB_BYTES (160 * 20)
 static bool ready, first_refresh = true, first_color = true;
-static uint8_t silk[SILK_BYTES];
-static uint8_t shadow[FB_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t silk[SILK_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t shadow[FB_BYTES];
 static uint32_t last_color_hash;
 static uint8_t gray[BOARD_PANEL_W];
 static DMA_ATTR uint8_t pixels[BOARD_PANEL_W * 2];
@@ -148,7 +148,7 @@ void display_refresh(void)
 
 void display_show_message(const char *msg)
 {
-    static uint8_t fb[FB_BYTES];
+    static EXT_RAM_BSS_ATTR uint8_t fb[FB_BYTES];
     display_message_bitmap(msg, fb);
     draw_regions(REGION_SCREEN, fb);
     first_refresh = true;
@@ -158,7 +158,7 @@ void display_show_message_fast(const char *msg) { display_show_message(msg); }
 
 void display_show_progress(const char *title, const char *phase, int percent)
 {
-    static uint8_t fb[FB_BYTES];
+    static EXT_RAM_BSS_ATTR uint8_t fb[FB_BYTES];
     display_progress_bitmap(title, phase, percent, fb);
     draw_regions(REGION_SCREEN, fb);
     first_refresh = true;

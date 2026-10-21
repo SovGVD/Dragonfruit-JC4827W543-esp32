@@ -13,6 +13,12 @@
 #include "freertos/task.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "xpt2046";
 static spi_device_handle_t touch;
@@ -87,7 +93,7 @@ static bool config_int(const char *text, const char *key, int low, int high, int
 static void load_calibration(void)
 {
     resistive_calibration_default(&calibration);
-    static char text[LAYOUT_CFG_MAX];
+    static EXT_RAM_BSS_ATTR char text[LAYOUT_CFG_MAX];
     size_t length;
     if (config_load_from_sd(text, sizeof(text), &length) != CONFIG_OK) return;
     resistive_calibration_t next = calibration;

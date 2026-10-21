@@ -52,7 +52,7 @@ M68K_AINLINE void m68k_op_jmp(m68k_cpu_t *cpu, uint16_t opcode)
 {
     int ea_mode = (opcode >> 3) & 7;
     int ea_reg  = opcode & 7;
-    ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, SIZE_LONG);
+    ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, SIZE_LONG);
     cpu->regs.pc = ea.addr;
     cpu->regs.cycles = 8;
 }
@@ -61,7 +61,7 @@ M68K_AINLINE void m68k_op_jsr(m68k_cpu_t *cpu, uint16_t opcode)
 {
     int ea_mode = (opcode >> 3) & 7;
     int ea_reg  = opcode & 7;
-    ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, SIZE_LONG);
+    ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, SIZE_LONG);
     cpu->regs.a[7] -= 4;
     bus_write32(cpu->regs.a[7], cpu->regs.pc);
     cpu->regs.pc = ea.addr;

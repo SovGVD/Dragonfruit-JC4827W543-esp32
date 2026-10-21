@@ -5,7 +5,9 @@
 #include <stdio.h>
 
 static const char *TAG_CPU = "m68k";
+#ifdef HOST_BUILD
 static int dbg_irq_n = 0;   /* bounded interrupt-dispatch / STOP log counter */
+#endif
 
 /* Group handlers, dispatched by a direct switch in m68k_execute (a jump table,
  * no indirect CALLX). The hot, small groups are marked M68K_AINLINE so they
@@ -272,7 +274,7 @@ void m68k_dump_recent(int n)
 void m68k_init(m68k_cpu_t *cpu)
 {
     memset(cpu, 0, sizeof(*cpu));
-    cpu->regs.pending_irq = -1;
+    cpu->regs.pending_irq = 0;
     cpu->native_dispatch = false;
     m68k_init_decode_table();
 }
@@ -280,7 +282,7 @@ void m68k_init(m68k_cpu_t *cpu)
 void m68k_reset(m68k_cpu_t *cpu)
 {
     memset(&cpu->regs, 0, sizeof(cpu->regs));
-    cpu->regs.pending_irq = -1;
+    cpu->regs.pending_irq = 0;
     cpu->regs.a[7] = bus_read32(0x00000000);
     cpu->regs.pc   = bus_read32(0x00000004);
     cpu->regs.sr = SR_S | SR_I2 | SR_I1 | SR_I0;
@@ -297,7 +299,7 @@ void m68k_warm_reset(m68k_cpu_t *cpu)
     uint32_t ssp = bus_read32(BUS_ROM_BASE);
     uint32_t pc  = bus_read32(BUS_ROM_BASE + 4);
     memset(&cpu->regs, 0, sizeof(cpu->regs));
-    cpu->regs.pending_irq = -1;
+    cpu->regs.pending_irq = 0;
     cpu->regs.a[7] = ssp;
     cpu->regs.ssp  = ssp;
     cpu->regs.pc   = pc;
@@ -371,9 +373,13 @@ void m68k_illegal(m68k_cpu_t *cpu)
     cpu->regs.cycles += 34;
 }
 
+/* Normalise "nothing pending" (db_interrupt_pending_level returns -1) to 0. The
+ * JIT dispatcher and the interpreter loop skip m68k_service_pending only when
+ * pending_irq is 0, so a stored -1 sent every op/block through the full
+ * STOP/IRQ servicer. */
 void m68k_set_irq(m68k_cpu_t *cpu, int level)
 {
-    cpu->regs.pending_irq = level;
+    cpu->regs.pending_irq = (level > 0) ? level : 0;
 }
 
 uint16_t m68k_fetch16(m68k_cpu_t *cpu)
@@ -407,14 +413,15 @@ void jit_bus_write32(uint32_t a, uint32_t v) { bus_write32(a, v); }
  * interpreter (always-available fallback). */
 int g_m68k_accel_mode = 0;   /* 0 = interpreter, 1 = JIT */
 
-/* Interpret exactly one instruction at cpu->regs.pc (the JIT calls this for ops
- * it does not translate natively). Mirrors the interpreter's per-instruction
- * body: same dispatch, same cycle floor. pc must point at the opcode on entry;
- * on return pc has advanced (and may have branched) and cpu->regs.cycles holds
- * the instruction's cost. static inline so both the single-step fallback and the
- * interpreter burst get the fully-inlined dispatch (the M68K_AINLINE group
- * handlers fold in) with no call overhead. */
-static inline void interp_one(m68k_cpu_t *cpu)
+/* Interpret exactly one instruction at cpu->regs.pc. Mirrors the interpreter's
+ * per-instruction body: same dispatch, same cycle floor. pc must point at the
+ * opcode on entry; on return pc has advanced (and may have branched) and
+ * cpu->regs.cycles holds the instruction's cost. The M68K_AINLINE group handlers
+ * (and the EA and flag helpers under them) fold into this switch, so it is big
+ * (~25 KB): on the device it is expanded exactly once, inside interp_run below,
+ * which serves the pure interpreter, the JIT's cold-code burst and the JIT's
+ * single-step fallback alike. */
+M68K_AINLINE void interp_one(m68k_cpu_t *cpu)
 {
     cpu->regs.cycles = 0;
     cpu->regs.inst_pc = cpu->regs.pc;
@@ -446,8 +453,6 @@ static inline void interp_one(m68k_cpu_t *cpu)
     if (cpu->regs.cycles == 0)
         cpu->regs.cycles = 4;
 }
-
-void m68k_jit_fallback(m68k_cpu_t *cpu) { interp_one(cpu); }
 
 uint8_t *g_jit_present;   /* hot-block presence bitmap; allocated by the JIT */
 
@@ -517,23 +522,24 @@ static inline bool jit_present(uint32_t mpc)
     return (g_jit_present[i >> 3] >> (i & 7)) & 1u;
 }
 
-/* Interpreter burst: the same inlined dispatch the pure interpreter runs, but it
- * returns to the JIT dispatcher as soon as it reaches a PC that may have a
- * native block (presence bit set), or after a small op budget (so the dispatcher
- * can sample the PC for compilation), or when the cycle target is met. This is
- * what makes "fallback" run at full interpreter speed instead of paying a
- * cross-TU call + hash probe per op. */
-#define JIT_BURST_MAX_OPS 64
-int m68k_jit_interp_burst(m68k_cpu_t *cpu, int target_cyc)
+/* The device's interpreter loop: the one place the dispatch is expanded.
+ *  - pure interpreter: run to the cycle target;
+ *  - JIT cold-code burst (to_native): also return as soon as the next PC may
+ *    have a native block (presence bit set) or after max_ops, so the dispatcher
+ *    can run the block or sample the PC for compilation;
+ *  - JIT single-step fallback: max_ops = 1.
+ * STOP and interrupts are serviced at the top of each step, and the pending
+ * level is recomputed only after an op that touched a peripheral register (see
+ * m68k_execute_interp). */
+static __attribute__((noinline)) int interp_run(m68k_cpu_t *M68K_RESTRICT cpu, int target_cyc,
+                                                int max_ops, bool to_native)
 {
     int cyc = 0, ops = 0;
     uint32_t last_periph_seq = g_bus_periph_seq;
     while (cyc < target_cyc) {
-        /* Inline the common "nothing pending" case (the pure interpreter does
-         * too); only call the full servicer when stopped or an IRQ is waiting. */
         if ((cpu->regs.stopped || cpu->regs.pending_irq) &&
             m68k_service_pending(cpu, &cyc)) continue;
-        if (jit_present(cpu->regs.pc & BUS_ADDR_MASK)) break;
+        if (to_native && jit_present(cpu->regs.pc & BUS_ADDR_MASK)) break;
         interp_one(cpu);
         cyc += cpu->regs.cycles;
         if (g_bus_periph_seq != last_periph_seq && cpu->irq_callback) {
@@ -541,10 +547,20 @@ int m68k_jit_interp_burst(m68k_cpu_t *cpu, int target_cyc)
             int level = cpu->irq_callback();
             cpu->regs.pending_irq = (level > 0) ? level : 0;
         }
-        if (++ops >= JIT_BURST_MAX_OPS) break;
+        if (++ops >= max_ops) break;
     }
     return cyc;
 }
+
+#define JIT_BURST_MAX_OPS 64
+int m68k_jit_interp_burst(m68k_cpu_t *cpu, int target_cyc)
+{
+    return interp_run(cpu, target_cyc, JIT_BURST_MAX_OPS, true);
+}
+
+/* Interpret one op at pc (the JIT calls this for a presence-bit false positive).
+ * The dispatcher has already serviced STOP/IRQs for this step. */
+void m68k_jit_fallback(m68k_cpu_t *cpu) { interp_run(cpu, 1, 1, false); }
 #endif
 
 /* `cpu` is restrict-qualified: the CPU register file is a separate allocation
@@ -555,6 +571,10 @@ int m68k_jit_interp_burst(m68k_cpu_t *cpu, int target_cyc)
  * not aliasing reloads — but the annotation is correct and harmless.) */
 void m68k_execute_interp(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
 {
+#ifndef HOST_BUILD
+    cpu->regs.cycles_executed = interp_run(cpu, target_cycles, INT32_MAX, false);
+    return;
+#else
     /* Keep the batch cycle counter in a local: handlers never read it, but the
      * compiler can't prove that across the opaque handler calls, so as a struct
      * field it gets reloaded/stored every iteration. A local stays in a
@@ -623,12 +643,10 @@ void m68k_execute_interp(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
             }
         }
 
-        cpu->regs.cycles = 0;
+#ifdef HOST_BUILD
         cpu->regs.inst_pc = cpu->regs.pc;
         uint16_t opcode = bus_read16(cpu->regs.pc);
-        cpu->regs.pc += 2;
 
-#ifdef HOST_BUILD
         /* Per-instruction trace ring. Host-only diagnostics; compiled out of the
          * device build (this runs ~16M times/sec). */
         trace_buf[trace_idx].pc = cpu->regs.inst_pc;
@@ -694,38 +712,9 @@ void m68k_execute_interp(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
         }
 #endif /* HOST_BUILD */
 
-        /* Direct switch dispatch on the top nibble (see the group-handler
-         * forward decls above for why a switch beats the indirect table).
-         * TRAP #15 → group4 → m68k_op_trap → exception vector 47
-         * A-line   → group_a → exception vector 10. */
-        switch (opcode >> 12) {
-        case 0x0: m68k_group0(cpu, opcode);  break;
-        case 0x1: m68k_group1(cpu, opcode);  break;
-        case 0x2: m68k_group2(cpu, opcode);  break;
-        case 0x3: m68k_group3(cpu, opcode);  break;
-        case 0x4:
-            /* Fast-path call/return/jump (very common); rarer group-4 ops
-             * (CLR/NEG/MOVEM/LEA/TRAP/…) still go through m68k_group4. */
-            if (opcode == 0x4E75)                 m68k_op_rts(cpu, opcode);
-            else if ((opcode & 0xFFC0) == 0x4E80) m68k_op_jsr(cpu, opcode);
-            else if ((opcode & 0xFFC0) == 0x4EC0) m68k_op_jmp(cpu, opcode);
-            else                                  m68k_group4(cpu, opcode);
-            break;
-        case 0x5: m68k_group5(cpu, opcode);  break;
-        case 0x6: m68k_group6(cpu, opcode);  break;
-        case 0x7: m68k_group7(cpu, opcode);  break;
-        case 0x8: m68k_group8(cpu, opcode);  break;
-        case 0x9: m68k_group9(cpu, opcode);  break;
-        case 0xA: m68k_group_a(cpu, opcode); break;
-        case 0xB: m68k_group_b(cpu, opcode); break;
-        case 0xC: m68k_group_c(cpu, opcode); break;
-        case 0xD: m68k_group_d(cpu, opcode); break;
-        case 0xE: m68k_group_e(cpu, opcode); break;
-        case 0xF: m68k_group_f(cpu, opcode); break;
-        }
-
-        if (cpu->regs.cycles == 0)
-            cpu->regs.cycles = 4;
+        /* TRAP #15 -> group4 -> m68k_op_trap -> exception vector 47;
+         * A-line -> group_a -> exception vector 10. */
+        interp_one(cpu);
 
         /* Recompute pending interrupt only when the instruction just executed
          * touched a peripheral register (which is the only way it could have
@@ -822,6 +811,7 @@ void m68k_execute_interp(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
         cyc += cpu->regs.cycles;
     }
     cpu->regs.cycles_executed = cyc;
+#endif /* HOST_BUILD */
 }
 
 /* Public entry point: dispatch to the JIT engine when enabled, else interpret.
@@ -841,7 +831,7 @@ void m68k_execute(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
 /* --- Size helpers (m68k_size_mask / m68k_sign_bit) are now static inline in
  *     m68k.h so they fold into the handlers. --- */
 
-void m68k_set_flags_move(m68k_cpu_t *cpu, uint32_t result, int size) {
+M68K_HOT_INLINE void m68k_set_flags_move(m68k_cpu_t *cpu, uint32_t result, int size) {
     uint32_t mask = m68k_size_mask(size);
     uint32_t sign = m68k_sign_bit(size);
     result &= mask;
@@ -850,11 +840,11 @@ void m68k_set_flags_move(m68k_cpu_t *cpu, uint32_t result, int size) {
     if (result & sign) cpu->regs.sr |= SR_N;
 }
 
-void m68k_set_flags_logic(m68k_cpu_t *cpu, uint32_t result, int size) {
+M68K_HOT_INLINE void m68k_set_flags_logic(m68k_cpu_t *cpu, uint32_t result, int size) {
     m68k_set_flags_move(cpu, result, size);
 }
 
-void m68k_set_flags_add(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
+M68K_HOT_INLINE void m68k_set_flags_add(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
                          uint32_t result, int size) {
     uint32_t mask = m68k_size_mask(size);
     uint32_t sign = m68k_sign_bit(size);
@@ -867,7 +857,7 @@ void m68k_set_flags_add(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
     if (full & ((uint64_t)mask + 1)) cpu->regs.sr |= SR_C | SR_X;
 }
 
-void m68k_set_flags_sub(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
+M68K_HOT_INLINE void m68k_set_flags_sub(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
                          uint32_t result, int size) {
     uint32_t mask = m68k_size_mask(size);
     uint32_t sign = m68k_sign_bit(size);
@@ -879,7 +869,7 @@ void m68k_set_flags_sub(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
     if (src > dst) cpu->regs.sr |= SR_C | SR_X;
 }
 
-void m68k_set_flags_cmp(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
+M68K_HOT_INLINE void m68k_set_flags_cmp(m68k_cpu_t *cpu, uint32_t src, uint32_t dst,
                          uint32_t result, int size) {
     uint32_t mask = m68k_size_mask(size);
     uint32_t sign = m68k_sign_bit(size);

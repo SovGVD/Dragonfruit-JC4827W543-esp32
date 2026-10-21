@@ -357,3 +357,37 @@ if(UNIX)
     add_test(NAME web_proxy_http COMMAND test_web_proxy_http)
 endif()
 
+
+# --- 68k emulator benchmark (host-only) ---------------------------------
+# Runs the bundled 68000 workload (src/bench) through the same unity-built
+# interpreter as the firmware and checks its checksum. Use it as a correctness
+# net and a relative speed check for core changes.
+add_executable(bench_m68k
+    bench_m68k.c
+    ../bench/bench_core.c
+    ../components/m68k/m68k_all.c
+    ../components/bus/bus.c
+    ../components/dragonball/dragonball.c
+    ../components/dragonball/interrupt.c
+    ../components/dragonball/lcd.c
+    ../components/dragonball/timer.c
+    ../components/dragonball/gpio.c
+    ../components/dragonball/spi.c
+    ../components/dragonball/uart.c
+    ../components/dragonball/rtc.c
+    ../components/dragonball/pwm.c
+)
+target_include_directories(bench_m68k PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ../bench
+    ../components/m68k/include
+    ../components/bus/include
+    ../components/dragonball/include
+)
+target_compile_definitions(bench_m68k PRIVATE HOST_BUILD=1 BUS_RAM_SIZE=${PALM_RAM_BYTES})
+if(NOT MSVC)
+    target_compile_options(bench_m68k PRIVATE
+        -include ${CMAKE_CURRENT_SOURCE_DIR}/esp_shim.h
+        -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -O2)
+endif()
+add_test(NAME bench_m68k COMMAND bench_m68k 1)

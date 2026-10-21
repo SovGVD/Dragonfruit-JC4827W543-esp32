@@ -4,7 +4,13 @@
 # the interpreter's code competes with the emulated ROM/RAM data for cache
 # lines. Moving the hot interpreter to IRAM removes that competition (data gets
 # the whole cache) and runs the dispatch loop + handlers at single-cycle speed.
+#
+# The JIT's code generator is the exception: it runs only when a hot block is
+# compiled (on core 0, off the emulation path), so it stays in flash and leaves
+# ~19 KB of internal RAM for the heap, which the ESP32-S3 is short of. Generated
+# code never calls into it.
 [mapping:m68k]
 archive: libm68k.a
 entries:
     * (noflash)
+    m68k_jit_backend_xtensa (default)

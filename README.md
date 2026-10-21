@@ -220,6 +220,10 @@ be worth compiling and stays at the interpreter floor; closing it is a cold-path
 a matter of more JIT tuning. The JIT is on by default and can be disabled to fall back to the
 interpreter.
 
+The JC4827W543 (ESP32-S3) build runs the same JIT; turn it off with `CONFIG_M68K_JIT` in
+menuconfig. [`src/bench`](src/bench/README.md) has a fixed 68000 workload with host, board
+and QEMU runners for measuring core changes.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

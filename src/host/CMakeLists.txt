@@ -211,10 +211,11 @@ set(CYBIKO_SOURCES
     ../components/cybiko/cybiko.c
     ../components/cybiko/cy_periph.c
     ../components/cybiko/cy_devices.c
+    ../components/cybiko/cy_dma.c
     ../components/h8s/h8s.c
 )
 add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})
-target_include_directories(test_cybiko PRIVATE ../components/cybiko/include ../components/h8s/include)
+target_include_directories(test_cybiko PRIVATE ../components/cybiko ../components/cybiko/include ../components/h8s/include)
 add_test(NAME cybiko COMMAND test_cybiko)
 
 # Headless runner for the real Cybiko Xtreme ROM/flash dumps (see cybiko_host.c)

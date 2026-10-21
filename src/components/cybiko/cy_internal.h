@@ -11,11 +11,21 @@
 
 /* Raise an internal interrupt request. Requests are latched until the CPU
  * takes them, as in MAME's H8 interrupt controller. */
+bool cy_dma_trigger(cybiko_t *m, int vec);
+bool cy_dtc_trigger(cybiko_t *m, int vec);
 static inline void cy_irq(cybiko_t *m, int vec)
 {
+    /* A DMA transfer started by this interrupt may swallow it (DTA), and so
+     * may the DTC when its DTCER bit is set. */
+    if (m->dma_waiting && cy_dma_trigger(m, vec)) return;
+    if (vec >= 16 && cy_dtc_trigger(m, vec)) return;
     m->pend[vec >> 5] |= 1u << (vec & 31);
     m->cpu.irq_check = true;
 }
+
+/* cy_dma.c: DMA controller. cy_dma_control() acts on a DMABCR write. */
+void cy_dma_reset(cybiko_t *m);
+void cy_dma_control(cybiko_t *m);
 
 /* Bring every peripheral up to the CPU's current time. */
 void cy_sync(cybiko_t *m);

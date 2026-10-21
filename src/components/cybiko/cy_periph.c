@@ -458,9 +458,10 @@ static void sci_tx_start(cybiko_t *m, int n)
     cy_sci_t *s = &m->sci[n];
     s->ssr |= SSR_TDRE;
     s->tsr = s->tdr;
-    if (s->scr & SCR_TIE) cy_irq(m, sci_vec(n, 2));
     s->tx_busy = true;
     s->tx_left = sci_frame(s);
+    /* Last: a DMA or DTC transfer started by TXI refills TDR at once. */
+    if (s->scr & SCR_TIE) cy_irq(m, sci_vec(n, 2));
 }
 
 static void sci_rx_start(cybiko_t *m, int n)
@@ -551,7 +552,10 @@ static bool sci_read(cybiko_t *m, uint32_t a, uint8_t *v)
     case 2: *v = s->scr; break;
     case 3: *v = s->tdr; break;
     case 4: s->ssr_read = s->ssr; *v = s->ssr; break;
-    case 5: *v = s->rdr; break;
+    case 5:
+        *v = s->rdr;
+        if (m->dxc) s->ssr &= (uint8_t)~SSR_RDRF;   /* a DMA/DTC read clears RDRF */
+        break;
     default: *v = 0x00; break;     /* SCMR */
     }
     return true;
@@ -577,7 +581,14 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
         sci_rx_start(m, n);
         break;
     }
-    case 3: s->tdr = v; break;
+    case 3:
+        s->tdr = v;
+        /* A DMA/DTC write clears TDRE itself (the CPU clears it in SSR). */
+        if (m->dxc && (s->scr & SCR_TE)) {
+            s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
+            if (!s->tx_busy) sci_tx_start(m, n);
+        }
+        break;
     case 4:
         if ((s->scr & SCR_TE) && (s->ssr & s->ssr_read & SSR_TDRE) && !(v & SSR_TDRE))
             s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
@@ -633,6 +644,7 @@ static bool adc_read(cybiko_t *m, uint32_t a, uint8_t *v)
 {
     if (a >= 0xffff90 && a <= 0xffff97) {
         uint16_t r = m->addr[(a - 0xffff90) >> 1];
+        if (m->dxc) m->adcsr &= (uint8_t)~0x80;      /* a DMA/DTC read clears ADF */
         *v = (a & 1) ? (uint8_t)(r << 6) : (uint8_t)(r >> 2);
         return true;
     }

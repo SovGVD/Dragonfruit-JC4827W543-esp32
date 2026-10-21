@@ -12,8 +12,8 @@
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
  *                      select, del, tab, shift, fn, help, onoff
  *
- * The debug console (SCI2) is copied to stdout; bytes on the other serial
- * ports go to stderr as hex. A summary with the speed and anything the model
+ * Text on SCI1 (where the boot loader and CyOS print) and SCI2 is copied to
+ * stdout; bytes on SCI0 go to stderr as hex. A summary with the speed and anything the model
  * saw but does not cover is printed at the end. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +45,7 @@ static int npresses;
 static void on_tx(void *user, int port, uint8_t b)
 {
     (void)user;
-    if (port == 2) { putchar(b); fflush(stdout); }
+    if (port == 1 || port == 2) { putchar(b); fflush(stdout); }
     else fprintf(stderr, "[sci%d %02x]", port, b);
 }
 
@@ -187,7 +187,7 @@ int main(int argc, char **argv)
     fprintf(stderr,
             "\n--- %.2f s emulated in %.2f s host (%.0f%% of real time, %.1f MHz)\n"
             "pc=%06x sleeping=%d off=%d lcd_on=%d frames=%d\n"
-            "unmapped reads=%u writes=%u illegal=%u dtc/dma=%u wdt resets=%u\n",
+            "unmapped reads=%u writes=%u illegal=%u dma-dreq=%u wdt resets=%u\n",
             emu_s, host_s, host_s > 0 ? 100.0 * emu_s / host_s : 0.0,
             host_s > 0 ? m.cpu.cycles / host_s / 1e6 : 0.0,
             (unsigned)m.cpu.pc, m.cpu.sleeping, m.standby, (m.lcd.reg[0] & 0x40) != 0, frame_no,

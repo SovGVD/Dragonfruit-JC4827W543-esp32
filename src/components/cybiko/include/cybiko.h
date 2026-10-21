@@ -115,6 +115,15 @@ typedef struct {
     bool dirty;                /* contents changed since cybiko_flash_saved */
 } cy_flash_t;
 
+/* One DMA subchannel (or a full-address channel, kept in the B slot) while a
+ * transfer is set up; see cy_dma.c. */
+typedef struct {
+    bool active, fae, word, block, block_dest, repeat, mar_dest, tend, eat;
+    int8_t trigger;            /* interrupt vector that requests a unit, or < 0 */
+    int8_t incs, incd;
+    uint32_t src, dst, count, bcount, blen;
+} cy_dma_sub_t;
+
 typedef struct cybiko {
     h8s_cpu_t cpu;
     cy_host_t host;
@@ -150,7 +159,12 @@ typedef struct cybiko {
     uint32_t adc_left;
     int adc_ch;
 
-    uint64_t synced;           /* CPU state count the peripherals have reached */
+    cy_dma_sub_t dma[4];
+    bool dma_waiting;          /* a transfer waits for a peripheral interrupt */
+    bool dxc;                  /* the DMAC or DTC (not the CPU) is on the bus */
+
+    uint64_t synced;
+    bool in_sync;           /* CPU state count the peripherals have reached */
 
     /* speaker (P1 bit 5, TIOCB1) */
     uint32_t spk_edges;        /* P15 toggles written by software */
@@ -159,7 +173,8 @@ typedef struct cybiko {
     float spk_freq, spk_duty;  /* last tone reported to the host */
 
     /* diagnostics: things a ROM used that the model does not cover */
-    uint32_t unmapped_reads, unmapped_writes, illegal_ops, dtc_dma_use;
+    uint32_t unmapped_reads, unmapped_writes, illegal_ops;
+    uint32_t dtc_dma_use;      /* DMA transfers started by the DREQ pins (not wired) */
     uint32_t wdt_resets;
 } cybiko_t;
 

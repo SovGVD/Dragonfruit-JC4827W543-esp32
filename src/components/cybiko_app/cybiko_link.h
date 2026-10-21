@@ -10,7 +10,7 @@
  * enough to study the traffic but not to make CyOS chat work. Enable it in
  * /Cybiko/cybiko.cfg:
  *   rf = espnow        # default: off
- *   rf.port = 0        # SCI channel to carry (0-1; 2 is the debug console)
+ *   rf.port = 0        # SCI channel to carry (0-1; 1 also carries the console text)
  *   rf.channel = 1     # Wi-Fi channel, the same on every board */
 /* cfg is the text of /Cybiko/cybiko.cfg, or NULL when there is none. */
 void cybiko_link_init(const char *cfg);

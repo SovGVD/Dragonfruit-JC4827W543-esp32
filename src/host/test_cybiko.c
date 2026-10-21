@@ -6,6 +6,7 @@
 #include <string.h>
 #include "cybiko.h"
 #include "cybiko_progs.h"
+#include "cy_internal.h"
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { \
@@ -307,6 +308,58 @@ static void test_speaker(void)
     CHECK(spk_calls == 0);                       /* silent machine: no calls */
 }
 
+static void test_dma(void)
+{
+    boot(prog_spin, sizeof prog_spin);
+    /* Full address mode, auto-request burst, as CyOS does at start-up:
+     * 12 words from a fixed source into on-chip RAM, fixed. */
+    h8s_write16(&m.cpu, 0x400100, 0xbeef);
+    h8s_write32(&m.cpu, 0xfffef0, 0x400100);         /* MAR1A: source */
+    h8s_write32(&m.cpu, 0xfffef8, 0xffdc00);         /* MAR1B: destination */
+    h8s_write16(&m.cpu, 0xfffef6, 12);               /* ETCR1A */
+    h8s_write8(&m.cpu, 0xffff06, 0x80);              /* FAE1 */
+    h8s_write8(&m.cpu, 0xffff04, 0x80);              /* DMACR1A: word, fixed */
+    h8s_write8(&m.cpu, 0xffff05, 0x07);              /* DMACR1B: auto-request burst */
+    h8s_write8(&m.cpu, 0xffff07, 0x80);              /* DTME1 */
+    CHECK(h8s_read16(&m.cpu, 0xffdc00) == 0);
+    h8s_write8(&m.cpu, 0xffff07, 0xc0);              /* DTE1: go */
+    CHECK(h8s_read16(&m.cpu, 0xffdc00) == 0xbeef);
+    CHECK(h8s_read8(&m.cpu, 0xffff07) == 0x80);      /* DTE1 cleared, DTME1 kept */
+    CHECK(h8s_read16(&m.cpu, 0xfffef6) == 0);
+
+    /* Full address, incrementing both sides, with the end interrupt. */
+    for (int i = 0; i < 4; i++) h8s_write16(&m.cpu, 0x400200 + 2 * i, (uint16_t)(0x1111 * (i + 1)));
+    h8s_write32(&m.cpu, 0xfffef0, 0x400200);
+    h8s_write32(&m.cpu, 0xfffef8, 0x400300);
+    h8s_write16(&m.cpu, 0xfffef6, 4);
+    h8s_write8(&m.cpu, 0xffff04, 0xa0);              /* word, SAIDE: source++ */
+    h8s_write8(&m.cpu, 0xffff05, 0x27);              /* DAIDE: destination++, burst */
+    h8s_write8(&m.cpu, 0xffff07, 0xc4);              /* DTME1, DTE1, DTIE1A */
+    for (int i = 0; i < 4; i++) CHECK(h8s_read16(&m.cpu, 0x400300 + 2 * i) == 0x1111 * (i + 1));
+    CHECK(h8s_read16(&m.cpu, 0x400308) == 0);
+    CHECK(m.pend[74 >> 5] & 1u << (74 & 31));         /* DEND1A */
+
+    /* Short address mode, started by SCI0 TXI, DTA swallows the interrupt. */
+    m.pend[82 >> 5] = 0;
+    h8s_write8(&m.cpu, 0x400400, 0x5a);
+    h8s_write8(&m.cpu, 0x400401, 0xa5);
+    h8s_write32(&m.cpu, 0xfffee0, 0x400400);         /* MAR0A */
+    h8s_write16(&m.cpu, 0xfffee4, 0xdc10);           /* IOAR0A: on-chip RAM */
+    h8s_write16(&m.cpu, 0xfffee6, 2);                /* ETCR0A */
+    h8s_write8(&m.cpu, 0xffff02, 0x04);              /* DMACR0A: byte, MAR to IOAR, TXI0 */
+    h8s_write8(&m.cpu, 0xffff06, 0x81);              /* keep FAE1, DTA0A */
+    h8s_write8(&m.cpu, 0xffff07, 0x10);              /* DTE0A */
+    CHECK(h8s_read8(&m.cpu, 0xffdc10) == 0);
+    cy_irq(&m, 82);
+    CHECK(h8s_read8(&m.cpu, 0xffdc10) == 0x5a);
+    CHECK(!(m.pend[82 >> 5] & 1u << (82 & 31)));
+    cy_irq(&m, 82);
+    CHECK(h8s_read8(&m.cpu, 0xffdc10) == 0xa5);
+    CHECK(!(h8s_read8(&m.cpu, 0xffff07) & 0x10));    /* done */
+    cy_irq(&m, 82);                                  /* now reaches the CPU */
+    CHECK(m.pend[82 >> 5] & 1u << (82 & 31));
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -321,6 +374,7 @@ int main(void)
     test_rtc();
     test_watchdog();
     test_speaker();
+    test_dma();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

@@ -56,22 +56,24 @@ typedef struct { int16_t key; bool down; } key_event_t;
 static void on_serial_tx(void *user, int port, uint8_t b)
 {
     (void)user;
-    if (port == 2) {
-        /* CyOS debug console: log it a line at a time */
-        static char line[128];
-        static size_t len;
-        if (b == '\n' || b == '\r' || len == sizeof line - 1) {
-            if (len) {
-                line[len] = 0;
-                ESP_LOGI("cyos", "%s", line);
-                len = 0;
+    /* The boot loader and CyOS print text on SCI1, and SCI2 is a debug port
+     * too: log both a line at a time. SCI0 and SCI1 also go to the radio
+     * bridge when it carries that port. */
+    if (port == 1 || port == 2) {
+        static char line[2][128];
+        static size_t len[2];
+        char *l = line[port - 1];
+        size_t *n = &len[port - 1];
+        if (b == '\n' || b == '\r' || *n == sizeof line[0] - 1) {
+            if (*n) {
+                l[*n] = 0;
+                ESP_LOGI("cyos", "%s", l);
+                *n = 0;
             }
-            if (b == '\n' || b == '\r') return;
         }
-        if (b >= 0x20 && b < 0x7f) line[len++] = (char)b;
-        return;
+        if (b >= 0x20 && b < 0x7f) l[(*n)++] = (char)b;
     }
-    cybiko_link_serial_tx(port, b);
+    if (port != 2) cybiko_link_serial_tx(port, b);
 }
 
 static void on_speaker(void *user, float freq_hz, float duty)

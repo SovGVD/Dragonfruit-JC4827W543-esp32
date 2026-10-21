@@ -4,10 +4,10 @@ The JC4827W543 firmware also emulates the **Cybiko Xtreme** (2001): a Hitachi
 H8S/2323 at 18.432 MHz, 2 MB RAM, 512 KB flash and a 160×100 four-shade LCD.
 Pick **Cybiko** in the [boot menu](jc4827w543.md#boot-menu).
 
-The hardware model follows MAME's `cybikoxt` driver. It has been tested with
-small H8S programs (`src/host/test_cybiko.c`) but **not yet with the real
-ROM**, because no ROM can be shipped here. Expect fixes once it has been run
-with real dumps: please run the [PC runner](#pc-runner) and send its output.
+The hardware model follows MAME's `cybikoxt` driver. It is tested with small
+H8S programs (`src/host/test_cybiko.c`), and with the real `cybikoxt` dumps
+CyOS 1.5.08 boots to its first-run setup (welcome, nickname, contrast, clock)
+in the [PC runner](#pc-runner). No ROM is shipped here.
 
 ## SD card
 
@@ -102,7 +102,7 @@ work on its own. It is off by default:
 
 ```ini
 rf = espnow      # default: off
-rf.port = 0      # serial port to carry, 0 or 1 (2 is the debug console)
+rf.port = 0      # serial port to carry, 0 or 1 (1 also carries the console text)
 rf.channel = 1   # Wi-Fi channel; use the same one on every board
 ```
 
@@ -112,8 +112,9 @@ each other.
 
 ## Debug console
 
-CyOS prints to its debug serial port (SCI2, 57600 baud). The firmware logs
-those lines on the ESP32 serial monitor with the `cyos` tag.
+The boot loader and CyOS print text on serial port SCI1 (SCI2 is a debug
+port too). The firmware logs those lines on the ESP32 serial monitor with the
+`cyos` tag.
 
 ## PC runner
 
@@ -126,17 +127,20 @@ build-host/cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin \
     --seconds 30 --screenshot screen.pgm --frames frames/ --press enter@8000
 ```
 
-It prints the debug console to stdout and bytes on the other serial ports to
-stderr as hex, then a summary: emulation speed and anything the model saw but
-does not cover (unmapped accesses, undefined opcodes, DTC/DMA use, watchdog
+It prints the text on SCI1 and SCI2 to stdout and bytes on SCI0 to stderr as
+hex, then a summary: emulation speed and anything the model saw but
+does not cover (unmapped accesses, undefined opcodes, DMA DREQ use, watchdog
 resets). `--ramdisk FILE` loads and saves a RAM disk as on the board.
 
 ## Status and limits
 
-- Not yet run with the real ROM (see above).
+- CyOS boots on the PC runner; speed and sound on the board still need
+  checking.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
-- The DTC and DMA controllers are not modelled; the runner counts any use.
+- The DMA controller and the DTC are modelled (CyOS uses both at start-up).
+  Software DTC activation and the DREQ pins are not; the runner counts DREQ
+  use.
 - The USB controller ignores writes.
 
 ## Future improvements

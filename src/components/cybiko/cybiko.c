@@ -225,9 +225,8 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a >= 0xffff60 && a <= 0xffff6f) { int p = (int)(a - 0xffff60); m->dr[p] = v; port_output(m, p); return; }
     if (a >= 0xffff70 && a <= 0xffff74) { m->pcr[a - 0xffff70] = v; return; }
     if (a == 0xffff76 || a == 0xffff77) { m->odr[a - 0xffff76] = v; return; }
-    if (a >= 0xffff30 && a <= 0xffff37 && v) m->dtc_dma_use++;     /* DTC enables */
-    if (a >= 0xffff06 && a <= 0xffff07 && v) m->dtc_dma_use++;     /* DMABCR */
     m->misc[a - IO_BASE] = v;
+    if (a == 0xffff06 || a == 0xffff07) cy_dma_control(m);
 }
 
 /* ------------------------------------------------------------------ */
@@ -313,16 +312,21 @@ static void bus_illegal(void *ctx, h8s_cpu_t *cpu, uint16_t op)
 
 void cy_sync(cybiko_t *m)
 {
+    /* A DMA/DTC transfer started from inside the peripherals can touch I/O
+     * again; the outer call finishes the catch-up. */
+    if (m->in_sync) return;
     uint64_t t = h8s_time(&m->cpu);
     if (t <= m->synced) return;
     uint64_t d = t - m->synced;
     m->synced = t;
     if (m->standby) return;            /* clocks stopped */
+    m->in_sync = true;
     while (d) {
         uint32_t step = d > 0x40000000u ? 0x40000000u : (uint32_t)d;
         cy_periph_advance(m, step);
         d -= step;
     }
+    m->in_sync = false;
 }
 
 void cybiko_reset(cybiko_t *m)
@@ -345,6 +349,7 @@ void cybiko_reset(cybiko_t *m)
     m->reset_pending = false;
 
     cy_periph_reset(m);
+    cy_dma_reset(m);
     cy_lcd_reset(&m->lcd);
     cy_rtc_reset(m);
     cy_flash_reset(m);

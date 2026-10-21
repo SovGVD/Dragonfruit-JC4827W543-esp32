@@ -1,4 +1,5 @@
 #include "display.h"
+#include "display_ui.h"
 #include "nv3041a.h"
 #include "board.h"
 #include "bus.h"
@@ -161,4 +162,65 @@ void display_resume_after_wake(void)
 void display_run_waveform_benchmark(void)
 {
     printf("= WAVE unsupported: JC4827W543 uses an LCD\n");
+}
+
+static void clip(int *x, int *y, int *w, int *h)
+{
+    if (*x < 0) { *w += *x; *x = 0; }
+    if (*y < 0) { *h += *y; *y = 0; }
+    if (*x + *w > BOARD_PANEL_W) *w = BOARD_PANEL_W - *x;
+    if (*y + *h > BOARD_PANEL_H) *h = BOARD_PANEL_H - *y;
+}
+
+void display_ui_fill(int x, int y, int w, int h, uint16_t color)
+{
+    clip(&x, &y, &w, &h);
+    if (!ready || w <= 0 || h <= 0) return;
+    for (int i = 0; i < w; i++) {
+        pixels[i * 2] = color >> 8;
+        pixels[i * 2 + 1] = color & 0xff;
+    }
+    nv3041a_window(x, y, w, h);
+    for (int r = 0; r < h; r++)
+        nv3041a_write_row(pixels, w);
+}
+
+int display_ui_text_width(const char *s, int scale)
+{
+    return (int)strlen(s) * (DISPLAY_FONT_W + 1) * scale;
+}
+
+int display_ui_text(int x, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
+{
+    const int cw = (DISPLAY_FONT_W + 1) * scale, ch = DISPLAY_FONT_H * scale;
+    for (; *s; s++, x += cw) {
+        if (!ready || x < 0 || y < 0 || x + cw > BOARD_PANEL_W || y + ch > BOARD_PANEL_H)
+            continue;
+        nv3041a_window(x, y, cw, ch);
+        for (int r = 0; r < ch; r++) {
+            int bits = display_font_row(*s, r / scale);
+            for (int c = 0; c < cw; c++) {
+                int dot = c / scale;
+                uint16_t color = dot < DISPLAY_FONT_W && (bits & (0x10 >> dot)) ? fg : bg;
+                pixels[c * 2] = color >> 8;
+                pixels[c * 2 + 1] = color & 0xff;
+            }
+            nv3041a_write_row(pixels, cw);
+        }
+    }
+    return x;
+}
+
+void display_ui_window(int x, int y, int w, int h)
+{
+    if (ready) nv3041a_window(x, y, w, h);
+}
+
+void display_ui_write_row(const uint8_t *rgb565_be, int w)
+{
+    if (!ready || w <= 0 || w > BOARD_PANEL_W) return;
+    /* The SPI driver may DMA from the caller's buffer only if it is DMA-capable;
+     * copy into the driver's DMA row buffer to be safe. */
+    memcpy(pixels, rgb565_be, (size_t)w * 2);
+    nv3041a_write_row(pixels, w);
 }

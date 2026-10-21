@@ -13,6 +13,13 @@ typedef struct {
 } input_pen_event_t;
 
 esp_err_t input_init(void);
+
+/* Touch in native panel pixels, outside the Palm layout (boot menu, Cybiko
+ * keyboard). Samples the controller directly; returns false while untouched.
+ * Not for use while the input task is polling. XPT2046 only; others return false. */
+bool input_touch_panel(int *x, int *y);
+/* Live level of the BOOT/power button (true while held). */
+bool input_boot_button_held(void);
 void input_poll(void);
 
 /* Non-blocking: pop one queued pen event into *out. Returns true if one was

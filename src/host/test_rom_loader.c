@@ -14,7 +14,7 @@
 
 static sdmmc_card_t card;
 static int no_sd, fail_alloc, mounts, unmounts, allocations;
-static const char *path = TEST_SD_DIR "/palm.rom";
+static const char *path = TEST_SD_DIR "/PalmOS/palm.rom";
 
 esp_err_t m5_sd_mount(sdmmc_card_t **out)
 {
@@ -75,8 +75,10 @@ int main(void)
 {
 #ifdef _WIN32
     _mkdir(TEST_SD_DIR);
+    _mkdir(TEST_SD_DIR "/PalmOS");
 #else
     mkdir(TEST_SD_DIR, 0700);
+    mkdir(TEST_SD_DIR "/PalmOS", 0700);
 #endif
     remove(path);
     no_sd = 1; expect(ROM_LOAD_NO_SD);

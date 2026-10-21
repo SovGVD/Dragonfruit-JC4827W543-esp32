@@ -5,6 +5,7 @@
 #include "layout.h"
 #include "touch_config.h"
 #include "palm_config.h"
+#include "m5_sd.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -143,9 +144,8 @@ static esp_err_t gt911_write_block(uint16_t reg, const uint8_t *buf, size_t len)
     return i2c_master_transmit(gt911_dev, w, 2 + len, 100);
 }
 
-/* digitizer.cfg lives at the SD root (i.e. M5_SD_MOUNT_POINT "/digitizer.cfg").
- * Kept as a literal so input.c need not depend on m5_sd just for the macro. */
-#define DIGITIZER_CFG_PATH "/sdcard/digitizer.cfg"
+/* digitizer.cfg lives in the Palm folder (PALM_SD_DIR "/digitizer.cfg"). */
+#define DIGITIZER_CFG_PATH PALM_SD_DIR "/digitizer.cfg"
 
 /* Logging sink for the (pure) digitizer.cfg parser — routes per-key
  * applied/skipped messages to the serial log. */
@@ -504,3 +504,7 @@ void input_poll(void)
     tap_pulse_service();
 #endif
 }
+
+/* The GT911 path reports touches through the Palm layout only. */
+bool input_touch_panel(int *x, int *y) { (void)x; (void)y; return false; }
+bool input_boot_button_held(void) { return !gpio_get_level(PIN_BTN_M); }

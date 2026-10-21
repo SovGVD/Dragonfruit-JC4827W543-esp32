@@ -69,9 +69,9 @@ static void cmd_help(void)
     REPLY("  sertx          drain + hex-dump the emulated UART TX ring");
     REPLY("  serloop on|off internal UART loopback (TX -> RX)");
     REPLY("  serial [auto|console|passthrough|status]  USB<->Palm serial bridge");
-    REPLY("  install [list|now|status]  PDB/PRC auto-install from /install");
-    REPLY("  backup [NAME|status]       back up RAM DBs to SD /backup (NAME = one DB)");
-    REPLY("  restore [NAME|status]      install DBs from SD /backup (NAME = one file)");
+    REPLY("  install [list|now|status]  PDB/PRC auto-install from /PalmOS/install");
+    REPLY("  backup [NAME|status]       back up RAM DBs to /PalmOS/backup (NAME = one DB)");
+    REPLY("  restore [NAME|status]      install DBs from /PalmOS/backup (NAME = one file)");
     REPLY("  state [save|status]       checkpoint RAM to SD (auto-restored at boot)");
     REPLY("  reset          warm-reset the emulated Palm (databases preserved)");
 }

@@ -1451,7 +1451,7 @@ void backup_dedupe(char used[][BACKUP_NAME_MAX], int nused, char *fname)
 
 static const char *TAG = "installer";
 
-#define INSTALL_DIR      M5_SD_MOUNT_POINT "/install"
+#define INSTALL_DIR      PALM_SD_DIR "/install"
 
 static int name_cmp(const void *a, const void *b)
 {
@@ -1551,7 +1551,7 @@ int installer_scan_sd(install_set_t *set)
 
 /* ===================== device-only: backup / restore ===================== */
 
-#define BACKUP_DIR       M5_SD_MOUNT_POINT "/backup"
+#define BACKUP_DIR       PALM_SD_DIR "/backup"
 
 /* Built-in organizer apps that sync via their own HotSync conduit and therefore
  * do NOT set dmHdrAttrBackup, even though their RAM databases hold the user's data.

@@ -188,3 +188,15 @@ bool input_pop_power_key(void)
 
 int input_pop_br_request(void) { return INPUT_BR_NONE; }
 bool input_button_held(int which) { (void)which; return false; }
+
+bool input_touch_panel(int *x, int *y)
+{
+    int rx, ry, pressure;
+    return sample(&rx, &ry, &pressure) &&
+        resistive_touch_map(&calibration, rx, ry, BOARD_PANEL_W, BOARD_PANEL_H, x, y);
+}
+
+bool input_boot_button_held(void)
+{
+    return !gpio_get_level(BOARD_BTN_POWER);
+}

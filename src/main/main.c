@@ -1055,6 +1055,22 @@ static void display_task(void *param)
     }
 }
 
+/* Start an I/O task, with its stack in internal RAM if there is room, else
+ * in PSRAM. With the JIT cache and Wi-Fi up, internal RAM can be too short
+ * for both stacks, which left the display task unstarted and the screen
+ * blank. Neither task writes flash (which would hide a PSRAM stack), and
+ * their SPI transfers use internal DMA buffers, so a PSRAM stack is fine. */
+static void start_io_task(TaskFunction_t fn, const char *name, uint32_t stack, UBaseType_t prio)
+{
+    if (xTaskCreatePinnedToCore(fn, name, stack, NULL, prio, NULL, 0) == pdPASS) return;
+    if (xTaskCreatePinnedToCoreWithCaps(fn, name, stack, NULL, prio, NULL, 0,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGW(TAG, "%s task: internal RAM full, stack in PSRAM", name);
+        return;
+    }
+    ESP_LOGE(TAG, "%s task: out of memory", name);
+}
+
 void app_main(void)
 {
     /* Reserve the JIT's executable cache first, while the internal D/IRAM (SRAM1)
@@ -1303,10 +1319,8 @@ void app_main(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     if (xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1) != pdPASS)
         ESP_LOGE(TAG, "cpu task: out of internal RAM");
-    if (xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0) != pdPASS)
-        ESP_LOGE(TAG, "display task: out of internal RAM");
-    if (xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0) != pdPASS)
-        ESP_LOGE(TAG, "input task: out of internal RAM");
+    start_io_task(display_task, "display", 8192, 3);
+    start_io_task(input_task, "input", 4096, 4);
 #if !CONFIG_BOARD_JC4827W543
     xTaskCreatePinnedToCore(battery_task, "battery", 4096, NULL, 2, NULL, 0);
 #else

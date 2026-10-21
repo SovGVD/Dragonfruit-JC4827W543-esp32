@@ -8,6 +8,7 @@ idf_component_register(
         "gpio.c"
         "spi.c"
         "uart.c"
+        "pwm.c"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES esp_timer
 )

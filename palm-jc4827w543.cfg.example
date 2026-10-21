@@ -16,6 +16,10 @@ state.enabled = 1
 card.enabled = 1
 card.read_only = 0
 
+# Speaker volume for Palm system sounds and alarms, 0..100. 0 turns the
+# I2S amplifier off. Palm's own Sounds preferences still apply on top.
+sound.volume = 60
+
 # For individual element placement use preset=custom and palm.cfg.example.
 # Native panel coordinates, x=0..479, y=0..271; rotation 0 is upright.
 # The portrait preset renders the LCD at native 160x160 (1:1), with no enlargement.

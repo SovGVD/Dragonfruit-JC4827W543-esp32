@@ -30,6 +30,7 @@
 #include "ram_state.h"
 #include "m5_sd.h"
 #include "palm_card.h"
+#include "audio.h"
 
 static const char *TAG = "emu";
 
@@ -107,6 +108,7 @@ static bool ram_state_enabled = true;
 static bool ram_state_enabled;
 #endif
 static bool ram_restored;
+static uint8_t sound_volume = 60;   /* palm.cfg sound.volume, 0..100; 0 = off */
 #if CONFIG_BOARD_JC4827W543
 static bool card_enabled = true, card_read_only;
 /* Hold one mount reference for Palm's open file handles. */
@@ -1119,6 +1121,11 @@ void app_main(void)
             if (config_get_value(cfg_text, "card.read_only", v, sizeof v))
                 card_read_only = !strcmp(v, "1");
 #endif
+            if (config_get_value(cfg_text, "sound.volume", v, sizeof v)) {
+                long vol = strtol(v, NULL, 10);
+                if (vol >= 0 && vol <= 100) sound_volume = (uint8_t)vol;
+                else ESP_LOGW(TAG, "sound.volume '%s' out of range; using %u", v, sound_volume);
+            }
             if (config_get_value(cfg_text, "serial.mode", v, sizeof v)) {
                 int m = serial_bridge_parse_mode(v);
                 if (m >= 0) serial_mode = m;
@@ -1204,6 +1211,12 @@ void app_main(void)
     g_install.pump.keep_existing = ram_restored;
     g_install.phase = g_install.set.count ? INST_WAIT : INST_IDLE;
     g_installer_yield = installer_yield_cb;
+
+    err = audio_init(sound_volume);
+    if (err == ESP_OK)
+        db_pwm_set_sink(audio_tone);
+    else
+        ESP_LOGW(TAG, "Audio init failed: %s", esp_err_to_name(err));
 
     dragonball_init();
 

@@ -22,6 +22,11 @@
 #define BOARD_TOUCH_INT 3
 #define BOARD_TOUCH_RST 38
 #define BOARD_BTN_POWER 0
+/* On-board I2S class-D amplifier and speaker connector. */
+#define BOARD_HAS_AUDIO 1
+#define BOARD_I2S_BCLK 42
+#define BOARD_I2S_LRCLK 2
+#define BOARD_I2S_DOUT 41
 #else
 #define BOARD_NAME "M5Paper"
 #define BOARD_PANEL_W 960

@@ -1,0 +1,24 @@
+#pragma once
+
+#include <stdint.h>
+#include "esp_err.h"
+
+/* Speaker output, independent of the emulated machine. A low-priority task
+ * synthesizes a rectangle wave and streams it to the board's I2S amplifier;
+ * while silent the I2S channel is disabled and the task sleeps.
+ *
+ * Any emulator that drives a piezo/PWM tone (Palm DragonBall PWM, Cybiko) maps
+ * its hardware to audio_tone(). Boards without BOARD_HAS_AUDIO get stubs. */
+
+/* Start the I2S channel and synthesis task. volume is 0..100; 0 leaves audio
+ * off and returns ESP_OK without touching the I2S pins. */
+esp_err_t audio_init(uint8_t volume);
+
+/* 0..100, applied to the next tone. */
+void audio_set_volume(uint8_t volume);
+
+/* Play a rectangle wave at freq_hz with the given duty (0..1), replacing any
+ * current tone. freq_hz <= 0, or duty 0 or 1 (no AC component), is silence.
+ * Cheap and non-blocking: safe to call from an emulator CPU task on every
+ * register write. Matches db_pwm_sink_t. */
+void audio_tone(float freq_hz, float duty);

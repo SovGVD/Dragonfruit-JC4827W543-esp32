@@ -85,10 +85,11 @@
 #define REG_PKPUEN      0x442
 #define REG_PKSEL       0x443
 
-/* PWM */
+/* PWM (EZ layout: control, sample FIFO, 8-bit period, 8-bit counter) */
 #define REG_PWMC        0x500
-#define REG_PWMP        0x502
-#define REG_PWMW        0x504
+#define REG_PWMS        0x502
+#define REG_PWMP        0x504
+#define REG_PWMCNT      0x505
 
 /* Timer 1 */
 #define REG_TCTL        0x600
@@ -268,6 +269,12 @@ typedef struct {
     uint16_t tcn;
     uint16_t tstat;
 
+    /* PWM tone generator */
+    uint16_t pwmc;
+    uint16_t pwms;
+    uint8_t  pwmp;
+    bool     pwm_active;   /* enabled and a sample written since enable */
+
     /* SPI */
     uint16_t spim_data;
     uint16_t spim_cont;
@@ -382,6 +389,13 @@ void     db_uart_set_cpu_transport(bool on); /* before CPU task starts */
 void     db_uart_flush_cpu_transport(void);  /* CPU task, exclusive transport only */
 void     db_uart_reset(void);               /* db_init reset notification */
 uint32_t db_uart_generation(void);          /* CPU task only */
+
+/* PWM tone output. The sink gets freq_hz = 0 for silence, else a rectangle
+ * wave at freq_hz with duty 0..1. Called on the CPU task on every tone change,
+ * and from dragonball_init (silence). The sink survives dragonball_init. */
+typedef void (*db_pwm_sink_t)(float freq_hz, float duty);
+void     db_pwm_set_sink(db_pwm_sink_t sink);
+void     db_pwm_reset(void);
 
 void     db_spi_reset(void);
 void     db_spi_set_touch(int16_t x, int16_t y, bool down);

@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "main.c" "debug_console.c" "serial_bridge.c"
     INCLUDE_DIRS "."
-    REQUIRES board m68k bus dragonball display input esp_driver_gpio esp_driver_uart esp_adc rom_loader layout config installer ram_state m5_sd palm_card wifi_gateway
+    REQUIRES board m68k bus dragonball display input esp_driver_gpio esp_driver_uart esp_adc rom_loader layout config installer ram_state m5_sd palm_card wifi_gateway audio
 )

@@ -1068,8 +1068,10 @@ void app_main(void)
 #else
     g_m68k_accel_mode = 0;
 #endif
+#if !CONFIG_BOARD_JC4827W543
     if (g_m68k_accel_mode)
         m68k_jit_init();
+#endif
 
     esp_err_t err = display_init();
     bool display_ok = (err == ESP_OK);
@@ -1093,6 +1095,10 @@ void app_main(void)
         return;
     }
     if (display_ok) display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, 0xffff);
+    /* On this board the JIT cache is reserved only once Palm OS is chosen, so
+     * a Cybiko boot keeps that internal RAM. */
+    if (g_m68k_accel_mode)
+        m68k_jit_init();
 #endif
     ESP_LOGI(TAG, "Starting Palm IIIx emulator");
 

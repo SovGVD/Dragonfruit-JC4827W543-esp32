@@ -332,8 +332,10 @@ static void bus_write8(void *ctx, uint32_t a, uint8_t v)
 
 static void bus_illegal(void *ctx, h8s_cpu_t *cpu, uint16_t op)
 {
-    (void)cpu; (void)op;
-    ((cybiko_t *)ctx)->illegal_ops++;
+    cybiko_t *m = ctx;
+    (void)cpu;
+    if (op == CY_HLE_OP && cy_hle(m)) return;
+    m->illegal_ops++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -409,6 +411,8 @@ void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
     m->ram = ram;
     m->flash.mem = flash;
     memcpy(rom + CY_ROM_SIZE, rom, CY_ROM_SIZE);
+    m->hle_sum_pc = 0xffffffffu;
+    cy_hle_patch_rom(m);
 
     h8s_init(&m->cpu);
     m->cpu.ctx = m;

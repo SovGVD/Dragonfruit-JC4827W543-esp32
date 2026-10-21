@@ -415,6 +415,43 @@ static void test_disk(void)
     CHECK(m.disk_dirty[0] == 0x2 && m.disk_dirty[511 / 32] == 1u << (511 % 32));
 }
 
+/* The CyOS page checksum run natively leaves the registers the H8S code
+ * leaves. */
+static void test_hle(void)
+{
+    static const unsigned char prog[] = {
+        0x00, 0x00, 0x01, 0x00,                          /* reset vector -> 000100 */
+    };
+    static const uint8_t code[] = {                      /* CyOS 1.5.08 page checksum */
+        0x01, 0x10, 0x6d, 0xf4, 0x0f, 0x82, 0x1a, 0x80, 0x1a, 0xb3, 0x1f, 0x90, 0x4c, 0x28,
+        0x0f, 0xa4, 0x6c, 0x4a, 0xf2, 0x00, 0x17, 0x72, 0x01, 0xf0, 0x65, 0x20, 0x01, 0xf0,
+        0x65, 0x30, 0x10, 0x30, 0x0f, 0x82, 0x0d, 0xa2, 0x19, 0xaa, 0xea, 0x01, 0xe2, 0x00,
+        0x17, 0x72, 0x01, 0xf0, 0x64, 0x20, 0x0b, 0x03, 0x1f, 0x93, 0x4d, 0xda, 0x01, 0x10,
+        0x6d, 0x75, 0x54, 0x70,
+    };
+    static const uint8_t caller[] = {
+        0x7a, 0x07, 0x00, 0xff, 0xfb, 0x00,              /* mov.l #fffb00,er7 */
+        0x7a, 0x00, 0x00, 0x40, 0x10, 0x00,              /* mov.l #401000,er0 */
+        0x7a, 0x01, 0x00, 0x00, 0x01, 0x00,              /* mov.l #256,er1 */
+        0x5e, 0x40, 0x20, 0x00,                          /* jsr @402000 */
+        0x01, 0x80,                                      /* sleep */
+    };
+    uint32_t er[2][4];
+    for (int native = 0; native < 2; native++) {
+        boot(prog, sizeof prog);
+        memcpy(rom + 0x100, caller, sizeof caller);
+        memcpy(ram + 0x2000, code, sizeof code);
+        for (int i = 0; i < 256; i++) ram[0x1000 + i] = (uint8_t)(i * 37 + 5);
+        if (native) cy_hle_patch_kernel(&m);
+        CHECK(m.hle_sum_pc == (native ? 0x402000u : 0xffffffffu));
+        cybiko_run(&m, 100000);
+        CHECK(m.cpu.sleeping && m.illegal_ops == 0);
+        memcpy(er[native], m.cpu.er, sizeof er[native]);
+    }
+    CHECK(er[0][0] == er[1][0] && er[0][2] == er[1][2] && er[0][3] == er[1][3]);
+    CHECK(er[0][0] != 0);
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -431,6 +468,7 @@ int main(void)
     test_speaker();
     test_dma();
     test_disk();
+    test_hle();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

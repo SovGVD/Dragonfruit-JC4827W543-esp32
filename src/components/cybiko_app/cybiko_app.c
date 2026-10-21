@@ -155,7 +155,10 @@ static void cpu_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(ahead / 1000));
             last_yield = esp_timer_get_time();
         } else {
-            if (ahead < -200000) {               /* running slow: don't try to catch up */
+            /* Behind: idle stretches (CyOS sleeping) run far faster than real
+             * time and repay a busy burst, so keep up to a second of debt
+             * before giving up on it. */
+            if (ahead < -1000000) {
                 t0 = now;
                 c0 = machine->cpu.cycles;
             }

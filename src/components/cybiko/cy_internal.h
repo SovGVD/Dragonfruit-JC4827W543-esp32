@@ -31,6 +31,12 @@ void cy_dma_control(cybiko_t *m);
 void cy_sync(cybiko_t *m);
 void cy_bus_timing(cybiko_t *m);
 
+/* cy_hle.c: an opcode the H8S leaves undefined marks a native routine */
+#define CY_HLE_OP 0x0001
+void cy_hle_patch_rom(cybiko_t *m);
+void cy_hle_patch_kernel(cybiko_t *m);
+bool cy_hle(cybiko_t *m);
+
 /* cy_disk.c */
 void cy_disk_console(cybiko_t *m, uint8_t b);
 void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);

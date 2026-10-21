@@ -187,6 +187,7 @@ typedef struct cybiko {
     uint32_t disk_dirty[CY_DISK_MAX / CY_DISK_CHUNK / 32];  /* chunks written */
     uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
     uint8_t disk_patched;      /* kernel patches applied since power-on */
+    uint32_t hle_sum_pc, hle_mul_pc;  /* routines run natively (cy_hle.c) */
 
     /* diagnostics: things a ROM used that the model does not cover */
     uint32_t unmapped_reads, unmapped_writes, illegal_ops;

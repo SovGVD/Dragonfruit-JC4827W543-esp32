@@ -244,13 +244,13 @@ static void patch_kernel(cybiko_t *m)
 void cy_disk_console(cybiko_t *m, uint8_t b)
 {
     static const char want[] = "Starting 0x";
-    if (!m->disk) return;
     if (b == (uint8_t)want[m->con_match]) {
         if (++m->con_match == sizeof want - 1) {
             m->con_match = 0;
             /* The loader prints this once the kernel is unpacked, a line
              * before it jumps there. */
-            patch_kernel(m);
+            if (m->disk) patch_kernel(m);
+            cy_hle_patch_kernel(m);
         }
     } else {
         m->con_match = b == (uint8_t)want[0];

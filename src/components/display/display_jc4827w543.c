@@ -14,12 +14,27 @@
 #include <string.h>
 
 #define FB_BYTES (160 * 20)
-static bool ready, first_refresh = true;
+static bool ready, first_refresh = true, first_color = true;
 static uint8_t silk[SILK_BYTES];
 static uint8_t shadow[FB_BYTES];
 static uint32_t last_color_hash;
 static uint8_t gray[BOARD_PANEL_W];
 static DMA_ATTR uint8_t pixels[BOARD_PANEL_W * 2];
+
+/* A region that does not fit the panel is not drawn; say so once, since it
+ * leaves the screen blank (e.g. a palm.cfg layout made for another panel). */
+static bool off_panel(const region_t *r, int w, int h)
+{
+    static bool warned;
+    bool off = w <= 0 || r->panel_x < 0 || r->panel_y < 0 ||
+               r->panel_x + w > BOARD_PANEL_W || r->panel_y + h > BOARD_PANEL_H;
+    if (off && !warned) {
+        warned = true;
+        ESP_LOGW("display", "layout region %dx%d at %d,%d does not fit the %dx%d panel; not drawn",
+                 w, h, r->panel_x, r->panel_y, BOARD_PANEL_W, BOARD_PANEL_H);
+    }
+    return off;
+}
 
 static void clear(void)
 {
@@ -37,9 +52,7 @@ static void draw_regions(region_kind_t kind, const uint8_t *fb)
         if (r->kind != kind) continue;
         int w, h;
         layout_region_box(r, &w, &h);
-        if (w <= 0 || r->panel_x < 0 || r->panel_y < 0 ||
-            r->panel_x + w > BOARD_PANEL_W || r->panel_y + h > BOARD_PANEL_H)
-            continue;
+        if (off_panel(r, w, h)) continue;
         nv3041a_window(r->panel_x, r->panel_y, w, h);
         for (int y = 0; y < h; y++) {
             int count;
@@ -60,9 +73,7 @@ static void draw_regions_color(region_kind_t kind, const uint8_t *fb,
         if (r->kind != kind) continue;
         int w, h;
         layout_region_box(r, &w, &h);
-        if (w <= 0 || r->panel_x < 0 || r->panel_y < 0 ||
-            r->panel_x + w > BOARD_PANEL_W || r->panel_y + h > BOARD_PANEL_H)
-            continue;
+        if (off_panel(r, w, h)) continue;
         nv3041a_window(r->panel_x, r->panel_y, w, h);
         for (int y = 0; y < h; y++) {
             int count;
@@ -106,13 +117,23 @@ void display_refresh(void)
         int bpp = db_lcd_bpp();
         size_t fb_bytes = (size_t)(160 * 160 * bpp / 8);
         uint32_t off = addr - BUS_SED1375_BASE;
-        if (!vram || off + fb_bytes > BUS_SED1375_VRAM_SIZE) return;
+        if (!vram || off + fb_bytes > BUS_SED1375_VRAM_SIZE) {
+            static bool warned;
+            if (!warned) ESP_LOGW("display", "colour frame at %08lX (%d bpp) is outside VRAM",
+                                  (unsigned long)addr, bpp);
+            warned = true;
+            return;
+        }
         const uint8_t *fb = vram + off;
         uint32_t h = 2166136261u ^ db.sed_palette_seq ^ (uint32_t)bpp;
         for (size_t i = 0; i < fb_bytes; i++)
             h = (h ^ fb[i]) * 16777619u;
         if (!first_refresh && h == last_color_hash) return;
         last_color_hash = h;
+        if (first_color) {
+            first_color = false;
+            ESP_LOGI("display", "first colour frame: %d bpp at %08lX", bpp, (unsigned long)addr);
+        }
         draw_regions_color(REGION_SCREEN, fb, bpp, db.sed_lut_rgb565);
         first_refresh = false;
         return;

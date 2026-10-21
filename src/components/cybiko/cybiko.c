@@ -198,6 +198,29 @@ static uint8_t io_read(cybiko_t *m, uint32_t a)
     return m->misc[a - IO_BASE];
 }
 
+/* Access times from the bus controller: each 2 MB area is 8 or 16 bits wide
+ * (ABWCR) with 2-state or 3-state cycles (ASTCR) plus 0-3 wait states (WCR).
+ * Area 2 is the DRAM once BCRH selects it; with fast page mode most accesses
+ * take 2 states and a row change 4, counted here as 3. The 32 KB boot ROM is
+ * the chip's own mask ROM and on-chip RAM is internal too: one state each
+ * (the I/O registers sharing the RAM's page are counted the same). The
+ * bigger RAM disk is not real hardware and gets the DRAM's timing. */
+void cy_bus_timing(cybiko_t *m)
+{
+    const uint8_t abwcr = m->misc[0xfffed0 - IO_BASE], astcr = m->misc[0xfffed1 - IO_BASE];
+    const uint16_t wcr = (uint16_t)(m->misc[0xfffed2 - IO_BASE] << 8 | m->misc[0xfffed3 - IO_BASE]);
+    const bool dram = (m->misc[0xfffed4 - IO_BASE] & 7) == 1;
+    for (int area = 0; area < 8; area++) {
+        unsigned st = (astcr >> area) & 1 ? 3u + ((wcr >> (2 * area)) & 3) : 2u;
+        unsigned word = (abwcr >> area) & 1 ? 2 * st : st;
+        if (area == 2 && dram) st = word = 3;
+        h8s_set_cost(&m->cpu, (uint32_t)area << 21, 0x200000, (uint8_t)st, (uint8_t)word);
+    }
+    h8s_set_cost(&m->cpu, 0x000000, 0x40000, 1, 1);
+    if (m->disk) h8s_set_cost(&m->cpu, CY_DISK_BASE, m->disk_size, 3, 3);
+    h8s_set_cost(&m->cpu, 0xff0000, 0x10000, 1, 1);
+}
+
 static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
 {
     cy_sync(m);
@@ -227,6 +250,7 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a == 0xffff76 || a == 0xffff77) { m->odr[a - 0xffff76] = v; return; }
     m->misc[a - IO_BASE] = v;
     if (a == 0xffff06 || a == 0xffff07) cy_dma_control(m);
+    if (a >= 0xfffed0 && a <= 0xfffed4) cy_bus_timing(m);
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,6 +371,13 @@ void cybiko_reset(cybiko_t *m)
     m->mstpcr[0] = 0x3f;
     m->mstpcr[1] = 0xff;
     memset(m->misc, 0, sizeof m->misc);
+    /* bus controller after reset: 8-bit, 3-state, 3 wait states everywhere */
+    m->misc[0xfffed0 - IO_BASE] = 0xff;         /* ABWCR */
+    m->misc[0xfffed1 - IO_BASE] = 0xff;         /* ASTCR */
+    m->misc[0xfffed2 - IO_BASE] = 0xff;         /* WCRH */
+    m->misc[0xfffed3 - IO_BASE] = 0xff;         /* WCRL */
+    m->misc[0xfffed4 - IO_BASE] = 0xd0;         /* BCRH: no DRAM area */
+    m->misc[0xfffed5 - IO_BASE] = 0x3c;         /* BCRL */
     memset(m->dr, 0, sizeof m->dr);
     memset(m->ddr, 0, sizeof m->ddr);
     memset(m->pcr, 0, sizeof m->pcr);
@@ -364,6 +395,7 @@ void cybiko_reset(cybiko_t *m)
     m->cpu.fine_size = sizeof m->iram;
     m->cpu.fine_mem = m->iram;
     m->cpu.intm2 = false;
+    cy_bus_timing(m);
     h8s_reset(&m->cpu);
     m->synced = h8s_time(&m->cpu);
 }

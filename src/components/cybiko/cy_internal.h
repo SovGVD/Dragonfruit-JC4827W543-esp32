@@ -29,6 +29,7 @@ void cy_dma_control(cybiko_t *m);
 
 /* Bring every peripheral up to the CPU's current time. */
 void cy_sync(cybiko_t *m);
+void cy_bus_timing(cybiko_t *m);
 
 /* cy_disk.c */
 void cy_disk_console(cybiko_t *m, uint8_t b);

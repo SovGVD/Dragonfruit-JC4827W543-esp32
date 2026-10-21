@@ -3,9 +3,10 @@
  * Decoding follows the first opcode byte, then the second where the manual
  * packs several instructions into one first byte. Comments name each case by
  * its opcode pattern (MAME h8.lst value/mask) so a case can be checked against
- * the table. Timing is approximate: one state per instruction word fetched,
- * one per data access and the manual's internal states for multiply/divide.
- * The machine only needs states to pace its timers. */
+ * the table. Timing is approximate: each instruction word fetched and each
+ * data access costs what the machine set for that page (h8s_set_cost, from
+ * its bus widths and wait states), plus the manual's internal states for
+ * multiply/divide. The machine only needs states to pace its timers. */
 #include "h8s.h"
 #include <string.h>
 
@@ -44,7 +45,7 @@ unsigned h8s_odd_accesses;
 INLINE uint8_t rd8(h8s_cpu_t *c, uint32_t a)
 {
     a &= AMASK;
-    c->icount--;
+    c->icount -= c->cost8[a >> 16];
     const uint8_t *p = c->rpage[a >> 16];
     if (LIKELY(p != NULL)) return p[a & 0xffff];
     if (a - c->fine_base < c->fine_size) return c->fine_mem[a - c->fine_base];
@@ -55,7 +56,7 @@ INLINE uint16_t rd16(h8s_cpu_t *c, uint32_t a)
 {
     NOTE_ODD(a);
     a &= AMASK & ~1u;
-    c->icount--;
+    c->icount -= c->cost16[a >> 16];
     const uint8_t *p = c->rpage[a >> 16];
     if (LIKELY(p != NULL)) {
         p += a & 0xffff;
@@ -76,7 +77,7 @@ INLINE uint32_t rd32(h8s_cpu_t *c, uint32_t a)
 INLINE void wr8(h8s_cpu_t *c, uint32_t a, uint8_t v)
 {
     a &= AMASK;
-    c->icount--;
+    c->icount -= c->cost8[a >> 16];
     uint8_t *p = c->wpage[a >> 16];
     if (LIKELY(p != NULL)) p[a & 0xffff] = v;
     else if (a - c->fine_base < c->fine_size) c->fine_mem[a - c->fine_base] = v;
@@ -87,7 +88,7 @@ INLINE void wr16(h8s_cpu_t *c, uint32_t a, uint16_t v)
 {
     NOTE_ODD(a);
     a &= AMASK & ~1u;
-    c->icount--;
+    c->icount -= c->cost16[a >> 16];
     uint8_t *p = c->wpage[a >> 16];
     if (LIKELY(p != NULL)) {
         p += a & 0xffff;
@@ -224,7 +225,7 @@ INLINE uint32_t incdec(h8s_cpu_t *c, uint32_t a, uint32_t b, int bits, bool dec)
 
 /* Shift/rotate group (opcodes 10-13). kind: 0 shll, 1 shal, 2 shlr, 3 shar,
  * 4 rotxl, 5 rotl, 6 rotxr, 7 rotr. Shifts by 1 or 2. */
-static uint32_t shift(h8s_cpu_t *c, uint32_t v, int bits, int kind, int count)
+INLINE uint32_t shift(h8s_cpu_t *c, uint32_t v, int bits, int kind, int count)
 {
     const uint32_t mask = bits == 32 ? 0xffffffffu : (1u << bits) - 1;
     const uint32_t sign = 1u << (bits - 1);
@@ -327,6 +328,18 @@ static void take_interrupt(h8s_cpu_t *c, int vector, int level)
 void h8s_init(h8s_cpu_t *c)
 {
     memset(c, 0, sizeof *c);
+    memset(c->cost8, 1, sizeof c->cost8);
+    memset(c->cost16, 1, sizeof c->cost16);
+}
+
+void h8s_set_cost(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t byte_states,
+                  uint8_t word_states)
+{
+    for (uint32_t off = 0; off < size; off += 0x10000) {
+        uint32_t page = ((base + off) & AMASK) >> 16;
+        c->cost8[page] = byte_states;
+        c->cost16[page] = word_states;
+    }
 }
 
 void h8s_reset(h8s_cpu_t *c)
@@ -509,7 +522,7 @@ static bool prefixed_move(h8s_cpu_t *c, int kind, uint16_t w)
 /* Execute one instruction                                             */
 /* ------------------------------------------------------------------ */
 
-static void execute(h8s_cpu_t *c)
+INLINE void execute(h8s_cpu_t *c)
 {
     c->ppc = c->pc;
     const uint16_t op = fetch(c);
@@ -1137,6 +1150,7 @@ int32_t h8s_run(h8s_cpu_t *c, int32_t states)
     c->slice = states;
     c->icount = states;
     while (c->icount > 0) {
+        /* SLEEP sets irq_check too, so one test per instruction covers both. */
         if (UNLIKELY(c->irq_check)) {
             c->irq_check = false;
             int level = 0;
@@ -1145,11 +1159,12 @@ int32_t h8s_run(h8s_cpu_t *c, int32_t states)
                 take_interrupt(c, vec, level);
                 continue;
             }
-        }
-        if (UNLIKELY(c->sleeping)) {
-            /* Nothing to do until the machine raises an interrupt. */
-            c->icount = 0;
-            break;
+            if (c->sleeping) {
+                /* Nothing to do until the machine raises an interrupt. */
+                c->irq_check = true;
+                c->icount = 0;
+                break;
+            }
         }
         execute(c);
     }

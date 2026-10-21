@@ -97,6 +97,7 @@ typedef struct {
     uint8_t smr, brr, scr, ssr, ssr_read, tdr, rdr, tsr;
     bool tx_busy, rx_busy;
     uint32_t tx_left, rx_left; /* states until the frame in flight finishes */
+    uint32_t poll_pc;          /* instruction that last read SSR (poll loop detection) */
     uint8_t rx_fifo[64];
     uint8_t rx_head, rx_count;
 } cy_sci_t;

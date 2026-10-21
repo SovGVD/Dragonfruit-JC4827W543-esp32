@@ -193,7 +193,9 @@ the end.
 ## Status and limits
 
 - CyOS boots on the PC runner; speed and sound on the board still need
-  checking.
+  checking. Instruction timing counts each memory access as the bus
+  controller sets it up (8- or 16-bit areas, wait states, DRAM), so the CPU
+  does as much work per second as the real one.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
 - The DMA controller and the DTC are modelled (CyOS uses both at start-up).

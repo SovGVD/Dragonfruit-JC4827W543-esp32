@@ -552,7 +552,21 @@ static bool sci_read(cybiko_t *m, uint32_t a, uint8_t *v)
     case 1: *v = s->brr; break;
     case 2: *v = s->scr; break;
     case 3: *v = s->tdr; break;
-    case 4: s->ssr_read = s->ssr; *v = s->ssr; break;
+    case 4:
+        s->ssr_read = s->ssr;
+        *v = s->ssr;
+        /* The same instruction polling again while TDR is still full: the
+         * loop would only spin until the frame in flight ends, so let it wait
+         * for that in one go (no further than the next peripheral event,
+         * which ends the slice). Boot code prints this way, and the spinning
+         * otherwise costs a lot of host time. */
+        if (!m->dxc && s->tx_busy && !(s->ssr & SSR_TDRE) && s->poll_pc == m->cpu.ppc) {
+            int32_t skip = (int32_t)s->tx_left - 1;
+            if (skip > m->cpu.icount) skip = m->cpu.icount;
+            if (skip > 0) m->cpu.icount -= skip;
+        }
+        s->poll_pc = m->cpu.ppc;
+        break;
     case 5:
         *v = s->rdr;
         if (m->dxc) s->ssr &= (uint8_t)~SSR_RDRF;   /* a DMA/DTC read clears RDRF */

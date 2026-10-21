@@ -273,4 +273,5 @@ void cybiko_set_disk(cybiko_t *m, uint8_t *disk, uint32_t size)
     memset(m->disk_dirty, 0, sizeof m->disk_dirty);
     /* Reads go straight to memory; writes take the slow path to be tracked. */
     if (size) h8s_map(&m->cpu, CY_DISK_BASE, size, disk, size, false);
+    cy_bus_timing(m);
 }

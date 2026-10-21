@@ -75,6 +75,9 @@ struct h8s_cpu {
 
     uint8_t *rpage[H8S_PAGES];
     uint8_t *wpage[H8S_PAGES];
+    /* States one byte / one word access to each page takes (1 after
+     * h8s_init); the machine sets them from its bus controller. */
+    uint8_t cost8[H8S_PAGES], cost16[H8S_PAGES];
     /* Host memory for [fine_base, fine_base + fine_size), checked only when
      * the page table sends an access to the slow path. It serves on-chip
      * RAM that shares its 64 KB page with I/O registers. fine_size 0 (the
@@ -96,6 +99,10 @@ void h8s_reset(h8s_cpu_t *c);
  * slow path. `host` NULL sends both directions to the slow path. */
 void h8s_map(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t *host,
              uint32_t host_size, bool writable);
+/* Set the states a byte and a word access to [base, base+size) take (64 KB
+ * aligned). Instruction fetches are word accesses. */
+void h8s_set_cost(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t byte_states,
+                  uint8_t word_states);
 /* Execute until `states` have elapsed, the CPU sleeps (the rest of the
  * slice then counts as idle time) or h8s_end_slice is called. Returns the
  * number of states that elapsed. */

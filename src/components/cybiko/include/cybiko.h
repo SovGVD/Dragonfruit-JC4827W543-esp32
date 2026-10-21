@@ -31,7 +31,11 @@
 #define CY_RAM_SIZE    0x200000u
 #define CY_RAMDISK_SIZE 0x80000u     /* part of RAM kept across power cycles */
 
-/* Keys are (row << 4) | bit in the keyboard matrix (rows A.0-A.14 in MAME). */
+/* Keys are (row << 4) | bit in the keyboard matrix, as MAME's A.0-A.8. CyOS
+ * scans rows 0-9 only, with every higher address bit low, so Help, "." and P
+ * (A.13 in MAME) must sit in row 9: in row 13 they showed up in every row
+ * scanned. On/Off is not in the matrix; it is PA7/IRQ7 (row 15 here is only
+ * its slot in keys[], never scanned). */
 #define CY_KEY(row, bit) (((row) << 4) | (bit))
 enum {
     CYK_F7 = CY_KEY(0, 0), CYK_M = CY_KEY(0, 8), CYK_K = CY_KEY(0, 11),
@@ -52,8 +56,8 @@ enum {
     CYK_F1 = CY_KEY(6, 0), CYK_UP = CY_KEY(6, 11), CYK_RIGHT = CY_KEY(6, 12),
     CYK_DOWN = CY_KEY(6, 13), CYK_LEFT = CY_KEY(6, 14),
     CYK_FN = CY_KEY(7, 15), CYK_SHIFT = CY_KEY(8, 15),
-    CYK_HELP = CY_KEY(13, 0), CYK_DOT = CY_KEY(13, 1), CYK_P = CY_KEY(13, 4),
-    CYK_ONOFF = CY_KEY(14, 15),
+    CYK_HELP = CY_KEY(9, 0), CYK_DOT = CY_KEY(9, 1), CYK_P = CY_KEY(9, 4),
+    CYK_ONOFF = CY_KEY(15, 15),
 };
 
 /* Host hooks. Any of them may be NULL. */

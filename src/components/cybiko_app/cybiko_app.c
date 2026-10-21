@@ -303,6 +303,8 @@ void cybiko_app_start(void)
         volume = atoi(v);
         if (volume < 0 || volume > 100) volume = 60;
     }
+    uint8_t saved_volume;                       /* the boot menu's volume wins */
+    if (audio_saved_volume(&saved_volume)) volume = saved_volume;
     if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
 
     cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker };

@@ -17,7 +17,8 @@ card.enabled = 1
 card.read_only = 0
 
 # Speaker volume for Palm system sounds and alarms, 0..100. 0 turns the
-# I2S amplifier off. Palm's own Sounds preferences still apply on top.
+# I2S amplifier off. Palm's own Sounds preferences still apply on top. Once
+# the volume has been changed in the boot menu, that value is used instead.
 sound.volume = 60
 
 # For individual element placement use preset=custom and palm.cfg.example.

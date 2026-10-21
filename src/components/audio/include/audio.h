@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 /* Speaker output, independent of the emulated machine. A low-priority task
@@ -22,3 +23,9 @@ void audio_set_volume(uint8_t volume);
  * Cheap and non-blocking: safe to call from an emulator CPU task on every
  * register write. Matches db_pwm_sink_t. */
 void audio_tone(float freq_hz, float duty);
+
+/* The volume chosen in the boot menu, kept in NVS (nvs_flash_init() must have
+ * run). It is the default for every emulated system; audio_saved_volume()
+ * returns false while it has never been set. */
+bool audio_saved_volume(uint8_t *volume);
+void audio_save_volume(uint8_t volume);

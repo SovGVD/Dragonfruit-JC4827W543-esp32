@@ -8,7 +8,7 @@
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
  *                      (checked every 100 ms of emulated time)
- *   --press KEY@MS     hold KEY for 200 ms starting at MS milliseconds; KEY is
+ *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
  *                      select, del, tab, shift, fn, help, onoff
  *
@@ -97,19 +97,19 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--frames") && v) { frames = v; i++; }
         else if (!strcmp(a, "--press") && v && npresses < MAX_PRESSES) {
             char name[32];
-            unsigned ms;
-            if (sscanf(v, "%31[^@]@%u", name, &ms) != 2 || key_by_name(name) < 0) {
+            unsigned ms, dur = 200;
+            if (sscanf(v, "%31[^@]@%u:%u", name, &ms, &dur) < 2 || key_by_name(name) < 0) {
                 fprintf(stderr, "bad --press %s\n", v);
                 return 2;
             }
             presses[npresses].key = key_by_name(name);
             presses[npresses].at = (uint64_t)ms * (CY_CLOCK_HZ / 1000);
-            presses[npresses].until = presses[npresses].at + 200ull * (CY_CLOCK_HZ / 1000);
+            presses[npresses].until = presses[npresses].at + (uint64_t)dur * (CY_CLOCK_HZ / 1000);
             npresses++;
             i++;
         } else {
             fprintf(stderr, "usage: %s --rom FILE --flash FILE [--ramdisk FILE] [--seconds S]\n"
-                            "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS]...\n", argv[0]);
+                            "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n", argv[0]);
             return 2;
         }
     }

@@ -7,8 +7,9 @@
  * in NVS and starts by itself after a short countdown unless the user touches
  * the screen or the button first.
  *
- * The button in the top-left corner switches the Cybiko screen between
- * portrait (the default) and landscape.
+ * A row of settings under the title: the Cybiko screen orientation
+ * (portrait by default, or landscape), the speaker volume both systems start
+ * with (kept in NVS, played as a short beep when changed) and CALIBRATE.
  *
  * The CALIBRATE button opens the touch calibration. It also opens by itself
  * when no calibration has been made yet (none saved, none in palm.cfg), and
@@ -21,6 +22,7 @@
 #include "m5_sd.h"
 #include "cybiko_app.h"
 #include "touch_calib.h"
+#include "audio.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -55,17 +57,22 @@ static card_t cards[BOOT_SYSTEM_COUNT] = {
     [BOOT_SYSTEM_CYBIKO] = { "CYBIKO",  "/CYBIKO", "NO ROM/FLASH", UI_RGB(0x28, 0x40, 0x78) },
 };
 
-/* The CALIBRATE button, top right. */
+/* The settings row: orientation, volume - and +, CALIBRATE. */
+#define ROW_Y 34
 #define CAL_X 384
-#define CAL_Y 6
+#define CAL_Y ROW_Y
 #define CAL_W 90
 #define CAL_H 28
 #define COLOR_BUTTON UI_RGB(0x3a, 0x3a, 0x4c)
-/* The Cybiko orientation button, top left. */
 #define ORI_X 6
-#define ORI_Y 6
+#define ORI_Y ROW_Y
 #define ORI_W 120
 #define ORI_H 28
+#define VOL_DN_X 150
+#define VOL_UP_X 294
+#define VOL_W 36
+#define VOL_STEP 10
+#define VOLUME_DEFAULT 60
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
@@ -109,12 +116,52 @@ static void draw_orientation(void)
                   COLOR_TITLE, COLOR_BUTTON);
 }
 
+static uint8_t volume = VOLUME_DEFAULT;
+
+static void draw_volume(void)
+{
+    char line[16];
+    display_ui_fill(VOL_DN_X, ROW_Y, VOL_W, ORI_H, COLOR_BUTTON);
+    display_ui_fill(VOL_UP_X, ROW_Y, VOL_W, ORI_H, COLOR_BUTTON);
+    text_centered(VOL_DN_X + VOL_W / 2, ROW_Y + 7, "-", 2, COLOR_TITLE, COLOR_BUTTON);
+    text_centered(VOL_UP_X + VOL_W / 2, ROW_Y + 7, "+", 2, COLOR_TITLE, COLOR_BUTTON);
+    int x0 = VOL_DN_X + VOL_W, w = VOL_UP_X - x0;
+    display_ui_fill(x0, ROW_Y, w, ORI_H, COLOR_BG);
+    if (volume) snprintf(line, sizeof line, "VOLUME %u%%", volume);
+    else snprintf(line, sizeof line, "SOUND OFF");
+    text_centered(x0 + w / 2, ROW_Y + 10, line, 1, COLOR_TITLE, COLOR_BG);
+}
+
+/* Step the volume by `delta`, keep it and let the user hear it. */
+static void change_volume(int delta)
+{
+    int v = volume + delta;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    volume = (uint8_t)v;
+    audio_save_volume(volume);
+    draw_volume();
+    if (volume && audio_init(volume) == ESP_OK) {
+        audio_tone(1000.0f, 0.5f);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        audio_tone(0, 0);
+    }
+}
+
+static int volume_button_at(int x, int y)
+{
+    if (y < ROW_Y || y >= ROW_Y + ORI_H) return 0;
+    if (x >= VOL_DN_X && x < VOL_DN_X + VOL_W) return -VOL_STEP;
+    if (x >= VOL_UP_X && x < VOL_UP_X + VOL_W) return VOL_STEP;
+    return 0;
+}
+
 static void draw_all(int selected, int countdown)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COLOR_BG);
     text_centered(BOARD_PANEL_W / 2, 10, "DRAGONFRUIT", 3, COLOR_TITLE, COLOR_BG);
-    text_centered(BOARD_PANEL_W / 2, 40, "CHOOSE A SYSTEM", 2, COLOR_DIM, COLOR_BG);
     draw_orientation();
+    draw_volume();
     display_ui_fill(CAL_X, CAL_Y, CAL_W, CAL_H, COLOR_BUTTON);
     text_centered(CAL_X + CAL_W / 2, CAL_Y + 10, "CALIBRATE", 1, COLOR_TITLE, COLOR_BUTTON);
     for (int i = 0; i < BOOT_SYSTEM_COUNT; i++)
@@ -179,6 +226,8 @@ boot_system_t boot_menu_run(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+    uint8_t saved_volume;
+    if (audio_saved_volume(&saved_volume)) volume = saved_volume;
     bool calibrate = input_touch_load_saved() == TOUCH_CAL_DEFAULT;
     if (!calibrate && input_boot_button_held()) {
         TickType_t t0 = xTaskGetTickCount();
@@ -214,6 +263,7 @@ boot_system_t boot_menu_run(void)
     bool touching = false, was_pressed = input_boot_button_held(), held_fired = false;
     int touched = -1;
     bool cal_touched = false, ori_touched = false;
+    int vol_touched = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         TickType_t now = xTaskGetTickCount();
@@ -227,12 +277,16 @@ boot_system_t boot_menu_run(void)
                 touched = hit;
                 cal_touched = calibrate_at(x, y);
                 ori_touched = orientation_at(x, y);
+                vol_touched = volume_button_at(x, y);
             }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
                 selected = hit;
                 draw_card(selected, true);
             }
+        } else if (touching && vol_touched) {
+            change_volume(vol_touched);
+            draw_footer(0);
         } else if (touching && ori_touched) {
             cybiko_app_set_portrait(!cybiko_app_portrait());
             draw_orientation();

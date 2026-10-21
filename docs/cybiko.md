@@ -77,7 +77,10 @@ Landscape (480×272), LCD at 2×:
 
 - In landscape, **MORE** shows F1–F7, AS and ON/OFF; **ABC** goes back.
 - The touchscreen sees one finger at a time, so **SHIFT** and **FN** latch: tap
-  one, then the key. They release with that key.
+  one, then the key. They release with that key. While one is on, the keys
+  show what they type: capitals with SHIFT, and with FN the digits on Q-P and
+  the symbols CyOS puts on the other letters (`@ } (C) $ % * + - _ = > < & { #
+  "` and `/` on ".").
 - **BOOT** is the Cybiko On/Off key. **Hold BOOT for 3 seconds** to save and
   restart to the boot menu.
 
@@ -86,7 +89,8 @@ Landscape (480×272), LCD at 2×:
 The Cybiko beeper plays through the board's speaker with the same `audio`
 component as Palm. The tone is taken from the timer that drives the speaker
 pin (TPU channel 1, TIOCB1), or measured from how fast software toggles the
-pin. Set the volume in `cybiko.cfg`:
+pin. Set the volume with **-** and **+** in the boot menu. Until that has
+been changed, `cybiko.cfg` can set it:
 
 ```ini
 sound.volume = 60    # 0-100, 0 = off

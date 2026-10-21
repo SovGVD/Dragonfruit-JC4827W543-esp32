@@ -264,13 +264,35 @@ static void draw_box(int x, int y, int w, int h, uint16_t bg, const char *label)
     blit(x, y, w, h, box);
 }
 
+/* What CyOS types for Fn + a letter key (found by typing each one), by
+ * letter. C gives a copyright sign, shown as "(C)". */
+static const char *const fn_chars[26] = {
+    "@", "}", "(C)", "$", "3", "%", "*", "+", "8", "-", "_", "=", ">",
+    "<", "9", "0", "1", "4", "&", "5", "7", "{", "2", "#", "6", "\"",
+};
+
+/* The label a key shows: letters follow SHIFT (lower case otherwise, as
+ * CyOS types them) and FN shows what Fn + the key types. */
+static const char *key_label(const ui_key_t *k)
+{
+    static char buf[2];
+    const char *l = k->label;
+    if (k->kind != K_NORMAL || !l[0] || l[1]) return l;
+    if (l[0] == '.') return fn_on ? "/" : l;
+    if (l[0] < 'A' || l[0] > 'Z') return l;
+    if (fn_on && fn_chars[l[0] - 'A']) return fn_chars[l[0] - 'A'];
+    buf[0] = shift_on ? l[0] : (char)(l[0] - 'A' + 'a');
+    buf[1] = 0;
+    return buf;
+}
+
 static void draw_key(const ui_key_t *k, bool lit)
 {
     uint16_t bg = lit ? COL_KEY_ON : k->alt ? COL_KEY_ALT : COL_KEY;
     if (k->kind == K_SHIFT && shift_on) bg = COL_KEY_ON;
     if (k->kind == K_FN && fn_on) bg = COL_KEY_ON;
     if (k->kind == K_NONE) bg = COL_BG;
-    draw_box(k->x, k->y, k->w, k->h, bg, k->label);
+    draw_box(k->x, k->y, k->w, k->h, bg, key_label(k));
 }
 
 static const ui_key_t *page_keys(int *n)
@@ -286,11 +308,16 @@ static void draw_keyboard(void)
     for (int i = 0; i < n; i++) draw_key(&keys[i], false);
 }
 
+static void draw_keys(void)
+{
+    for (int i = 0; i < L->n_fixed; i++) draw_key(&L->fixed[i], false);
+    draw_keyboard();
+}
+
 static void draw_all(void)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COL_BG);
-    for (int i = 0; i < L->n_fixed; i++) draw_key(&L->fixed[i], false);
-    draw_keyboard();
+    draw_keys();
 }
 
 /* LCD luminance to a greenish STN palette, big-endian RGB565. */
@@ -364,11 +391,11 @@ static void touch_down(int px, int py)
     switch (k->kind) {
     case K_SHIFT:
         shift_on = !shift_on;
-        draw_key(k, false);
+        draw_keys();
         return;
     case K_FN:
         fn_on = !fn_on;
-        draw_key(k, false);
+        draw_keys();
         return;
     case K_PAGE:
         if (L->pages[1]) page ^= 1;
@@ -394,11 +421,7 @@ static void release_held(void)
     shift_on = fn_on = false;
     draw_key(held, false);
     held = NULL;
-    if (redraw) {
-        for (int i = 0; i < L->n_fixed; i++)
-            if (L->fixed[i].kind == K_SHIFT || L->fixed[i].kind == K_FN) draw_key(&L->fixed[i], false);
-        draw_keyboard();
-    }
+    if (redraw) draw_keys();
 }
 
 /* ------------------------------------------------------------------ */

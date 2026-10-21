@@ -1237,6 +1237,9 @@ void app_main(void)
     g_install.phase = g_install.set.count ? INST_WAIT : INST_IDLE;
     g_installer_yield = installer_yield_cb;
 
+    /* The volume set in the boot menu, once set, wins over palm.cfg. */
+    uint8_t saved_volume;
+    if (audio_saved_volume(&saved_volume)) sound_volume = saved_volume;
     err = audio_init(sound_volume);
     if (err == ESP_OK)
         db_pwm_set_sink(audio_tone);

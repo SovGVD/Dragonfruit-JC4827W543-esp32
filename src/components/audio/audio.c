@@ -1,6 +1,27 @@
 #include "audio.h"
 #include "board.h"
 #include "esp_log.h"
+#include "nvs.h"
+
+bool audio_saved_volume(uint8_t *volume)
+{
+    nvs_handle_t h;
+    uint8_t v;
+    if (nvs_open("audio", NVS_READONLY, &h) != ESP_OK) return false;
+    bool ok = nvs_get_u8(h, "volume", &v) == ESP_OK && v <= 100;
+    nvs_close(h);
+    if (ok) *volume = v;
+    return ok;
+}
+
+void audio_save_volume(uint8_t volume)
+{
+    nvs_handle_t h;
+    if (nvs_open("audio", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "volume", volume > 100 ? 100 : volume);
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 #if BOARD_HAS_AUDIO
 
@@ -93,6 +114,7 @@ static void audio_task(void *arg)
 esp_err_t audio_init(uint8_t volume)
 {
     audio_set_volume(volume);
+    if (task) return ESP_OK;                 /* already running (boot menu) */
     if (!cur_volume) {
         ESP_LOGI(TAG, "sound disabled");
         return ESP_OK;

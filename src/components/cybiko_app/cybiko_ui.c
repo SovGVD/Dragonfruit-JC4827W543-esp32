@@ -429,7 +429,7 @@ static void release_held(void)
 static void ui_task(void *arg)
 {
     (void)arg;
-    static uint8_t lum[CY_LCD_W * CY_LCD_H];
+    uint8_t *lum = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
     cybiko_t *m = cybiko_app_machine();
     uint32_t shown = 0xffffffff;
     bool was_down = false, boot_was = false, onoff_held = false;

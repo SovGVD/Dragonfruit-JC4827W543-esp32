@@ -40,7 +40,7 @@ static const char *TAG = "cybiko";
 
 #define CHUNK_STATES (CY_CLOCK_HZ / 1000)   /* run 1 ms of Cybiko time at a go */
 
-static cybiko_t machine;
+static cybiko_t *machine;                   /* allocated only in Cybiko mode */
 static uint8_t *rom, *flash, *ram;
 static uint8_t *ramdisk_saved;              /* RAM disk as last written to SD */
 static QueueHandle_t key_queue;
@@ -96,7 +96,7 @@ static void cpu_task(void *arg)
 {
     (void)arg;
     int64_t t0 = esp_timer_get_time();
-    uint64_t c0 = machine.cpu.cycles;
+    uint64_t c0 = machine->cpu.cycles;
     int64_t last_yield = t0;
     for (;;) {
         if (pause_req) {
@@ -104,16 +104,32 @@ static void cpu_task(void *arg)
             while (pause_req) vTaskDelay(1);
             paused = false;
             t0 = esp_timer_get_time();
-            c0 = machine.cpu.cycles;
+            c0 = machine->cpu.cycles;
         }
         key_event_t ev;
-        while (xQueueReceive(key_queue, &ev, 0) == pdTRUE) cybiko_key(&machine, ev.key, ev.down);
-        cybiko_link_poll(&machine);
+        while (xQueueReceive(key_queue, &ev, 0) == pdTRUE) cybiko_key(machine, ev.key, ev.down);
+        cybiko_link_poll(machine);
 
-        cybiko_run(&machine, CHUNK_STATES);
+        int64_t run_start = esp_timer_get_time();
+        cybiko_run(machine, CHUNK_STATES);
 
         int64_t now = esp_timer_get_time();
-        int64_t emu_us = (int64_t)((machine.cpu.cycles - c0) * 1000000ull / CY_CLOCK_HZ);
+        /* Every 5 s: how fast the emulation runs against real time, and how
+         * much of the core the CPU loop used to get there. */
+        static int64_t stat_t0, stat_busy;
+        static uint64_t stat_c0;
+        stat_busy += now - run_start;
+        if (!stat_t0) { stat_t0 = now; stat_c0 = machine->cpu.cycles; stat_busy = 0; }
+        if (now - stat_t0 >= 5000000) {
+            uint64_t emu_us = (machine->cpu.cycles - stat_c0) * 1000000ull / CY_CLOCK_HZ;
+            ESP_LOGI(TAG, "speed %d%% of real time, CPU loop busy %d%%",
+                     (int)(emu_us * 100 / (uint64_t)(now - stat_t0)),
+                     (int)(stat_busy * 100 / (now - stat_t0)));
+            stat_t0 = now;
+            stat_c0 = machine->cpu.cycles;
+            stat_busy = 0;
+        }
+        int64_t emu_us = (int64_t)((machine->cpu.cycles - c0) * 1000000ull / CY_CLOCK_HZ);
         int64_t ahead = emu_us - (now - t0);
         if (ahead > 2000) {
             vTaskDelay(pdMS_TO_TICKS(ahead / 1000));
@@ -121,7 +137,7 @@ static void cpu_task(void *arg)
         } else {
             if (ahead < -200000) {               /* running slow: don't try to catch up */
                 t0 = now;
-                c0 = machine.cpu.cycles;
+                c0 = machine->cpu.cycles;
             }
             if (now - last_yield > 100000) {     /* let the idle task feed the watchdog */
                 vTaskDelay(1);
@@ -181,11 +197,11 @@ void cybiko_app_save(bool force)
         memcpy(ramdisk_saved, ram, CY_RAMDISK_SIZE);
         disk = true;
     }
-    if (machine.flash.dirty) {
+    if (machine->flash.dirty) {
         if (!flash_copy) flash_copy = heap_caps_malloc(CY_FLASH_SIZE, MALLOC_CAP_SPIRAM);
         if (flash_copy) {
             memcpy(flash_copy, flash, CY_FLASH_SIZE);
-            machine.flash.dirty = false;
+            machine->flash.dirty = false;
             fl = true;
         }
     }
@@ -211,7 +227,7 @@ void cybiko_app_key(int key, bool down)
     xQueueSend(key_queue, &ev, pdMS_TO_TICKS(50));
 }
 
-cybiko_t *cybiko_app_machine(void) { return &machine; }
+cybiko_t *cybiko_app_machine(void) { return machine; }
 
 /* ------------------------------------------------------------------ */
 /* Orientation                                                         */
@@ -271,11 +287,14 @@ void cybiko_app_start(void)
         return;
     }
 
+    /* Allocated here, not static, so Palm mode keeps that internal RAM. */
+    machine = heap_caps_calloc(1, sizeof *machine, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!machine) machine = heap_caps_calloc(1, sizeof *machine, MALLOC_CAP_SPIRAM);
     rom = heap_caps_calloc(1, CY_ROM_BUF, MALLOC_CAP_SPIRAM);
     flash = heap_caps_malloc(CY_FLASH_SIZE, MALLOC_CAP_SPIRAM);
     ram = heap_caps_calloc(1, CY_RAM_SIZE, MALLOC_CAP_SPIRAM);
     ramdisk_saved = heap_caps_calloc(1, CY_RAMDISK_SIZE, MALLOC_CAP_SPIRAM);
-    if (!rom || !flash || !ram || !ramdisk_saved) { fail("CYBIKO\n\nOUT OF MEMORY"); return; }
+    if (!machine || !rom || !flash || !ram || !ramdisk_saved) { fail("CYBIKO\n\nOUT OF MEMORY"); return; }
 
     ESP_LOGI(TAG, "ROM %s, flash %s", rom_path, flash_path);
     if (!load_file(rom_path, rom, CY_ROM_SIZE, true)) { fail("CYBIKO\n\nBAD ROM FILE"); return; }
@@ -308,7 +327,7 @@ void cybiko_app_start(void)
     if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
 
     cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker };
-    cybiko_init(&machine, &host, rom, flash, ram);
+    cybiko_init(machine, &host, rom, flash, ram);
     cybiko_link_init(have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));

@@ -1296,9 +1296,17 @@ void app_main(void)
     debug_console_start();
     serial_bridge_init(serial_mode, serial_baud);
 
-    xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
-    xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0);
+    /* Task stacks come from internal RAM; say so if it ran out rather than
+     * leaving a silent, frozen screen. */
+    ESP_LOGI(TAG, "Free internal RAM before tasks: %u bytes (largest block %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1) != pdPASS)
+        ESP_LOGE(TAG, "cpu task: out of internal RAM");
+    if (xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0) != pdPASS)
+        ESP_LOGE(TAG, "display task: out of internal RAM");
+    if (xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0) != pdPASS)
+        ESP_LOGE(TAG, "input task: out of internal RAM");
 #if !CONFIG_BOARD_JC4827W543
     xTaskCreatePinnedToCore(battery_task, "battery", 4096, NULL, 2, NULL, 0);
 #else

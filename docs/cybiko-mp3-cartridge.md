@@ -225,8 +225,15 @@ A model has to behave like a real decoder in a few ways:
   forever, the handler never returns, and the watchdog resets the Cybiko.
   The emulator's decoder plays skipped bytes as silence for as long as they
   would last at the last bit rate seen (128 kbps before the first frame).
-- **Take the data at playback speed.** If the decoder takes it faster, the
-  player skips ahead. If it takes it slower, playback stutters.
+- **Take the data at playback speed in the emulated machine's time**, not
+  in real time. If the decoder takes it faster, the player skips ahead. If
+  it takes it slower, playback stutters. An emulator that runs slower than
+  the real machine and still drains the data in real time starves the
+  player. The IRQ2 handler then feeds zeros without end, and the watchdog
+  resets the Cybiko. This happened on the board with the emulation at about
+  10% speed, and was reproduced on the PC by draining 12 times faster than
+  the stream. The firmware therefore paces the decoder's input by emulated
+  time, and lets the sound have gaps when the emulation falls behind.
 
 ### 2.5 The SD card: SPI over SCI1 with DMA
 

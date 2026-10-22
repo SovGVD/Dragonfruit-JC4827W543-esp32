@@ -33,6 +33,7 @@ static const char *TAG = "cybiko_cart";
 static FILE *card;
 static cy_vfat_t *card_dir;
 static StreamBufferHandle_t mpeg;
+static cy_mp3_t *decoder;
 static volatile uint8_t volume = 0x6a;
 
 /* ---- the SD card (CPU task) ---- */
@@ -144,6 +145,7 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
     if (!store || !d) { ESP_LOGW(TAG, "no memory for the decoder: no MP3 sound"); return; }
     mpeg = xStreamBufferCreateStatic(MPEG_QUEUE, 1, store, &mpeg_struct);
     cy_mp3_init(d);
+    decoder = d;
     if (xTaskCreatePinnedToCoreWithCaps(decoder_task, "cy_mp3", DECODER_STACK, d, 3, NULL, 0,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGW(TAG, "could not start the decoder: no MP3 sound");
@@ -152,16 +154,36 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
     }
 }
 
+/* The decoder takes the stream at its bit rate in emulated time, as the real
+ * one does. The speaker plays in real time, so when the emulation runs slow
+ * the sound has gaps; taking the data in real time instead starves CyOS's
+ * player, whose IRQ2 handler then feeds zeros until the watchdog resets
+ * the machine (seen with the emulation at 10% speed). */
+#define PACE_AHEAD 105              /* percent: keep the speaker's queue filled */
+#define PACE_MAX 2048               /* bytes the decoder may catch up at once */
+
 void cybiko_cart_poll(cybiko_t *m)
 {
     if (!mpeg) return;
     volume = cybiko_mp3_volume(m);
+
+    static uint64_t paced_at;
+    static uint32_t budget;
+    uint64_t now = h8s_time(&m->cpu);
+    unsigned kbps = cy_mp3_kbps(decoder);
+    if (!kbps) kbps = 128;
+    uint64_t add = (now - paced_at) * kbps * 125 * PACE_AHEAD / 100 / CY_CLOCK_HZ;
+    paced_at = now;
+    budget = add >= PACE_MAX - budget ? PACE_MAX : budget + (uint32_t)add;
+
     uint8_t buf[256];
     size_t room = xStreamBufferSpacesAvailable(mpeg);
+    if (room > budget) room = budget;
     while (room) {
         size_t n = cybiko_mp3_take(m, buf, room < sizeof buf ? room : sizeof buf);
         if (!n) break;
         xStreamBufferSend(mpeg, buf, n, 0);
         room -= n;
+        budget -= (uint32_t)n;
     }
 }

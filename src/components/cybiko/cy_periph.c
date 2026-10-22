@@ -493,9 +493,12 @@ static void sci_tx_done(cybiko_t *m, int n)
 {
     cy_sci_t *s = &m->sci[n];
     s->tx_busy = false;
-    if (n == 1) cy_disk_console(m, s->tsr);
+    bool sync = n < 2 && (s->smr & 0x80);
+    /* Text goes out asynchronously; in clocked sync mode SCI1 talks to the
+     * cartridge's SD card and SCI0 to its decoder, which is not text. */
+    if (n == 1 && !sync) cy_disk_console(m, s->tsr);
     if (n == 2) cy_rf_h8_byte(m, s->tsr);
-    if (n < 2 && (s->smr & 0x80)) {
+    if (sync) {
         /* clocked sync: a byte comes back for each one sent */
         uint8_t in = cy_cart_spi(m, n, s->tsr);
         if (s->scr & SCR_RE) {
@@ -504,7 +507,7 @@ static void sci_tx_done(cybiko_t *m, int n)
             if (s->scr & SCR_RIE) cy_irq(m, sci_vec(n, sci_error(s) ? 0 : 1));
         }
     }
-    if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
+    if (m->host.serial_tx && !sync) m->host.serial_tx(m->host.user, n, s->tsr);
     if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
         sci_tx_start(m, n);
     } else {

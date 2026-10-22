@@ -35,6 +35,7 @@
  * blocks can describe. */
 #define MAX_MB 1024
 #define BIG_CLUSTER 32768       /* the largest cluster used, for the budget */
+#define READ_AHEAD 8192         /* bytes read from a file at a time */
 
 typedef struct {
     uint32_t name;              /* string pool offsets: long name (UTF-8), */
@@ -65,6 +66,8 @@ struct cy_vfat {
     uint32_t total, part, spc, fat_secs, clusters, data_start;
     FILE *file;
     uint32_t file_node;
+    uint8_t *cache;             /* read-ahead: file_node's bytes from cache_off */
+    uint32_t cache_off, cache_len;
     written_t *written;
     uint32_t n_written, max_written;
 };
@@ -381,6 +384,7 @@ void cy_vfat_close(cy_vfat_t *v)
 {
     if (!v) return;
     if (v->file) fclose(v->file);
+    free(v->cache);
     for (uint32_t i = 0; i < v->n_written; i++) free(v->written[i].data);
     free(v->written);
     free(v->ext);
@@ -548,6 +552,8 @@ static void boot_blocks(const cy_vfat_t *v, uint32_t block, uint8_t *buf)
     buf[511] = 0xaa;
 }
 
+/* Files are read READ_AHEAD bytes at a time: the card is read in runs of
+ * blocks, and one read of the board's SD card per block is slow. */
 static bool file_block(cy_vfat_t *v, const node_t *n, uint32_t offset, uint8_t *buf)
 {
     memset(buf, 0, SECTOR);
@@ -559,10 +565,21 @@ static bool file_block(cy_vfat_t *v, const node_t *n, uint32_t offset, uint8_t *
         full_path(v, n, path, sizeof path);
         v->file = fopen(path, "rb");
         v->file_node = v->file ? idx : UINT32_MAX;
+        v->cache_len = 0;
         if (!v->file) return false;
     }
-    uint32_t want = n->size - offset < SECTOR ? n->size - offset : SECTOR;
-    return fseek(v->file, (long)offset, SEEK_SET) == 0 && fread(buf, 1, want, v->file) == want;
+    if (!v->cache && !(v->cache = vf_realloc(NULL, READ_AHEAD))) return false;
+    if (offset < v->cache_off || offset >= v->cache_off + v->cache_len) {
+        uint32_t want = n->size - offset < READ_AHEAD ? n->size - offset : READ_AHEAD;
+        v->cache_len = 0;
+        if (fseek(v->file, (long)offset, SEEK_SET) != 0 || fread(v->cache, 1, want, v->file) != want)
+            return false;
+        v->cache_off = offset;
+        v->cache_len = want;
+    }
+    uint32_t have = v->cache_off + v->cache_len - offset;
+    memcpy(buf, v->cache + (offset - v->cache_off), have < SECTOR ? have : SECTOR);
+    return true;
 }
 
 bool cy_vfat_read(cy_vfat_t *v, uint32_t block, uint8_t *buf)

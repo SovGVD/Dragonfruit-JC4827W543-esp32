@@ -4,7 +4,9 @@ This checkout targets the **JC4827W543 with resistive XPT2046 touchscreen**.
 It boots into a menu that starts either **Palm OS** or a **Cybiko Xtreme**
 emulator, each loading its ROM from its own folder on a FAT32 SD card. See the
 [board setup, build, flash and touch calibration guide](docs/jc4827w543.md),
-the [Cybiko Xtreme guide](docs/cybiko.md) and the
+the [Cybiko Xtreme guide](docs/cybiko.md) (with technical references on
+[how the Cybiko works](docs/cybiko-internals.md) and the
+[MP3 cartridge and MXD video](docs/cybiko-mp3-cartridge.md)) and the
 [example SD configuration](palm-jc4827w543.cfg.example).
 
 ```sh

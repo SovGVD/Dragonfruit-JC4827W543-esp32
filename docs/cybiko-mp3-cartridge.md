@@ -16,6 +16,9 @@ content. It covers:
 - the file formats: EZ Loader packs, CyOS archives with their compression,
   and MXD clips.
 
+The Cybiko itself (memory map, peripherals, keyboard, screen, radio, boot
+and RAM disk) is described in [cybiko-internals.md](cybiko-internals.md).
+
 All of it was worked out from the files on the CD. The method was to run the
 CD's drivers (`CartMan.dl`, `sddisk.dl`, `00000000.dl` and the others) in the
 emulator, disassemble them, and model the hardware until the original MP3

@@ -9,6 +9,11 @@ H8S programs (`src/host/test_cybiko.c`), and with the real `cybikoxt` dumps
 CyOS 1.5.08 boots to its first-run setup (welcome, nickname, contrast, clock)
 in the [PC runner](#pc-runner). No ROM is shipped here.
 
+How the machine works inside (memory map, screen, keys, radio protocol, boot,
+RAM disk format) is in [cybiko-internals.md](cybiko-internals.md); the MP3
+cartridge, `.app` archives and MXD video are in
+[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
+
 ## SD card
 
 Everything for the Cybiko lives in `/Cybiko` on the card. You supply both

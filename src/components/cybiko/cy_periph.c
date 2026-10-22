@@ -754,7 +754,8 @@ static void adc_advance(cybiko_t *m, uint32_t states)
         states -= m->adc_left;
         m->adc_left = 0;
         int ch = m->adc_ch;
-        uint16_t val = ch == 3 ? cy_cart_adc(m, ch) : m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
+        uint16_t val = ch == 3 ? cy_cart_adc(m, ch) : ch == 0 ? cy_rf_rssi(m)
+                       : m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
         m->addr[ch & 3] = val & 0x3ff;
         bool scan = m->adcsr & 0x10;
         int end = m->adcsr & 7;

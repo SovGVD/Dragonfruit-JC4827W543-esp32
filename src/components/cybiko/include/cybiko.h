@@ -92,6 +92,11 @@ typedef struct {
     /* The MP3 cartridge's SD card: 512-byte blocks (see cy_cart_t). */
     bool (*card_read)(void *user, uint32_t block, uint8_t *buf);
     bool (*card_write)(void *user, uint32_t block, const uint8_t *buf);
+    /* A Cybiko program built for this emulator ran CY_APP_OP (see
+     * cybiko_app_call). `fn` and `arg` are ER0 and ER1; the result goes
+     * back in ER0. cybiko_run returns soon after, so the host can act on it
+     * (the browser launcher asks the host to open the browser). */
+    uint32_t (*app_call)(void *user, uint32_t fn, uint32_t arg);
 } cy_host_t;
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
@@ -173,6 +178,7 @@ typedef struct {
     uint8_t q_head, queued;
     uint8_t inject[1 + CY_RF_LONG];            /* packet being handed to SCI2 */
     uint16_t inject_len, inject_pos;
+    uint32_t inject_at;                        /* when its next byte arrives */
     uint8_t id_orig[4], crc_orig[4];           /* flash bytes before cybiko_set_unit_id */
     bool id_applied;
     uint32_t sent, heard;                      /* packets, for diagnostics */
@@ -280,6 +286,7 @@ typedef struct cybiko {
     uint32_t unmapped_reads, unmapped_writes, illegal_ops;
     uint32_t dtc_dma_use;      /* DMA transfers started by the DREQ pins (not wired) */
     uint32_t wdt_resets;
+    bool app_called;           /* cybiko_run stops early after an app call */
 } cybiko_t;
 
 /* Set up a machine on caller-owned memory: rom is CY_ROM_BUF bytes with the
@@ -315,6 +322,26 @@ void cybiko_set_unit_id(cybiko_t *m, uint32_t id);
 uint32_t cybiko_unit_id(const cybiko_t *m);
 /* Undo the ID change in a copy of the flash about to be saved. */
 void cybiko_flash_original(const cybiko_t *m, uint8_t *copy);
+
+/* Programs made for this emulator (the Browser launcher from the
+ * cybiko-browser project) call the host with an
+ * opcode the H8S leaves undefined: the word CY_APP_OP, with the function in
+ * ER0 and its argument in ER1; the host's app_call result comes back in ER0.
+ * Real hardware would take it as a NOP, and the programs are only offered
+ * by the emulator. */
+#define CY_APP_OP 0x0042
+enum {
+    CY_APP_VERSION = 0,        /* returns CY_APP_API */
+    CY_APP_BROWSER = 1,        /* open the web browser; returns when it closes */
+};
+#define CY_APP_API 1
+
+/* Show a picture of the host's own on the LCD while CyOS is not running (the
+ * browser): CY_LCD_H rows of CY_LCD_W / 4 bytes from the top, four pixels a
+ * byte with the leftmost in the top bits, 0 the lightest pen to 3 the
+ * darkest. Save lcd.ram first and copy it back (and bump lcd.version)
+ * to give the screen back to CyOS. */
+void cybiko_lcd_show(cybiko_t *m, const uint8_t *picture);
 
 /* Render the LCD as 8-bit luminance (0 black, 255 white), CY_LCD_W x
  * CY_LCD_H, row 0 at the top. Returns lcd.version so callers can skip

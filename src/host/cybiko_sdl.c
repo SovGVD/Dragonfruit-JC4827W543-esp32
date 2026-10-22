@@ -15,7 +15,12 @@
  *   mp3card.img   the card as a disk image instead, used while card/ is empty
  *   cybiko.cfg    disk.size = 1-6 (MB), sound.volume = 0-100, cart = auto|mp3|off
  *
- * A flash that CyOS reprograms (an OS update) is saved as flash.bin. */
+ * A flash that CyOS reprograms (an OS update) is saved as flash.bin.
+ *
+ * Built with the web browser (src/components/cy_browser, the cybiko-browser
+ * submodule), the Browser launcher is put on the RAM disk and opens it;
+ * pages come through the curl program, and bookmarks and settings are kept
+ * in DIR/browser. */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <dirent.h>
@@ -28,6 +33,10 @@
 #include "cybiko.h"
 #include "cy_mp3.h"
 #include "cy_vfat.h"
+#ifdef CY_WITH_BROWSER
+#include "cybiko_browser.h"
+#include "cyb_net_curl.h"
+#endif
 
 #define RATE 32000
 #define CHUNK (CY_CLOCK_HZ / 1000)          /* run 1 ms at a go */
@@ -138,6 +147,63 @@ static void install_apps(void)
     }
     closedir(d);
 }
+
+/* ---- the web browser ---- */
+
+#ifdef CY_WITH_BROWSER
+static cyb_t *browser;
+static bool browse_requested, browsing;
+static uint8_t lcd_saved[sizeof m.lcd.ram];
+
+static uint32_t on_app_call(void *user, uint32_t fn, uint32_t arg)
+{
+    (void)user;
+    (void)arg;
+    if (fn == CY_APP_VERSION) return CY_APP_API;
+    if (fn == CY_APP_BROWSER) { browse_requested = true; return 1; }
+    return 0;
+}
+
+static void install_browser(void)
+{
+    cy_disk_file_t f;
+    if (cy_disk_find(disk, disk_size, "Browser.app", &f) && f.size == cyb_launcher_app_size) return;
+    uint32_t date = (uint32_t)(time(NULL) + 2208988800LL);
+    if (cy_disk_write(disk, disk_size, "Browser.app", cyb_launcher_app, (uint32_t)cyb_launcher_app_size, date) == 0)
+        printf("apps: Browser.app put on the RAM disk\n");
+}
+
+static void browser_open(const uint8_t *flash)
+{
+    if (!browser) {
+        static cyb_net_t net;
+        char p[1200];
+        cyb_net_curl(&net, NULL);
+        path_in(p, sizeof p, "browser");
+        mkdir(p, 0777);
+        browser = cyb_create(&net, flash, CY_FLASH_SIZE, p);
+    }
+    if (!browser) return;
+    memcpy(lcd_saved, m.lcd.ram, sizeof lcd_saved);
+    cyb_show(browser);
+    browsing = true;
+}
+
+/* Runs the browser a bit; false once it has closed (CyOS gets the screen
+ * back). */
+static bool browser_step(void)
+{
+    static uint8_t fb[CYB_FB_SIZE];
+    if (!cyb_step(browser, (uint32_t)SDL_GetTicks())) {
+        memcpy(m.lcd.ram, lcd_saved, sizeof lcd_saved);
+        m.lcd.version++;
+        browsing = false;
+        return false;
+    }
+    if (cyb_render(browser, fb)) cybiko_lcd_show(&m, fb);
+    return true;
+}
+#endif
 
 /* ---- the cartridge's card ---- */
 
@@ -319,6 +385,24 @@ static void save_flash(uint8_t *flash)
     free(copy);
 }
 
+static void show_lcd(SDL_Texture *tex, const uint8_t *lum)
+{
+    void *pixels;
+    int pitch;
+    if (!SDL_LockTexture(tex, NULL, &pixels, &pitch)) return;
+    for (int y = 0; y < CY_LCD_H; y++) {
+        uint32_t *row = (uint32_t *)((uint8_t *)pixels + y * pitch);
+        for (int x = 0; x < CY_LCD_W; x++) {
+            /* a grey-green LCD: lum 0 black, 255 the panel colour */
+            uint32_t l = lum[y * CY_LCD_W + x];
+            uint32_t r = 0x18 + l * (0xc6 - 0x18) / 255, g = 0x1c + l * (0xd0 - 0x1c) / 255,
+                     b = 0x18 + l * (0xbc - 0x18) / 255;
+            row[x] = r << 16 | g << 8 | b;
+        }
+    }
+    SDL_UnlockTexture(tex);
+}
+
 int main(int argc, char **argv)
 {
     int zoom = 4;
@@ -367,9 +451,15 @@ int main(int argc, char **argv)
     FILE *df = fopen(p, "rb");
     if (df) { size_t n = fread(disk, 1, disk_size, df); fclose(df); printf("RAM disk: %zu KB loaded\n", n >> 10); }
     install_apps();
+#ifdef CY_WITH_BROWSER
+    install_browser();
+#endif
 
     cy_host_t host = { .serial_tx = on_tx, .wall_time = wall_time, .speaker = on_speaker,
                        .card_read = card_read, .card_write = card_write };
+#ifdef CY_WITH_BROWSER
+    host.app_call = on_app_call;
+#endif
     uint8_t *ram = calloc(1, CY_RAM_SIZE);
     cybiko_init(&m, &host, rom, flash, ram);
     cybiko_set_disk(&m, disk, disk_size);
@@ -415,9 +505,36 @@ int main(int argc, char **argv)
             if (e.type == SDL_EVENT_QUIT) running = false;
             else if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) || e.type == SDL_EVENT_KEY_UP) {
                 int k = map_key(e.key.key);
+#ifdef CY_WITH_BROWSER
+                if (browsing) {
+                    int bk = k >= 0 ? cybiko_browser_key(k) : 0;
+                    if (bk) cyb_key(browser, bk, e.type == SDL_EVENT_KEY_DOWN);
+                    /* releases reach CyOS too, so no key stays held down */
+                    if (k >= 0 && e.type == SDL_EVENT_KEY_UP) cybiko_key(&m, k, false);
+                    continue;
+                }
+#endif
                 if (k >= 0) cybiko_key(&m, k, e.type == SDL_EVENT_KEY_DOWN);
             }
         }
+#ifdef CY_WITH_BROWSER
+        /* CyOS waits in the launcher while the browser is open */
+        if (browsing && browser_step()) {
+            uint32_t ver = cybiko_lcd_render(&m, lum);
+            if (ver != shown) {
+                shown = ver;
+                show_lcd(tex, lum);
+            }
+            SDL_SetRenderDrawColor(ren, 0x30, 0x30, 0x30, 255);
+            SDL_RenderClear(ren);
+            SDL_RenderTexture(ren, tex, NULL, NULL);
+            SDL_RenderPresent(ren);
+            SDL_Delay(cyb_busy(browser) ? 1 : 10);
+            start = SDL_GetTicksNS();
+            base_cycles = m.cpu.cycles;
+            continue;
+        }
+#endif
         /* With sound, the sound card sets the pace: run until SOUND_AHEAD
          * samples are queued, so it never runs dry (a wall-clock pace left
          * it only a few ms ahead, and sound broke up on PulseAudio and
@@ -444,25 +561,18 @@ int main(int argc, char **argv)
         while (m.cpu.cycles < want) {
             cybiko_run(&m, CHUNK);
             make_sound(audio);
+#ifdef CY_WITH_BROWSER
+            if (browse_requested) {
+                browse_requested = false;
+                browser_open(flash);
+                break;
+            }
+#endif
         }
         uint32_t ver = cybiko_lcd_render(&m, lum);
         if (ver != shown) {
             shown = ver;
-            void *pixels;
-            int pitch;
-            if (SDL_LockTexture(tex, NULL, &pixels, &pitch)) {
-                for (int y = 0; y < CY_LCD_H; y++) {
-                    uint32_t *row = (uint32_t *)((uint8_t *)pixels + y * pitch);
-                    for (int x = 0; x < CY_LCD_W; x++) {
-                        /* a grey-green LCD: lum 0 black, 255 the panel colour */
-                        uint32_t l = lum[y * CY_LCD_W + x];
-                        uint32_t r = 0x18 + l * (0xc6 - 0x18) / 255, g = 0x1c + l * (0xd0 - 0x1c) / 255,
-                                 b = 0x18 + l * (0xbc - 0x18) / 255;
-                        row[x] = r << 16 | g << 8 | b;
-                    }
-                }
-                SDL_UnlockTexture(tex);
-            }
+            show_lcd(tex, lum);
         }
         SDL_SetRenderDrawColor(ren, 0x30, 0x30, 0x30, 255);
         SDL_RenderClear(ren);

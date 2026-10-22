@@ -1,0 +1,4 @@
+[submodule "src/components/cy_browser"]
+	path = src/components/cy_browser
+	url = https://github.com/SovGVD/cybiko-browser.git
+	branch = claude/project-thread-vrfe7r

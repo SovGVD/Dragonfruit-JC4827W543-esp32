@@ -20,6 +20,16 @@
  *   --blit-fuzz N      (built with -DCY_HLE_CHECK) at the end, check N random
  *                      calls of the native ROM blit against the original
  *                      (checked every 100 ms of emulated time)
+ *   --browse KEYS      (built with the browser, src/components/cy_browser) when
+ *                      the Browser launcher opens the browser, press KEYS there
+ *                      (a comma list of --press key names, or "type:TEXT") and
+ *                      close it; its screens go to --frames too. Pages come
+ *                      through the curl program
+ *   --browse-url URL   the page the browser opens first (default its home)
+ *   --gate             (built with the browser) a Cybiko Internet Gate (CyWIG)
+ *                      on the radio for CyOS's WAP browser, fetching through
+ *                      curl
+ *   --gate-home URL    (after --gate) the page the WAP browser's Home opens
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
  *                      select, del, tab, ins, menu, shift, fn, help, dot, comma,
@@ -43,6 +53,10 @@
 #endif
 #include "cy_mp3.h"
 #include "cy_vfat.h"
+#ifdef CY_WITH_BROWSER
+#include "cybiko_browser.h"
+#include "cyb_net_curl.h"
+#endif
 
 static const struct { const char *name; int key; } key_names[] = {
     { "a", CYK_A }, { "b", CYK_B }, { "c", CYK_C }, { "d", CYK_D }, { "e", CYK_E },
@@ -191,14 +205,45 @@ static void mp3_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
 /* --pair: a second machine on the same radio channel */
 static cybiko_t *machines[2];
 
+#ifdef CY_WITH_BROWSER
+#include "cy_gate.h"
+/* --gate: a virtual CyWIG on the radio */
+static cy_gate_t *gate;
+
+static void gate_rf(void *user, const uint8_t *pkt, size_t len, uint8_t ch)
+{
+    (void)user;
+    if (machines[0] && !cybiko_rf_receive(machines[0], pkt, len, ch)) fprintf(stderr, "gate: radio queue full\n");
+}
+
+static void gate_log(void *user, const char *line)
+{
+    (void)user;
+    fprintf(stderr, "[%.3f gate] %s\n", machines[0] ? (double)machines[0]->cpu.cycles / CY_CLOCK_HZ : 0.0, line);
+}
+#endif
+
 static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
 {
     int from = (int)(intptr_t)user;
     cybiko_t *to = machines[!from];
     if (to) cybiko_rf_receive(to, pkt, len, channel);
+#ifdef CY_WITH_BROWSER
+    if (gate) cy_gate_rf_in(gate, pkt, len, channel);
+#endif
 }
 
 static int64_t wall(void *user) { (void)user; return (int64_t)time(NULL); }
+
+static bool browse_requested;
+
+static uint32_t on_app_call(void *user, uint32_t fn, uint32_t arg)
+{
+    (void)user;
+    fprintf(stderr, "[%.3f] app call %u (%u)\n", (double)the_machine->cpu.cycles / CY_CLOCK_HZ, (unsigned)fn, (unsigned)arg);
+    if (fn == CY_APP_BROWSER) browse_requested = true;
+    return fn == CY_APP_VERSION ? CY_APP_API : fn == CY_APP_BROWSER;
+}
 
 static uint8_t *load(const char *path, size_t want, size_t *got, bool exact)
 {
@@ -234,6 +279,58 @@ static int key_by_name(const char *s)
     return -1;
 }
 
+#ifdef CY_WITH_BROWSER
+/* The browser, opened by the launcher: KEYS are pressed in it one after
+ * another, each once the browser has nothing left to load, and it is
+ * closed at the end if they did not close it. */
+static void run_browser(cybiko_t *m, const uint8_t *flash, const char *keys, const char *url,
+                        const char *frames, int *frame_no)
+{
+    static cyb_t *b;
+    static cyb_net_t net;
+    static uint32_t clock_ms;
+    static bool url_done;
+    uint8_t fb[CYB_FB_SIZE], saved[sizeof m->lcd.ram], lum[CY_LCD_W * CY_LCD_H];
+    if (!b) {
+        cyb_net_curl(&net, NULL);
+        b = cyb_create(&net, flash, CY_FLASH_SIZE, NULL);
+    }
+    memcpy(saved, m->lcd.ram, sizeof saved);
+    cyb_show(b);
+    if (url && !url_done) { cyb_go(b, url); url_done = true; }
+    char *list = strdup(keys ? keys : ""), *save = NULL;
+    char *k = strtok_r(list, ",", &save);
+    bool open = true;
+    while (open) {
+        for (int i = 0; open && (i < 3 || cyb_busy(b)) && i < 5000; i++) open = cyb_step(b, clock_ms += 20);
+        if (cyb_render(b, fb)) {
+            cybiko_lcd_show(m, fb);
+            if (frames) {
+                char path[512];
+                cybiko_lcd_render(m, lum);
+                snprintf(path, sizeof path, "%s/frame_%04d.pgm", frames, (*frame_no)++);
+                write_pgm(path, lum);
+            }
+        }
+        if (!open) break;
+        if (!k) { fprintf(stderr, "browser: closed after the last key\n"); break; }
+        if (!strncmp(k, "type:", 5)) {
+            for (const char *c = k + 5; *c; c++) cyb_char(b, (unsigned char)*c);
+        } else {
+            int key = cybiko_browser_key(key_by_name(k));
+            if (!key) fprintf(stderr, "browser: no key %s\n", k);
+            cyb_key(b, key, true);
+            if (key != CYB_K_SHIFT && key != CYB_K_FN) cyb_key(b, key, false);
+        }
+        k = strtok_r(NULL, ",", &save);
+    }
+    free(list);
+    memcpy(m->lcd.ram, saved, sizeof saved);
+    m->lcd.version++;
+    fprintf(stderr, "[%.3f] browser closed\n", (double)m->cpu.cycles / CY_CLOCK_HZ);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
@@ -248,7 +345,7 @@ int main(int argc, char **argv)
     double seconds = 20;
     unsigned disk_kb = 0;
     bool ls = false, cart = false, cart_log = false;
-    const char *card_path = NULL, *wav_path = NULL;
+    const char *card_path = NULL, *wav_path = NULL, *browse_keys = NULL, *browse_url = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--rom") && v) { rom_path = v; i++; }
@@ -268,9 +365,20 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--card") && v) { card_path = v; cart = true; i++; }
         else if (!strcmp(a, "--cart-log")) cart = cart_log = true;
         else if (!strcmp(a, "--wav") && v) { wav_path = v; i++; }
+        else if (!strcmp(a, "--browse") && v) { browse_keys = v; i++; }
+        else if (!strcmp(a, "--browse-url") && v) { browse_url = v; i++; }
         else if (!strcmp(a, "--dump-ram") && v) { dump = v; i++; }
         else if (!strcmp(a, "--hex-port") && v) { hex_port = atoi(v); i++; }
         else if (!strcmp(a, "--pair") && v) { pair_path = v; i++; }
+#ifdef CY_WITH_BROWSER
+        else if (!strcmp(a, "--gate")) {
+            static cyb_net_t gate_net;
+            cyb_net_curl(&gate_net, NULL);
+            cy_gate_host_t gh = { .rf_send = gate_rf, .log = gate_log };
+            gate = cy_gate_create(0x4c80c0deu, &gh, &gate_net);
+        }
+        else if (!strcmp(a, "--gate-home") && v && gate) { cy_gate_set_home(gate, v); i++; }
+#endif
         else if (!strcmp(a, "--press-both")) press_both = true;
         else if (!strcmp(a, "--unit-id") && v) { unit_id = (uint32_t)strtoul(v, NULL, 16); i++; }
         else if (!strcmp(a, "--trace-io") && v) {
@@ -339,7 +447,8 @@ int main(int argc, char **argv)
 
     static cybiko_t m, m2;
     cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf,
-                       .card_read = card_read, .card_write = card_write };
+                       .card_read = card_read, .card_write = card_write,
+                       .app_call = on_app_call };
     cybiko_init(&m, &host, rom, flash, ram);
     if (disk_kb) cybiko_set_disk(&m, disk, disk_size);
     if (unit_id) cybiko_set_unit_id(&m, unit_id);
@@ -444,10 +553,32 @@ int main(int argc, char **argv)
                 cybiko_run(&m, n);
                 cybiko_run(&m2, n);
             }
+        } else if (0
+#ifdef CY_WITH_BROWSER
+                   || gate
+#endif
+                   ) {
+#ifdef CY_WITH_BROWSER
+            for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
+                int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
+                cybiko_run(&m, n);
+                cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
+            }
+#endif
         } else {
             cybiko_run(&m, step);
         }
         if (mp3) mp3_pump(&m, mp3, wav);
+        if (browse_requested) {
+            browse_requested = false;
+#ifdef CY_WITH_BROWSER
+            run_browser(&m, flash, browse_keys, browse_url, frames, &frame_no);
+#else
+            (void)browse_keys;
+            (void)browse_url;
+            fprintf(stderr, "built without the browser (src/components/cy_browser)\n");
+#endif
+        }
         if (frames && m.cpu.cycles / chunk != (m.cpu.cycles - step) / chunk) {
             uint32_t v = cybiko_lcd_render(&m, lum);
             if (v != last_version) {

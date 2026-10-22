@@ -18,7 +18,8 @@
  *                is empty
  *   cybiko.cfg   optional settings: sound.volume = 0-100 (default 60),
  *                disk.size = 1-6 (MB, default 4), the radio keys described
- *                in cybiko_link.h and the cartridge key in cybiko_cart.h */
+ *                in cybiko_link.h, the cartridge key in cybiko_cart.h and
+ *                the WAP gate keys in cybiko_gate.h */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,8 @@
 #include "cybiko_ui.h"
 #include "cybiko_link.h"
 #include "cybiko_cart.h"
+#include "cybiko_browser.h"
+#include "cybiko_gate.h"
 #include "cybiko.h"
 #include "display.h"
 #include "m5_sd.h"
@@ -110,6 +113,15 @@ static int64_t wall_time(void *user)
 /* CPU task                                                            */
 /* ------------------------------------------------------------------ */
 
+static bool next_key(int *key, bool *down)
+{
+    key_event_t ev;
+    if (xQueueReceive(key_queue, &ev, 0) != pdTRUE) return false;
+    *key = ev.key;
+    *down = ev.down;
+    return true;
+}
+
 static void cpu_task(void *arg)
 {
     (void)arg;
@@ -127,10 +139,20 @@ static void cpu_task(void *arg)
         key_event_t ev;
         while (xQueueReceive(key_queue, &ev, 0) == pdTRUE) cybiko_key(machine, ev.key, ev.down);
         cybiko_link_poll(machine);
+        cybiko_gate_poll(machine);
         cybiko_cart_poll(machine);
 
         int64_t run_start = esp_timer_get_time();
         cybiko_run(machine, CHUNK_STATES);
+        if (cybiko_browser_requested()) {
+            /* CyOS waits in the launcher while the browser runs */
+            cybiko_gate_pause(true);
+            cybiko_browser_run(machine, flash, next_key);
+            cybiko_gate_pause(false);
+            t0 = esp_timer_get_time();
+            c0 = machine->cpu.cycles;
+            last_yield = t0;
+        }
 
         int64_t now = esp_timer_get_time();
         /* Every 5 s: how fast the emulation runs against real time, and how
@@ -469,6 +491,9 @@ static bool load_disk(const char *cfg)
         ESP_LOGI(TAG, "RAM disk restored (%u KB file)", (unsigned)(have >> 10));
 
     int copied = install_apps();
+    uint32_t free_before = cy_disk_free(disk, disk_size);
+    cybiko_browser_install(disk, disk_size);
+    if (cy_disk_free(disk, disk_size) != free_before) copied++;
     /* Rewrite the whole file when it is new, has grown or got apps; later
      * saves only patch changed chunks into it. */
     if (copied || have != disk_size) {
@@ -528,11 +553,12 @@ void cybiko_app_start(void)
     if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
 
     cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker,
-                       .rf_send = cybiko_link_send };
+                       .rf_send = cybiko_gate_send, .app_call = cybiko_browser_app_call };
     cybiko_init(machine, &host, rom, flash, ram);
     cybiko_set_disk(machine, disk, disk_size);
     memcpy(ram, disk, CY_RAMDISK_SIZE);         /* in case the disk cannot be moved */
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
+    cybiko_gate_init(machine, have_cfg ? cfg : NULL);
     cybiko_cart_init(machine, have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));

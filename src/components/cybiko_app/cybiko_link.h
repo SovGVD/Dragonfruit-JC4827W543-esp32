@@ -22,3 +22,5 @@ void cybiko_link_init(cybiko_t *m, const char *cfg);
 void cybiko_link_send(void *user, const uint8_t *pkt, size_t len, uint8_t channel);
 /* CPU task: hand packets heard from other boards to the machine. */
 void cybiko_link_poll(cybiko_t *m);
+/* Back on the radio's own channel after the web browser used Wi-Fi. */
+void cybiko_link_resume(void);

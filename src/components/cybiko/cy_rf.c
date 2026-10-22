@@ -36,6 +36,10 @@
 #define CRC_OFFSET 0x7fffcu
 #define SPARE 1                       /* extra byte at the end of each TX frame */
 #define ACK_DELAY (CY_CLOCK_HZ / 500) /* 2 ms from the last byte to the 03 */
+/* A heard packet reaches the H8S at the speed it comes over the air, not
+ * at the SCI's: CyOS reads the signal strength 15 ms after the first byte
+ * and expects the last one within 50 ms (short) or 115 ms (long). */
+#define AIR_BYTE (CY_CLOCK_HZ / 2400)
 
 enum { P_IDLE, P_CMD, P_ARGS, P_DATA };
 
@@ -116,6 +120,14 @@ bool cybiko_rf_receive(cybiko_t *m, const uint8_t *pkt, size_t len, uint8_t chan
     return true;
 }
 
+/* A/D channel 0 is the radio's signal strength. CyOS samples it while a
+ * packet comes in and picks the gate it hears best, so a packet coming in
+ * shows a good signal and the quiet air a low one. */
+uint16_t cy_rf_rssi(const cybiko_t *m)
+{
+    return m->rf.inject_len ? 450 : 30;
+}
+
 /* Hand packets to the H8S when it is listening and not busy sending, and
  * acknowledge sent ones. */
 void cy_rf_advance(cybiko_t *m)
@@ -136,11 +148,15 @@ void cy_rf_advance(cybiko_t *m)
             memcpy(r->inject + 1, r->q[slot], len);
             r->inject_len = (uint16_t)(len + 1);
             r->inject_pos = 0;
+            r->inject_at = now(m);
             r->heard++;
         }
     }
-    while (r->inject_pos < r->inject_len && cybiko_serial_rx(m, 2, r->inject[r->inject_pos]))
+    while (r->inject_pos < r->inject_len && (int32_t)(now(m) - r->inject_at) >= 0 &&
+           cybiko_serial_rx(m, 2, r->inject[r->inject_pos])) {
         r->inject_pos++;
+        r->inject_at += AIR_BYTE;
+    }
     if (r->inject_pos >= r->inject_len) r->inject_len = r->inject_pos = 0;
 }
 
@@ -151,8 +167,12 @@ uint32_t cy_rf_next(const cybiko_t *m)
         int32_t d = (int32_t)(r->ack_at - now(m));
         return d > 0 ? (uint32_t)d : 1;
     }
+    if (r->inject_len) {
+        int32_t d = (int32_t)(r->inject_at - now(m));
+        return d > 0 ? (uint32_t)d : 1;
+    }
     /* Look again every millisecond while a packet waits for its turn. */
-    if (r->queued || r->inject_len) return CY_CLOCK_HZ / 1000;
+    if (r->queued) return CY_CLOCK_HZ / 1000;
     return 0xffffffffu;
 }
 

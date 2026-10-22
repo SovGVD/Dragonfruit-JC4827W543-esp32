@@ -375,6 +375,12 @@ static void bus_illegal(void *ctx, h8s_cpu_t *cpu, uint16_t op)
     cybiko_t *m = ctx;
     (void)cpu;
     if (op == CY_HLE_OP && cy_hle(m)) return;
+    if (op == CY_APP_OP && m->host.app_call) {
+        cpu->er[0] = m->host.app_call(m->host.user, cpu->er[0], cpu->er[1]);
+        m->app_called = true;
+        h8s_end_slice(cpu);
+        return;
+    }
     m->illegal_ops++;
 }
 
@@ -493,6 +499,10 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
         }
         done += h8s_run(&m->cpu, slice);
         cy_sync(m);
+        if (m->app_called) {
+            m->app_called = false;
+            break;
+        }
         /* Hot code in CyOS modules is found where the CPU is found. */
         if (m->cpu.cycles >= m->hle_sample_at) {
             m->hle_sample_at = m->cpu.cycles + CY_CLOCK_HZ / 20;
@@ -551,6 +561,14 @@ bool cybiko_serial_rx(cybiko_t *m, int port, uint8_t byte)
     s->rx_count++;
     cy_sci_kick(m);
     return true;
+}
+
+void cybiko_lcd_show(cybiko_t *m, const uint8_t *picture)
+{
+    /* RAM row 0 is the bottom line of the screen. */
+    for (int y = 0; y < CY_LCD_H; y++)
+        memcpy(m->lcd.ram + (CY_LCD_H - 1 - y) * (CY_LCD_W / 4), picture + y * (CY_LCD_W / 4), CY_LCD_W / 4);
+    m->lcd.version++;
 }
 
 uint32_t cybiko_lcd_render(const cybiko_t *m, uint8_t *lum)

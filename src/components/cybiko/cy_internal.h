@@ -53,6 +53,7 @@ void cy_disk_console(cybiko_t *m, uint8_t b);
 void cy_rf_reset(cybiko_t *m);
 void cy_rf_h8_byte(cybiko_t *m, uint8_t b);
 void cy_rf_advance(cybiko_t *m);
+uint16_t cy_rf_rssi(const cybiko_t *m);
 uint32_t cy_rf_next(const cybiko_t *m);
 void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
 

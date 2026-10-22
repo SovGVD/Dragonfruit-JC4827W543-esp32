@@ -25,6 +25,7 @@ typedef struct {
 } packet_t;
 
 static bool enabled;
+static int radio_channel = 1;
 static QueueHandle_t rx_queue;
 static uint32_t dropped;
 static const uint8_t broadcast[ESP_NOW_ETH_ALEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
@@ -45,6 +46,10 @@ static bool start_radio(int channel)
     esp_err_t err = esp_netif_init();
     if (err == ESP_OK) err = esp_event_loop_create_default();
     if (err == ESP_ERR_INVALID_STATE) err = ESP_OK;
+    /* The station interface is for the web browser (cybiko_browser.c), which
+     * joins a Wi-Fi network over the same radio. */
+    if (err == ESP_OK && !esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") && !esp_netif_create_default_wifi_sta())
+        err = ESP_ERR_NO_MEM;
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (err == ESP_OK) err = esp_wifi_init(&cfg);
     if (err == ESP_OK) err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
@@ -96,10 +101,18 @@ void cybiko_link_init(cybiko_t *m, const char *cfg)
         ESP_LOGW(TAG, "bad rf.channel in cybiko.cfg; using 1");
         channel = 1;
     }
+    radio_channel = channel;
     rx_queue = xQueueCreate(8, sizeof(packet_t));
     if (!rx_queue || !start_radio(channel)) return;
     enabled = true;
     ESP_LOGI(TAG, "radio over ESP-NOW, Wi-Fi channel %d", channel);
+}
+
+void cybiko_link_resume(void)
+{
+    if (!enabled) return;
+    esp_err_t err = esp_wifi_set_channel((uint8_t)radio_channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) ESP_LOGW(TAG, "radio channel %d not restored: %s", radio_channel, esp_err_to_name(err));
 }
 
 void cybiko_link_send(void *user, const uint8_t *pkt, size_t len, uint8_t channel)

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Turn a video into an MXD clip for the Cybiko Xtreme MP3 cartridge.
+"""Turn a video into an MXD clip for the Cybiko Xtreme MP3 cartridge, or an
+MXD clip back into a video.
 
     cybiko_mxd.py VIDEO OUT.app --template CLIP.app [options]
+    cybiko_mxd.py CLIP.app OUT.mp4 [--zoom N]
+
+The second form plays the clip's frames at its own frame rate over its
+sound track, each pixel N x N (default 4) so the picture stays sharp.
 
 MXD clips are ordinary CyOS applications: a 160x100 picture in four greys,
 about five frames a second, played over an MP3 sound track. Put OUT.app on
@@ -158,7 +163,60 @@ def template_player(path):
     sys.exit("%s has no main.e: pass one of the MXD clips from the MP3 cartridge CD" % path)
 
 
+def to_video(clip, out, zoom):
+    parts = {name: data for name, method, data in cybiko_cap.cy_entries(open(clip, "rb").read())}
+    pic, music = parts.get("clip.pic"), parts.get("music.mp3")
+    if not pic or len(pic) < 4:
+        sys.exit("%s is not an MXD clip (no clip.pic)" % clip)
+    period, w, h = int.from_bytes(pic[0:2], "big"), pic[2], pic[3]
+    size = (w + 3) // 4 * h
+    grey = bytes([255, 170, 85, 0])
+    raw = bytearray()
+    pos = 4
+    while pos + 4 + size <= len(pic):
+        fw, fh = pic[pos + 2], pic[pos + 3]
+        if (fw, fh) != (w, h):
+            sys.exit("frame at %d is %dx%d, not %dx%d: not supported" % (pos, fw, fh, w, h))
+        rows = pic[pos + 4:pos + 4 + size]
+        stride = (w + 3) // 4
+        for y in range(h):
+            for x in range(w):
+                raw.append(grey[rows[y * stride + x // 4] >> (6 - 2 * (x % 4)) & 3])
+        pos += 4 + size
+    frames = len(raw) // (w * h)
+    fps = 10000.0 / period if period else 5.0
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "%dx%d" % (w, h),
+           "-framerate", "%g" % fps, "-i", "-"]
+    tmp = None
+    if music:
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp.write(music)
+        tmp.close()
+        cmd += ["-i", tmp.name, "-c:a", "aac", "-b:a", "128k"]
+    cmd += ["-vf", "scale=%d:%d:flags=neighbor" % (w * zoom, h * zoom), "-c:v", "libx264",
+            "-pix_fmt", "yuv420p", "-crf", "18", out]
+    try:
+        subprocess.run(cmd, input=bytes(raw), check=True, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        sys.exit("ffmpeg not found: install it and put it on the PATH")
+    except subprocess.CalledProcessError as e:
+        sys.exit("ffmpeg failed:\n" + e.stderr.decode(errors="replace")[-2000:])
+    finally:
+        if tmp:
+            os.unlink(tmp.name)
+    print("%s: %d frames at %g fps (%.1f s)" % (out, frames, fps, frames / fps))
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1].lower().endswith(".app") and not sys.argv[2].lower().endswith(".app"):
+        d = argparse.ArgumentParser(description="MXD clip to video")
+        d.add_argument("clip")
+        d.add_argument("out")
+        d.add_argument("--zoom", type=int, default=4)
+        a = d.parse_args()
+        to_video(a.clip, a.out, max(1, a.zoom))
+        return
     p = argparse.ArgumentParser(description="Video to Cybiko MXD clip", usage=__doc__)
     p.add_argument("video")
     p.add_argument("out")

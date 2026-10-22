@@ -77,7 +77,8 @@ In short:
 
 `cart = auto | mp3 | off` in `cybiko.cfg` plugs the cartridge in or out
 (`auto`, the default, plugs it in when `/Cybiko/card` has files).
-`tools/cybiko_mxd.py` turns a video into an MXD clip. How the cartridge
+`tools/cybiko_mxd.py` turns a video into an MXD clip, and a clip back into
+an MP4 (`cybiko_mxd.py clip.app clip.mp4`). How the cartridge
 works, with everything needed to reimplement it, is in
 [cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
 
@@ -201,6 +202,31 @@ the 4-byte destination (`ffffffff` for everyone) and the sender's ID.
 
 The boot loader and CyOS print text on serial port SCI1. The firmware logs those lines on the ESP32 serial monitor with the
 `cyos` tag.
+
+## Desktop app
+
+`cybiko` runs the emulator in a window on a PC, with sound and the MP3
+cartridge. It uses a folder laid out like `/Cybiko` on the board's SD card
+(ROM and flash dumps, `ramdisk.bin`, `apps/`, `card/`, `cybiko.cfg`), so you
+can use a copy of that folder, or the card itself.
+
+On Ubuntu (26.04 has SDL3 packaged):
+
+```sh
+sudo apt install build-essential cmake libsdl3-dev
+cmake -S src/host -B build-host -DHOST_UI=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-host --target cybiko -j
+build-host/cybiko ~/Cybiko            # the folder with the dumps; --zoom N for the window size
+```
+
+Without `libsdl3-dev` CMake downloads SDL3 and builds it, which needs the
+X11/Wayland and ALSA/PulseAudio development packages.
+
+Keys: letters are letters. Enter, Esc, Space, Tab and the arrows are
+themselves. Backspace or Delete is Del, Shift is Shift and Ctrl is Fn.
+F1-F7 are F1-F7, F8 is Select, F9 is Help, F10 is AS and F12 is On/Off. The
+window keeps integer zoom when resized. Closing it saves the RAM disk, which
+is also saved every 30 seconds. A reprogrammed flash is saved as `flash.bin`.
 
 ## PC runner
 

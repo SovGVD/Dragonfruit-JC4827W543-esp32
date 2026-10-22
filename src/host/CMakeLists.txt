@@ -72,22 +72,27 @@ endif()
 
 # --- Optional interactive UI (SDL3) -------------------------------------
 # OFF by default so `cmake -S src/host -B build-host` needs no network and links a
-# headless dragonfruit. With -DHOST_UI=ON, SDL3 is fetched + built from source and
-# the --ui window (host_ui.c) is compiled in.
+# headless dragonfruit. With -DHOST_UI=ON the --ui window (host_ui.c) is compiled
+# in, and the Cybiko desktop app (cybiko_sdl.c) is built. SDL3 comes from the
+# system when installed (Ubuntu: libsdl3-dev), otherwise it is fetched and
+# built from source.
 option(HOST_UI "Build the interactive SDL3 UI (fetches SDL3 from source)" OFF)
 if(HOST_UI)
-    include(FetchContent)
-    set(SDL_SHARED ON  CACHE BOOL "" FORCE)
-    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(SDL_TESTS  OFF CACHE BOOL "" FORCE)
-    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(SDL3
-        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-        GIT_TAG release-3.2.x
-        GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(SDL3)
+    find_package(SDL3 CONFIG QUIET)
+    if(NOT SDL3_FOUND)
+        include(FetchContent)
+        set(SDL_SHARED ON  CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS  OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(SDL3
+            GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+            GIT_TAG release-3.2.x
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(SDL3)
+    endif()
 
     target_compile_definitions(dragonfruit PRIVATE HOST_UI=1)
     target_link_libraries(dragonfruit PRIVATE SDL3::SDL3)
@@ -230,6 +235,16 @@ target_include_directories(cybiko_host PRIVATE ../components/cybiko/include ../c
 add_executable(test_vfat test_vfat.c ../components/cy_vfat/cy_vfat.c)
 target_include_directories(test_vfat PRIVATE ../components/cy_vfat/include)
 add_test(NAME vfat COMMAND test_vfat)
+# The Cybiko desktop app (SDL3 window, keyboard, sound, MP3 cartridge)
+if(HOST_UI)
+    add_executable(cybiko cybiko_sdl.c ../components/cy_mp3/cy_mp3.c ../components/cy_vfat/cy_vfat.c ${CYBIKO_SOURCES})
+    target_include_directories(cybiko PRIVATE ../components/cybiko/include ../components/h8s/include
+                               ../components/cy_mp3/include ../components/cy_vfat/include)
+    target_link_libraries(cybiko PRIVATE SDL3::SDL3 m)
+    if(NOT MSVC)
+        target_compile_options(cybiko PRIVATE -O2 -Wall -Wextra)
+    endif()
+endif()
 if(NOT MSVC)
     target_compile_options(test_cybiko PRIVATE -O2 -Wall -Wextra)
     target_compile_options(cybiko_host PRIVATE -O2 -Wall -Wextra)

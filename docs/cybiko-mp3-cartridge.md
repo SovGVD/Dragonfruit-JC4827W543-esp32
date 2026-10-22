@@ -96,7 +96,7 @@ The emulation is in these files:
 | `src/components/cybiko_app/cybiko_cart.c` | firmware glue: card, decoder task, speaker |
 | `tools/cybiko_cap.py` | unpacks `.cap`/`.csu` packs and CyOS archives, and writes archives |
 | `tools/cybiko_card.py` | builds a FAT16 card image from a folder |
-| `tools/cybiko_mxd.py` | converts a video into an MXD clip |
+| `tools/cybiko_mxd.py` | converts a video into an MXD clip, and a clip into an MP4 |
 
 ## 2. The hardware
 
@@ -555,6 +555,10 @@ does the following:
 4. Makes an icon from a frame a third of the way in.
 5. Writes `root.inf`, and packs all five parts into a CyOS archive. Only
    `clip.pic` is compressed, the way the CD does it.
+
+`tools/cybiko_mxd.py CLIP.app OUT.mp4` goes the other way. It plays the
+frames at the clip's own frame rate over its sound track, scaled 4 × with
+sharp pixels (`--zoom N`), so the CD's clips can be watched on a PC.
 
 Clips of 30-40 s are what Cybiko shipped and what was tested. Longer ones
 should work, since nothing in the format limits the length, but they have

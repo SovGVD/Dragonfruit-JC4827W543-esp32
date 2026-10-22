@@ -303,9 +303,10 @@ every 5 seconds.
   native code (cy_hle.c) with their original timing: the CyOS 1.5.08 page
   checksum, which the RAM disk check at start-up spends about half its time
   in, the boot ROM's software multiply, the boot ROM's bitmap row blit, the
-  CyOS loop that sends rows to the LCD, the CyOS file read and memset loops
-  and the copy loop of the ROM's decompressor. Games are about 3 times and
-  videos about 1.3 times cheaper to run than without them.
+  CyOS loop that sends rows to the LCD, the CyOS file read and memset loops,
+  the ROM's decompressor, and the video player's loops that feed the MP3
+  decoder and wait for it. Games are about 3 times and videos about 1.7
+  times cheaper to run than without them.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
 - The DMA controller and the DTC are modelled (CyOS uses both at start-up).

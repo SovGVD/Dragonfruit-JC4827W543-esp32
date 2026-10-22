@@ -33,7 +33,7 @@
 #define CY_ROM_BUF     0x10000u      /* ROM buffer: 32 KB image + its mirror */
 #define CY_FLASH_SIZE  0x80000u
 #define CY_RAM_SIZE    0x200000u
-#define CY_HLE_SLOTS   8
+#define CY_HLE_SLOTS   12
 #define CY_RAMDISK_SIZE 0x80000u     /* part of RAM kept across power cycles */
 #define CY_DISK_BASE   0x800000u     /* where cybiko_set_disk puts the RAM disk */
 #define CY_DISK_MAX    0x600000u     /* 6 MB: up to the keyboard at e00000 */
@@ -269,6 +269,7 @@ typedef struct cybiko {
     uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
     uint8_t disk_patched;      /* kernel patches applied since power-on */
     uint32_t hle_pc[CY_HLE_SLOTS];  /* traps of the routines run natively (cy_hle.c), ~0 if none */
+    uint32_t hle_probed;             /* the last instruction cy_hle_probe looked around */
     /* Debug: called for every on-chip register access when set (PC runner). */
     void (*io_trace)(struct cybiko *m, uint32_t a, uint8_t v, bool write);
     void (*cart_log)(struct cybiko *m, const char *msg);

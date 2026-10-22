@@ -36,6 +36,8 @@ void cy_bus_timing(cybiko_t *m);
 void cy_hle_patch_rom(cybiko_t *m);
 void cy_hle_patch_kernel(cybiko_t *m);
 bool cy_hle(cybiko_t *m);
+void cy_hle_probe(cybiko_t *m);
+bool cy_irq_deliverable(cybiko_t *m);     /* cybiko.c: an interrupt would be taken now */
 
 /* cy_disk.c */
 void cy_disk_console(cybiko_t *m, uint8_t b);

@@ -655,6 +655,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
     }
     case 3:
         s->tdr = v;
+        if (!m->dxc && n == 0 && m->cpu.ppc != m->hle_probed) cy_hle_probe(m);
         /* A DMA/DTC write clears TDRE itself (the CPU clears it in SSR). */
         if (m->dxc && (s->scr & SCR_TE)) {
             s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);

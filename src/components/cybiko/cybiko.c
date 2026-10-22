@@ -65,9 +65,9 @@ static void irq_pins_changed(cybiko_t *m, uint8_t old_in)
 uint8_t cy_irq_pins(const cybiko_t *m) { return irq_pins(m); }
 void cy_irq_pins_changed(cybiko_t *m, uint8_t old_in) { if (irq_pins(m) != old_in) irq_pins_changed(m, old_in); }
 
-static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
+/* The interrupt the CPU would take now (0 if none), and its level. */
+static int irq_best(cybiko_t *m, const h8s_cpu_t *cpu, int *level)
 {
-    cybiko_t *m = ctx;
     uint32_t words[3] = {
         m->pend[0] | (uint32_t)(m->isr & m->ier) << CY_VEC_IRQ0,
         m->pend[1], m->pend[2],
@@ -104,6 +104,21 @@ static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
             if (lvl > best_level) { best = v; best_level = lvl; }
         }
     }
+    *level = best_level;
+    return best;
+}
+
+bool cy_irq_deliverable(cybiko_t *m)
+{
+    int level;
+    return irq_best(m, &m->cpu, &level) != 0;
+}
+
+static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
+{
+    cybiko_t *m = ctx;
+    int best_level;
+    const int best = irq_best(m, cpu, &best_level);
     if (!best) return 0;
 
     if (best >= CY_VEC_IRQ0 && best < CY_VEC_IRQ0 + 8) {

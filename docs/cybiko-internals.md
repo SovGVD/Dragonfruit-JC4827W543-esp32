@@ -504,19 +504,29 @@ hardware:
   XOR, optionally mirrored; about 60% of all instructions in a scrolling
   game), the CyOS loop that sends a 40-byte row to the LCD (about 20%), the
   CyOS loop that copies bytes out of a file's 8 KB buffer (a quarter of all
-  instructions while a video plays), a CyOS memset loop, and the
-  back-reference copy of the boot ROM's LZ decompressor. The first word of
+  instructions while a video plays), a CyOS memset loop, the boot ROM's LZ
+  decompressor (its bit-by-bit decoding loop, 44% of all instructions in a
+  video, and its back-reference copy), and two loops in a CyOS module the
+  video player uses: one sends a buffer to the MP3 decoder on SCI0 waiting
+  for each byte to go out, the other spins until an interrupt handler
+  clears a flag. The first word of
   each is replaced by an opcode the H8S does not have; the core traps on
   it, runs the C version and charges the states the original takes, so
   emulated time is unchanged. Loops stop at the top of an iteration when the
   slice ends or an interrupt is pending, and the trap resumes them. All but
   the blit leave registers, flags, memory and states exactly as the original
   (unit tests in test_cybiko.c check this); the blit's states are within a
-  few percent. They are found by matching code, so other ROM or CyOS
-  versions just run unpatched. The PC runner built with `-DCY_HLE_CHECK`
-  runs every 200th call (`CY_HLE_CHECK_EVERY`) both ways and compares
-  registers, flags, states and all of RAM; `--blit-fuzz N` adds N random
-  blit calls.
+  few percent. A loop that only waits for an interrupt (the spin loop) lets
+  the rest of the slice go by in whole rounds, since nothing it reads can
+  change before an interrupt is taken. They are found by matching code
+  (the decompressor also by a hash of the ROM code and jump tables it
+  follows), so other ROM or CyOS versions just run unpatched. Code in CyOS
+  modules, loaded after start-up, is looked for when it first runs: a write
+  to SCI0's transmit register makes the emulator check the code around the
+  writing instruction once, and then nearby. The PC runner built with
+  `-DCY_HLE_CHECK` runs every 200th call (`CY_HLE_CHECK_EVERY`) both ways
+  and compares registers, flags, states and all of RAM (the spin loop one
+  round at a time); `--blit-fuzz N` adds N random blit calls.
 - **Polling skips.** When the same instruction reads a timer counter or a
   serial status register again within 256 states and sees the same value,
   the time until the register can change passes at once (CyOS's delay and

@@ -10,6 +10,8 @@
  * A row of settings under the title: the Cybiko screen orientation
  * (portrait by default, or landscape), the speaker volume both systems start
  * with (kept in NVS, played as a short beep when changed) and CALIBRATE.
+ * The Cybiko card has its own button that takes the MP3 cartridge out or
+ * puts it back (some games will not start with it in).
  *
  * The CALIBRATE button opens the touch calibration. It also opens by itself
  * when no calibration has been made yet (none saved, none in palm.cfg), and
@@ -73,6 +75,10 @@ static card_t cards[BOOT_SYSTEM_COUNT] = {
 #define VOL_W 36
 #define VOL_STEP 10
 #define VOLUME_DEFAULT 60
+/* The MP3 cartridge button, centred near the bottom of the Cybiko card. */
+#define CART_W 150
+#define CART_H 24
+#define CART_DY 120
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
@@ -93,6 +99,11 @@ static void draw_card(int i, bool selected)
     text_centered(cx, c->y + 66, c->folder, 2, COLOR_DIM, c->color);
     text_centered(cx, c->y + 98, c->ready ? "READY" : c->missing, 2,
                   c->ready ? COLOR_OK : COLOR_BAD, c->color);
+    if (i == BOOT_SYSTEM_CYBIKO) {
+        display_ui_fill(cx - CART_W / 2, c->y + CART_DY, CART_W, CART_H, COLOR_BUTTON);
+        text_centered(cx, c->y + CART_DY + 8, cybiko_app_cart_in() ? "MP3 CART: IN" : "MP3 CART: OUT",
+                      1, COLOR_TITLE, COLOR_BUTTON);
+    }
 }
 
 static void draw_footer(int countdown)
@@ -199,6 +210,13 @@ static bool orientation_at(int x, int y)
     return x >= ORI_X && x < ORI_X + ORI_W && y >= ORI_Y && y < ORI_Y + ORI_H;
 }
 
+static bool cart_at(int x, int y)
+{
+    const card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
+    int x0 = c->x + c->w / 2 - CART_W / 2, y0 = c->y + CART_DY;
+    return x >= x0 && x < x0 + CART_W && y >= y0 && y < y0 + CART_H;
+}
+
 static int card_at(int x, int y)
 {
     for (int i = 0; i < BOOT_SYSTEM_COUNT; i++) {
@@ -262,7 +280,7 @@ boot_system_t boot_menu_run(void)
     TickType_t start = xTaskGetTickCount(), pressed_at = 0;
     bool touching = false, was_pressed = input_boot_button_held(), held_fired = false;
     int touched = -1;
-    bool cal_touched = false, ori_touched = false;
+    bool cal_touched = false, ori_touched = false, cart_touched = false;
     int vol_touched = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -278,6 +296,7 @@ boot_system_t boot_menu_run(void)
                 cal_touched = calibrate_at(x, y);
                 ori_touched = orientation_at(x, y);
                 vol_touched = volume_button_at(x, y);
+                cart_touched = cart_at(x, y);
             }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
@@ -286,6 +305,10 @@ boot_system_t boot_menu_run(void)
             }
         } else if (touching && vol_touched) {
             change_volume(vol_touched);
+            draw_footer(0);
+        } else if (touching && cart_touched) {
+            cybiko_app_set_cart_in(!cybiko_app_cart_in());
+            draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
             draw_footer(0);
         } else if (touching && ori_touched) {
             cybiko_app_set_portrait(!cybiko_app_portrait());

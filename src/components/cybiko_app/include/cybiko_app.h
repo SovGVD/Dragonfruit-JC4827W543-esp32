@@ -21,3 +21,10 @@ void cybiko_app_start(void);
  * menu: true (the default) is portrait, false landscape. */
 bool cybiko_app_portrait(void);
 void cybiko_app_set_portrait(bool portrait);
+
+/* Whether the MP3 cartridge is plugged in, kept in NVS and switched in the
+ * boot menu: true (the default) leaves it to the cart key in cybiko.cfg,
+ * false takes it out. Some games refuse to start with the cartridge in, on
+ * the real machine too. */
+bool cybiko_app_cart_in(void);
+void cybiko_app_set_cart_in(bool in);

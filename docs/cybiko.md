@@ -81,7 +81,11 @@ In short:
    speaker.
 
 `cart = auto | mp3 | off` in `cybiko.cfg` plugs the cartridge in or out
-(`auto`, the default, plugs it in when `/Cybiko/card` has files).
+(`auto`, the default, plugs it in when `/Cybiko/card` has files). The
+**MP3 CART: IN / OUT** button on the Cybiko card of the boot menu takes it
+out without editing the file. As on the real machine, some games (CyRace 2,
+for one) quit straight back to the desktop while the cartridge and its card
+are in: take it out to play them.
 `tools/cybiko_mxd.py` turns a video into an MXD clip, and a clip back into
 an MP4 (`cybiko_mxd.py clip.app clip.mp4`). How the cartridge
 works, with everything needed to reimplement it, is in

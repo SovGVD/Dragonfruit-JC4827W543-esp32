@@ -115,6 +115,10 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
     struct stat st;
     bool have_image = !have_dir && stat(CARD_PATH, &st) == 0 && st.st_size >= 64 * BLOCK;
     bool on = !strcmp(v, "mp3") || (!strcmp(v, "auto") && (have_dir || have_image));
+    if (on && !cybiko_app_cart_in()) {
+        ESP_LOGI(TAG, "cartridge taken out in the boot menu");
+        return;
+    }
     if (!on) {
         if (have_dir || have_image) ESP_LOGI(TAG, "cartridge off (cart = %s)", v);
         return;

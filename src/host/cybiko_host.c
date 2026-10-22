@@ -465,6 +465,8 @@ int main(int argc, char **argv)
         extern uint32_t cy_hle_blit_fuzz(cybiko_t *m, int n, uint32_t seed);
         fprintf(stderr, "blit fuzz: %u of %d calls differ\n", cy_hle_blit_fuzz(&m, blit_fuzz, 1), blit_fuzz);
     }
+    extern void cy_hle_check_report(void);
+    cy_hle_check_report();
 #endif
     if (wav) {
         long bytes = ftell(wav) - 44;

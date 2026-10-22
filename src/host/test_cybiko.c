@@ -443,13 +443,122 @@ static void test_hle(void)
         memcpy(ram + 0x2000, code, sizeof code);
         for (int i = 0; i < 256; i++) ram[0x1000 + i] = (uint8_t)(i * 37 + 5);
         if (native) cy_hle_patch_kernel(&m);
-        CHECK(m.hle_sum_pc == (native ? 0x402000u : 0xffffffffu));
+        CHECK(m.hle_pc[0] == (native ? 0x402000u : 0xffffffffu));   /* page sum */
         cybiko_run(&m, 100000);
         CHECK(m.cpu.sleeping && m.illegal_ops == 0);
         memcpy(er[native], m.cpu.er, sizeof er[native]);
     }
     CHECK(er[0][0] == er[1][0] && er[0][2] == er[1][2] && er[0][3] == er[1][3]);
     CHECK(er[0][0] != 0);
+}
+
+/* The kernel and ROM loops run natively (cy_hle.c) leave registers, flags,
+ * memory and states exactly as the H8S code does, whether they run whole or
+ * stop at every slice end. The code is copied from cy_hle.c's patterns. */
+typedef struct {
+    uint32_t er[8], pc;
+    uint8_t ccr;
+    uint64_t states;
+    uint32_t sum;
+} loop_result_t;
+
+static loop_result_t run_loop(uint32_t pc, const uint32_t *er, int32_t slice)
+{
+    for (int i = 0; i < 8; i++) m.cpu.er[i] = er[i];
+    m.cpu.pc = pc;
+    m.cpu.ccr = 0x80;
+    m.cpu.sleeping = false;
+    loop_result_t r = { .states = 0 };
+    for (int guard = 0; !m.cpu.sleeping && guard < 1000000; guard++) r.states += (uint64_t)h8s_run(&m.cpu, slice);
+    memcpy(r.er, m.cpu.er, sizeof r.er);
+    r.pc = m.cpu.pc;
+    r.ccr = m.cpu.ccr;
+    for (uint32_t i = 0; i < CY_RAM_SIZE; i++)
+        if (i - 0x2000 >= 0x100) r.sum = r.sum * 31 + ram[i];   /* not the code, which has the trap */
+    return r;
+}
+
+/* A run ends with the slice it sleeps in, so states compare only between
+ * runs in 1-state slices. */
+static bool same_result(const loop_result_t *a, const loop_result_t *b, bool states)
+{
+    return !memcmp(a->er, b->er, sizeof a->er) && a->pc == b->pc && a->ccr == b->ccr &&
+           (!states || a->states == b->states) && a->sum == b->sum;
+}
+
+static void test_hle_loops(void)
+{
+    static const unsigned char prog[] = { 0x00, 0x00, 0x01, 0x00, };
+    static const uint8_t fill_code[] = {
+        0x0d, 0x03, 0x17, 0xf3, 0x0f, 0xd2, 0x0a, 0xb2, 0x68, 0xa9, 0x0b, 0x00, 0x1b, 0x04, 0x0f, 0xc4,
+        0x46, 0xee, 0x01, 0x80,                                          /* + sleep */
+    };
+    static const uint8_t lz_code[] = {
+        0x01, 0x00, 0x69, 0xf5, 0x09, 0x30, 0x1b, 0x53, 0x0f, 0xa5, 0x1a, 0x85, 0x66, 0xe5, 0x66, 0xbd,
+        0x0a, 0x95, 0x68, 0x53, 0x0f, 0xa5, 0x66, 0xe5, 0x66, 0xbd, 0x0a, 0x95, 0x68, 0xd3, 0x0b, 0x02,
+        0xf3, 0x01, 0x18, 0x3b, 0x44, 0xe2, 0x01, 0x80,
+    };
+    static const uint8_t stream_code[] = {
+        0x0f, 0xc0, 0x7a, 0x10, 0x00, 0x00, 0x00, 0x10, 0x01, 0x00, 0x69, 0x01, 0x0f, 0x95, 0x7a, 0x65,
+        0x00, 0x00, 0x1f, 0xff, 0x0f, 0xc2, 0x0a, 0xd2, 0x6e, 0x2a, 0x00, 0x14, 0x01, 0x00, 0x6f, 0x73,
+        0x00, 0x10, 0x68, 0xba, 0x0b, 0x03, 0x01, 0x00, 0x6f, 0xf3, 0x00, 0x10, 0x0b, 0x01, 0x01, 0x00,
+        0x69, 0x81, 0x0b, 0x06, 0x01, 0x00, 0x6f, 0x75, 0x00, 0x14, 0x1f, 0xd6, 0x47, 0x54, 0x01, 0x00,
+        0x6f, 0x42, 0x00, 0x0c, 0x1f, 0xa1, 0x4d, 0xb8,
+    };
+    struct { const char *name; int kind; uint32_t er[8]; uint32_t pos, end, count; } cases[] = {
+        { "fill", 0, { 0x7ff0, 0x5a, 0, 0, 300, 0x420000, 0, 0x5fff00 }, 0, 0, 0 },
+        { "fill one", 0, { 3, 0xa5, 0, 0, 1, 0x401000, 0, 0x5fff00 }, 0, 0, 0 },
+        { "lz copy", 1, { 0x30, 0x430000, 0x1234, 0x0000010f, 0, 0x55, 0x0fff0000, 0x5fff00 }, 0, 0, 0 },
+        { "lz copy wrap", 1, { 0x3, 0x430000, 0x0ffa, 0x00000000, 0, 0x55, 0x0fff0000, 0x5fff00 }, 0, 0, 0 },
+        { "stream count", 2, { 0, 0, 0, 0, 0x410000, 0, 7, 0x5fff00 }, 0x1ff0, 0x3000, 107 },
+        { "stream end", 2, { 0, 0, 0, 0, 0x410000, 0, 0, 0x5fff00 }, 0x2fc0, 0x3000, 9000 },
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        loop_result_t r[3];
+        for (int run = 0; run < 3; run++) {           /* original, native whole, native in 1-state slices */
+            boot(prog, sizeof prog);
+            uint32_t pc = 0;
+            for (int i = 0; i < 0x40000; i++) ram[0x20000 + i] = (uint8_t)(i * 7 + (i >> 8));
+            if (cases[k].kind == 0) {
+                memcpy(ram + 0x2000, fill_code, sizeof fill_code);
+                pc = 0x402000;
+            } else if (cases[k].kind == 1) {
+                memcpy(rom + 0x1000, lz_code, sizeof lz_code);
+                memcpy(rom + CY_ROM_SIZE + 0x1000, lz_code, sizeof lz_code);
+                pc = 0x1000;
+            } else {
+                memcpy(ram + 0x2000, stream_code, sizeof stream_code);
+                ram[0x2048] = ram[0x2092] = 0x01;     /* sleep at both exits */
+                ram[0x2049] = ram[0x2093] = 0x80;
+                h8s_write32(&m.cpu, 0x410010, cases[k].pos);
+                h8s_write32(&m.cpu, 0x41000c, cases[k].end);
+                h8s_write32(&m.cpu, 0x5fff10, 0x440000);
+                h8s_write32(&m.cpu, 0x5fff14, cases[k].count);
+                pc = 0x402000;
+            }
+            if (run) {
+                if (cases[k].kind == 1) cy_hle_patch_rom(&m);
+                else cy_hle_patch_kernel(&m);
+                bool patched = false;
+                for (int i = 0; i < CY_HLE_SLOTS; i++) patched |= m.hle_pc[i] == pc + (cases[k].kind == 1 ? 8u : 0u);
+                CHECK(patched);
+            }
+            r[run] = run_loop(pc, cases[k].er, run == 1 ? 1000000 : 1);
+        }
+        if (!same_result(&r[0], &r[1], false) || !same_result(&r[0], &r[2], true)) {
+            printf("hle %s: states %llu %llu %llu ccr %02x %02x %02x pc %06x %06x\n", cases[k].name,
+                   (unsigned long long)r[0].states, (unsigned long long)r[1].states,
+                   (unsigned long long)r[2].states, r[0].ccr, r[1].ccr, r[2].ccr,
+                   (unsigned)r[0].pc, (unsigned)r[1].pc);
+            printf("  ram sums %08x %08x %08x\n", (unsigned)r[0].sum, (unsigned)r[1].sum, (unsigned)r[2].sum);
+            for (int i = 0; i < 8; i++)
+                if (r[0].er[i] != r[1].er[i] || r[0].er[i] != r[2].er[i])
+                    printf("  er%d %08x %08x %08x\n", i, (unsigned)r[0].er[i], (unsigned)r[1].er[i], (unsigned)r[2].er[i]);
+        }
+        CHECK(same_result(&r[0], &r[1], false));
+        CHECK(same_result(&r[0], &r[2], true));
+        CHECK(m.illegal_ops == 0);
+    }
 }
 
 static uint8_t rf_pkt[CY_RF_LONG];
@@ -611,6 +720,7 @@ int main(void)
     test_dma();
     test_disk();
     test_hle();
+    test_hle_loops();
     test_radio();
     test_cart();
     free(ram);

@@ -11,15 +11,17 @@
 
 #define NO_EVENT 0xffffffffu
 
-/* A CPU read of a timer counter. When the same instruction read the same
- * value only POLL_GAP states ago, the program is spinning until the counter
- * moves (CyOS's delay routine on TPU5 and its clock on TMR0 do this, for most
- * of the time a video plays), so let the time until the next count pass at
- * once, no further than the slice end (the next peripheral event). The loop
- * then sees the new value as soon as it would have, minus the spinning. */
+/* A CPU read of a register that only changes at a known time (a timer
+ * counter's next count, a serial frame ending). When the same instruction
+ * read the same value only POLL_GAP states ago, the program is spinning until
+ * the register changes (CyOS's delay routine on TPU5 and its clock on TMR0 do
+ * this for most of the time a video plays, the MP3 player waits for each byte
+ * to go out), so let the time until the change pass at once, no further than
+ * the slice end (the next peripheral event). The loop then sees the new value
+ * as soon as it would have, minus the spinning. */
 #define POLL_GAP 256
 
-static void counter_read(cybiko_t *m, cy_poll_t *p, uint16_t value, uint32_t until_count)
+static void poll_read(cybiko_t *m, cy_poll_t *p, uint16_t value, uint32_t until_count)
 {
     uint64_t now = h8s_time(&m->cpu);
     if (m->dxc) return;
@@ -169,7 +171,7 @@ static bool tpu_read(cybiko_t *m, uint32_t a, uint8_t *v)
         case 7: {
             *v = (uint8_t)t->tcnt;
             int s = tpu_shift(m, ch);
-            if (s >= 0) counter_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
+            if (s >= 0) poll_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
             break;
         }
         default: {
@@ -351,7 +353,7 @@ static bool tmr_read(cybiko_t *m, uint32_t a, uint8_t *v)
     case 0xffffb8: {
         *v = t->tcnt;
         int s = tmr_shift(m, ch);
-        if (s >= 0) counter_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
+        if (s >= 0) poll_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
         break;
     }
     }
@@ -607,21 +609,16 @@ static bool sci_read(cybiko_t *m, uint32_t a, uint8_t *v)
     case 1: *v = s->brr; break;
     case 2: *v = s->scr; break;
     case 3: *v = s->tdr; break;
-    case 4:
+    case 4: {
         s->ssr_read = s->ssr;
         *v = s->ssr;
-        /* The same instruction polling again while TDR is still full: the
-         * loop would only spin until the frame in flight ends, so let it wait
-         * for that in one go (no further than the next peripheral event,
-         * which ends the slice). Boot code prints this way, and the spinning
-         * otherwise costs a lot of host time. */
-        if (!m->dxc && s->tx_busy && !(s->ssr & SSR_TDRE) && s->poll_pc == m->cpu.ppc) {
-            int32_t skip = (int32_t)s->tx_left - 1;
-            if (skip > m->cpu.icount) skip = m->cpu.icount;
-            if (skip > 0) m->cpu.icount -= skip;
-        }
-        s->poll_pc = m->cpu.ppc;
+        /* SSR changes when a frame in flight ends (boot code prints by
+         * polling TDRE, the MP3 player polls TEND) */
+        uint32_t left = s->tx_busy ? s->tx_left : 0;
+        if (s->rx_busy && (!left || s->rx_left < left)) left = s->rx_left;
+        poll_read(m, &s->poll, s->ssr, left ? left - 1 : 0);
         break;
+    }
     case 5:
         *v = s->rdr;
         if (m->dxc) s->ssr &= (uint8_t)~SSR_RDRF;   /* a DMA/DTC read clears RDRF */

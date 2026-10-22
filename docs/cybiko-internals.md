@@ -497,19 +497,32 @@ hardware:
   loader prints `Starting 0x`, the emulator finds that code in the freshly
   unpacked kernel and changes the base, size and block count, so CyOS gets a
   bigger disk in the same format. A 512 KB disk image keeps working.
-- **Native routines** (`cy_hle.c`). Four hot pieces of code are swapped for
-  C: the RAM disk page checksum (half of all instructions until the desktop
+- **Native routines** (`cy_hle.c`). Hot pieces of code are swapped for C:
+  the RAM disk page checksum (half of all instructions until the desktop
   appears), the boot ROM's 32-bit multiply, the boot ROM's row blit (draws
   one row of a 2-bit bitmap: copy, transparent copy through a mask table, or
   XOR, optionally mirrored; about 60% of all instructions in a scrolling
-  game) and the CyOS loop that sends a 40-byte row to the LCD (about 20%).
-  The first word of each is replaced by an opcode the H8S does not have;
-  the core traps on it, runs the C version and charges the states the
-  original takes (exactly for the loops, within a few percent for the
-  blit), so emulated time is about unchanged. They are found by matching
-  code, so other ROM or CyOS versions just run unpatched. The PC runner
-  built with `-DCY_HLE_CHECK` runs every blit both ways and compares them;
-  `--blit-fuzz N` adds N random calls.
+  game), the CyOS loop that sends a 40-byte row to the LCD (about 20%), the
+  CyOS loop that copies bytes out of a file's 8 KB buffer (a quarter of all
+  instructions while a video plays), a CyOS memset loop, and the
+  back-reference copy of the boot ROM's LZ decompressor. The first word of
+  each is replaced by an opcode the H8S does not have; the core traps on
+  it, runs the C version and charges the states the original takes, so
+  emulated time is unchanged. Loops stop at the top of an iteration when the
+  slice ends or an interrupt is pending, and the trap resumes them. All but
+  the blit leave registers, flags, memory and states exactly as the original
+  (unit tests in test_cybiko.c check this); the blit's states are within a
+  few percent. They are found by matching code, so other ROM or CyOS
+  versions just run unpatched. The PC runner built with `-DCY_HLE_CHECK`
+  runs every 200th call (`CY_HLE_CHECK_EVERY`) both ways and compares
+  registers, flags, states and all of RAM; `--blit-fuzz N` adds N random
+  blit calls.
+- **Polling skips.** When the same instruction reads a timer counter or a
+  serial status register again within 256 states and sees the same value,
+  the time until the register can change passes at once (CyOS's delay and
+  clock loops, the boot loader printing, the MP3 player waiting for each
+  byte to go out). Timers are caught up only when a timer register is
+  touched or a timer event is due.
 - **Unit ID** from the board's MAC ([§12](#12-flash-and-the-unit-id)).
 - **Radio over ESP-NOW** ([§11](#11-radio)).
 - **The MP3 card as a folder**: the card is made up on the fly from

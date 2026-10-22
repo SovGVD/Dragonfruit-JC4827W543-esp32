@@ -302,9 +302,10 @@ every 5 seconds.
   does as much work per second as the real one. A few hot routines run as
   native code (cy_hle.c) with their original timing: the CyOS 1.5.08 page
   checksum, which the RAM disk check at start-up spends about half its time
-  in, the boot ROM's software multiply, the boot ROM's bitmap row blit and
-  the CyOS loop that sends rows to the LCD. The last two make games about
-  3 times cheaper to run.
+  in, the boot ROM's software multiply, the boot ROM's bitmap row blit, the
+  CyOS loop that sends rows to the LCD, the CyOS file read and memset loops
+  and the copy loop of the ROM's decompressor. Games are about 3 times and
+  videos about 1.3 times cheaper to run than without them.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
 - The DMA controller and the DTC are modelled (CyOS uses both at start-up).

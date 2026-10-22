@@ -438,7 +438,6 @@ void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
     m->ram = ram;
     m->flash.mem = flash;
     memcpy(rom + CY_ROM_SIZE, rom, CY_ROM_SIZE);
-    m->hle_sum_pc = m->hle_lcd_pc = 0xffffffffu;
     cy_hle_patch_rom(m);
 
     h8s_init(&m->cpu);

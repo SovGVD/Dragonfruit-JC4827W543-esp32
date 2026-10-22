@@ -33,6 +33,7 @@
 #define CY_ROM_BUF     0x10000u      /* ROM buffer: 32 KB image + its mirror */
 #define CY_FLASH_SIZE  0x80000u
 #define CY_RAM_SIZE    0x200000u
+#define CY_HLE_SLOTS   8
 #define CY_RAMDISK_SIZE 0x80000u     /* part of RAM kept across power cycles */
 #define CY_DISK_BASE   0x800000u     /* where cybiko_set_disk puts the RAM disk */
 #define CY_DISK_MAX    0x600000u     /* 6 MB: up to the keyboard at e00000 */
@@ -95,7 +96,8 @@ typedef struct {
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
 
-/* The last CPU read of a timer counter, to spot loops waiting on it. */
+/* The last CPU read of a timer counter or serial status, to spot loops
+ * waiting on it. */
 typedef struct {
     uint32_t pc;
     uint16_t value;
@@ -119,7 +121,7 @@ typedef struct {
     uint8_t smr, brr, scr, ssr, ssr_read, tdr, rdr, tsr;
     bool tx_busy, rx_busy;
     uint32_t tx_left, rx_left; /* states until the frame in flight finishes */
-    uint32_t poll_pc;          /* instruction that last read SSR (poll loop detection) */
+    cy_poll_t poll;            /* last SSR read (poll loop detection) */
     uint8_t rx_fifo[64];
     uint8_t rx_head, rx_count;
 } cy_sci_t;
@@ -266,7 +268,7 @@ typedef struct cybiko {
     uint32_t disk_dirty[CY_DISK_MAX / CY_DISK_CHUNK / 32];  /* chunks written */
     uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
     uint8_t disk_patched;      /* kernel patches applied since power-on */
-    uint32_t hle_sum_pc, hle_mul_pc, hle_blit_pc, hle_lcd_pc;  /* routines run natively (cy_hle.c) */
+    uint32_t hle_pc[CY_HLE_SLOTS];  /* traps of the routines run natively (cy_hle.c), ~0 if none */
     /* Debug: called for every on-chip register access when set (PC runner). */
     void (*io_trace)(struct cybiko *m, uint32_t a, uint8_t v, bool write);
     void (*cart_log)(struct cybiko *m, const char *msg);

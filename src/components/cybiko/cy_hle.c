@@ -1,27 +1,39 @@
 /* Native stand-ins for a few hot CyOS and boot ROM routines.
  *
- * The routine's first instruction word is replaced by CY_HLE_OP, an opcode
+ * The first instruction word of each is replaced by CY_HLE_OP, an opcode
  * the H8S does not define. When the CPU reaches it, the core reports an
- * illegal instruction and cy_hle() runs the routine in C, charges the states
- * the original loop would have taken (so emulated time is unchanged) and
- * returns to the caller. Each routine is found by matching its code, so
+ * illegal instruction and cy_hle() runs the code in C, charges the states
+ * the original would have taken (so emulated time is unchanged) and goes on
+ * where the original would. Each piece is found by matching its code, so
  * other ROM or CyOS versions simply run unpatched.
  *
- *   ROM page checksum (CyOS 1.5.08 kernel): the RAM disk checks every page
- *     with it at start-up, about half of all instructions until the desktop.
- *   ROM 32-bit multiply (boot ROM 1.5): a shift-and-add loop the loader uses
- *     to unscramble data.
- *   ROM row blit (boot ROM 1.5): draws one row of a 2-bit bitmap into a
- *     screen buffer. Games spend most of their time here.
- *   LCD row loop (CyOS 1.5.08 kernel): sends one 40-byte row to the LCD
- *     controller, about a fifth of all instructions while the screen moves.
+ *   page sum (CyOS 1.5.08 kernel): the RAM disk checks every page with it
+ *     at start-up, about half of all instructions until the desktop.
+ *   multiply (boot ROM 1.5): a shift-and-add loop the loader uses to
+ *     unscramble data.
+ *   row blit (boot ROM): draws one row of a 2-bit bitmap into a screen
+ *     buffer. Games spend most of their time here.
+ *   LCD row loop (kernel): sends one 40-byte row to the LCD controller,
+ *     about a fifth of all instructions while the screen moves.
+ *   stream read loop (kernel): copies bytes out of an open file's 8 KB
+ *     buffer, a quarter of all instructions while a video plays.
+ *   fill loop (kernel): memset.
+ *   LZ copy loop (boot ROM): the back-reference copy of the decompressor
+ *     videos and compressed files go through.
  *
- * The blit is checked against the original code by building the PC runner
- * with -DCY_HLE_CHECK (see the end of this file). */
+ * Loops run in C until they end, or until the slice ends or an interrupt
+ * is pending; then they stop at the top of an iteration, where the trap
+ * brings them back after the interrupt. Everything but the blit leaves
+ * registers, flags, memory and states exactly as the original does. The PC
+ * runner built with -DCY_HLE_CHECK runs calls both ways and compares them
+ * (see the end of this file). */
 #include <string.h>
 #include "cy_internal.h"
 
 #define AMASK 0xffffffu
+
+enum { HLE_SUM, HLE_MUL, HLE_BLIT, HLE_LCD, HLE_STREAM, HLE_FILL, HLE_LZCOPY, HLE_COUNT };
+_Static_assert(HLE_COUNT <= CY_HLE_SLOTS, "cybiko_t.hle_pc too small");
 
 /* uint32 sum(const uint8 *p (er0), int32 len (er1)): for each byte
  *   v = ((v ^ b ^ i) << 1) | (bit 16 of that);  */
@@ -63,7 +75,62 @@ static const uint8_t lcd_code[] = {
     0xfa, 0x04, 0x6a, 0xaa, 0x00, 0x10, 0x00, 0x00, 0x19, 0x33, 0x6c, 0x5a, 0x68, 0x8a,
     0x0b, 0x03, 0x79, 0x23, 0x00, 0x27, 0x43, 0xf4,
 };
-#define LCD_TRAP 8
+
+/* 1: er0 = f + 0x10; er1 = *er0 (pos); er2 = f + (pos & 0x1fff);
+ *    r2l = @(0x14,er2); er3 = @(0x10,sp) (dst); *er3++ = r2l; @(0x10,sp) = er3;
+ *    *er0 = ++er1; er6++; er5 = @(0x14,sp); if (er6 == er5) goto done;
+ *    er2 = @(0xc,f) (end); if (er1 < er2) goto 1b; (refill)
+ * with f = er4, a file handle with its buffer at +0x14. */
+static const uint8_t stream_code[] = {
+    0x0f, 0xc0, 0x7a, 0x10, 0x00, 0x00, 0x00, 0x10, 0x01, 0x00, 0x69, 0x01, 0x0f, 0x95, 0x7a, 0x65,
+    0x00, 0x00, 0x1f, 0xff, 0x0f, 0xc2, 0x0a, 0xd2, 0x6e, 0x2a, 0x00, 0x14, 0x01, 0x00, 0x6f, 0x73,
+    0x00, 0x10, 0x68, 0xba, 0x0b, 0x03, 0x01, 0x00, 0x6f, 0xf3, 0x00, 0x10, 0x0b, 0x01, 0x01, 0x00,
+    0x69, 0x81, 0x0b, 0x06, 0x01, 0x00, 0x6f, 0x75, 0x00, 0x14, 0x1f, 0xd6, 0x47, 0x54, 0x01, 0x00,
+    0x6f, 0x42, 0x00, 0x0c, 0x1f, 0xa1, 0x4d, 0xb8,
+};
+
+/* 1: r3 = r0; exts.l er3; er2 = er5 + er3; *er2 = r1l; er0++; er4--;
+ *    if (er4) goto 1b */
+static const uint8_t fill_code[] = {
+    0x0d, 0x03, 0x17, 0xf3, 0x0f, 0xd2, 0x0a, 0xb2, 0x68, 0xa9, 0x0b, 0x00, 0x1b, 0x04, 0x0f, 0xc4,
+    0x46, 0xee,
+};
+
+/* mov.l er5,@sp; add.w r3,r0; dec.w #1,r3;
+ * 1: er5 = ((er2 - er0) & mask) + er1; r3h = *er5;
+ *    er5 = (er2 & mask) + er1; *er5 = r3h; er2++; r3l -= 1; if no borrow goto 1b
+ * with mask = e3:e6, a ring buffer at er1. The trap goes on the loop. */
+static const uint8_t lzcopy_code[] = {
+    0x01, 0x00, 0x69, 0xf5, 0x09, 0x30, 0x1b, 0x53, 0x0f, 0xa5, 0x1a, 0x85, 0x66, 0xe5, 0x66, 0xbd,
+    0x0a, 0x95, 0x68, 0x53, 0x0f, 0xa5, 0x66, 0xe5, 0x66, 0xbd, 0x0a, 0x95, 0x68, 0xd3, 0x0b, 0x02,
+    0xf3, 0x01, 0x18, 0x3b, 0x44, 0xe2,
+};
+
+static void page_sum(cybiko_t *m);
+static void mul(cybiko_t *m);
+static void blit_row(cybiko_t *m);
+static void lcd_row(cybiko_t *m);
+static void stream_read(cybiko_t *m);
+static void fill(cybiko_t *m);
+static void lz_copy(cybiko_t *m);
+
+static const struct hle {
+    const char *name;
+    const uint8_t *code;
+    uint8_t len, trap;        /* pattern, and where in it the trap goes */
+    bool rom;                 /* in the boot ROM, else in the CyOS kernel */
+    bool exact;               /* registers, flags and states match exactly */
+    void (*run)(cybiko_t *m);
+    int16_t exit[2];          /* where the original ends, from the trap; none: returns */
+} hle[HLE_COUNT] = {
+    [HLE_SUM]    = { "page sum", page_sum_code, sizeof page_sum_code, 0, false, false, page_sum, { 0 } },
+    [HLE_MUL]    = { "multiply", mul_code, sizeof mul_code, 0, true, false, mul, { 0 } },
+    [HLE_BLIT]   = { "blit", blit_code, sizeof blit_code, 0, true, false, blit_row, { 0 } },
+    [HLE_LCD]    = { "lcd row", lcd_code, sizeof lcd_code, 8, false, true, lcd_row, { 14 } },
+    [HLE_STREAM] = { "stream read", stream_code, sizeof stream_code, 0, false, true, stream_read, { 0x92, 0x48 } },
+    [HLE_FILL]   = { "fill", fill_code, sizeof fill_code, 0, false, true, fill, { 0x12 } },
+    [HLE_LZCOPY] = { "lz copy", lzcopy_code, sizeof lzcopy_code, 8, true, true, lz_copy, { 0x1e } },
+};
 
 static void put_trap(uint8_t *p)
 {
@@ -79,42 +146,37 @@ static int32_t find(const uint8_t *mem, uint32_t len, const uint8_t *code, uint3
     return -1;
 }
 
-static uint32_t patch_rom(cybiko_t *m, const uint8_t *code, uint32_t n)
+static void patch(cybiko_t *m, bool rom)
 {
-    int32_t at = find(m->rom, CY_ROM_SIZE, code, n);
-    if (at < 0) return 0xffffffffu;
-    put_trap(m->rom + at);
-    put_trap(m->rom + CY_ROM_SIZE + at);    /* the mirror */
-    return (uint32_t)at;
+    for (int i = 0; i < HLE_COUNT; i++) {
+        const struct hle *h = &hle[i];
+        if (h->rom != rom) continue;
+        int32_t at = find(rom ? m->rom : m->ram, rom ? CY_ROM_SIZE : CY_RAM_SIZE, h->code, h->len);
+        if (at < 0) continue;
+        at += h->trap;
+        if (rom) {
+            put_trap(m->rom + at);
+            put_trap(m->rom + CY_ROM_SIZE + at);    /* the mirror */
+            m->hle_pc[i] = (uint32_t)at;
+        } else {
+            put_trap(m->ram + at);
+            m->hle_pc[i] = 0x400000u + (uint32_t)at;
+        }
+    }
 }
 
 void cy_hle_patch_rom(cybiko_t *m)
 {
-    m->hle_mul_pc = patch_rom(m, mul_code, sizeof mul_code);
-    m->hle_blit_pc = patch_rom(m, blit_code, sizeof blit_code);
+    memset(m->hle_pc, 0xff, sizeof m->hle_pc);
+    patch(m, true);
 }
 
 void cy_hle_patch_kernel(cybiko_t *m)
 {
-    int32_t at = find(m->ram, CY_RAM_SIZE, page_sum_code, sizeof page_sum_code);
-    if (at >= 0) {
-        put_trap(m->ram + at);
-        m->hle_sum_pc = 0x400000u + (uint32_t)at;
-    }
-    at = find(m->ram, CY_RAM_SIZE, lcd_code, sizeof lcd_code);
-    if (at >= 0) {
-        put_trap(m->ram + at + LCD_TRAP);
-        m->hle_lcd_pc = 0x400000u + (uint32_t)at + LCD_TRAP;
-    }
+    patch(m, false);
 }
 
-/* Is pc the ROM routine at `at` (or its mirror)? */
-static bool rom_pc(uint32_t pc, uint32_t at)
-{
-    return pc < 0x10000u && (pc & ~CY_ROM_SIZE) == at;
-}
-
-/* Memory access for the native routines, which charge their states as a
+/* Memory access for the native routines that charge their states as a
  * whole: no per-access states for directly mapped memory and on-chip RAM. */
 static uint8_t peek8(h8s_cpu_t *c, uint32_t a)
 {
@@ -143,6 +205,97 @@ static void ret(h8s_cpu_t *c)
 {
     c->pc = h8s_read32(c, c->er[7]) & AMASK;
     c->er[7] += 4;
+}
+
+/* The exact routines charge each instruction word they stand for (all in
+ * the trap's page) and do their data accesses through h8s_read/h8s_write,
+ * which charge those, so states come out as the interpreter's. */
+static void words(h8s_cpu_t *c, int32_t n)
+{
+    c->icount -= n * c->cost16[(c->ppc >> 16) & 0xff];
+}
+
+/* A loop's first word was fetched as the trap. */
+static void trap_word(h8s_cpu_t *c)
+{
+    words(c, -1);
+}
+
+/* Loops stop at the top of an iteration once the slice is used up or an
+ * interrupt may be pending (cleared by the checker, which runs them whole). */
+static bool hle_yield = true;
+static bool must_yield(const h8s_cpu_t *c)
+{
+    return hle_yield && (c->icount <= 0 || c->irq_check);
+}
+
+/* Flags of a - b (cmp/sub) or a + b, as the core sets them. */
+static uint8_t arith_flags(uint8_t ccr, uint32_t a, uint32_t b, int bits, bool sub)
+{
+    const uint32_t mask = bits == 32 ? 0xffffffffu : (1u << bits) - 1, sign = 1u << (bits - 1);
+    const uint32_t hmask = (1u << (bits - 4)) - 1;
+    a &= mask;
+    b &= mask;
+    uint64_t res = sub ? (uint64_t)a - b : (uint64_t)a + b;
+    uint32_t h = sub ? (a & hmask) - (b & hmask) : (a & hmask) + (b & hmask);
+    uint32_t r = (uint32_t)res & mask;
+    uint32_t ovf = sub ? (a ^ b) & (a ^ r) : ~(a ^ b) & (a ^ r);
+    ccr &= (uint8_t)~0x2f;
+    if ((h >> (bits - 4)) & 1) ccr |= 0x20;
+    if (r & sign) ccr |= 0x08;
+    if (!r) ccr |= 0x04;
+    if (ovf & sign) ccr |= 0x02;
+    if ((res >> bits) & 1) ccr |= 0x01;
+    return ccr;
+}
+
+/* Flags of a move or logic result: N and Z, V cleared, C kept. */
+static uint8_t nzv_flags(uint8_t ccr, uint32_t v, uint32_t sign)
+{
+    return (uint8_t)((ccr & ~0x0e) | (v & sign ? 0x08 : 0) | (v & (sign | (sign - 1)) ? 0 : 0x04));
+}
+
+/* ------------------------------------------------------------------ */
+/* Page sum and multiply                                               */
+/* ------------------------------------------------------------------ */
+
+static void page_sum(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t p = c->er[0], v = 0, bit = 0;
+    int32_t len = (int32_t)c->er[1];
+    for (int32_t i = 0; i < len; i++) {
+        v = (v ^ peek8(c, p + (uint32_t)i) ^ (uint32_t)i) << 1;
+        bit = (v >> 16) & 1;
+        v |= bit;
+    }
+    /* Registers and flags as the loop leaves them (er4/er5 are restored). */
+    c->er[2] = len > 0 ? bit : p;
+    c->er[3] = len > 0 ? (uint32_t)len : 0;
+    uint32_t r = len > 0 ? 0 : 0u - (uint32_t)len;   /* the last cmp.l */
+    c->ccr = (uint8_t)((c->ccr & 0xf0) | (r ? 0 : 0x04) | (r & 0x80000000u ? 0x08 : 0) |
+                       (len < 0 ? 0x01 : 0) | ((uint32_t)len == 0x80000000u ? 0x02 : 0));
+    c->er[0] = v;
+    c->icount -= PAGE_SUM_FIXED + (len > 0 ? len * PAGE_SUM_BYTE : 0);
+    ret(c);
+}
+
+static void mul(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t a = c->er[0], b = c->er[1], r = 0;
+    int steps = 0;
+    while (a) {
+        if (a & 1) r += b;
+        a >>= 1;
+        b <<= 1;
+        steps++;
+    }
+    c->er[0] = c->er[2] = r;
+    c->er[1] = b;
+    c->ccr = (uint8_t)((c->ccr & 0xf1) | (r ? 0 : 0x04) | (r & 0x80000000u ? 0x08 : 0));
+    c->icount -= MUL_FIXED + steps * MUL_STEP;
+    ret(c);
 }
 
 /* ------------------------------------------------------------------ */
@@ -282,176 +435,328 @@ static void blit_row(cybiko_t *m)
     ret(c);
 }
 
+
+#ifdef CY_HLE_CHECK
+static bool hle_check(cybiko_t *m, int which);
+static bool hle_check_exit(cybiko_t *m);
+#endif
+
 /* ------------------------------------------------------------------ */
-/* LCD row loop                                                        */
+/* Kernel and ROM loops                                                */
 /* ------------------------------------------------------------------ */
 
 static void lcd_row(cybiko_t *m)
 {
     h8s_cpu_t *c = &m->cpu;
-    /* Per byte: 6 instruction words, the post-increment's internal state and
-     * the taken branch (all but the last time); the data accesses charge
-     * their own states. The trap word stood for the sub.w. */
-    const int32_t words = c->cost16[(c->ppc >> 16) & 0xff];
+    /* Per byte: 6 words, the post-increment's internal state and the taken
+     * branch (all but the last time). The trap word stood for the sub.w. */
     uint8_t v = 0;
     for (int i = 0; i < 40; i++) {
         v = h8s_read8(c, c->er[5]);
         c->er[5] += 1;
         h8s_write8(c, c->er[0], v);
     }
-    c->icount -= 40 * (6 * words + 1) + 39;
+    words(c, 40 * 6);
+    c->icount -= 40 + 39;
     c->er[2] = (c->er[2] & ~0xffu) | v;
     c->er[3] = (c->er[3] & 0xffff0000u) | 0x28;
     c->ccr &= (uint8_t)~0x2f;                   /* cmp.w #0x27 of 0x28: all clear */
     c->pc = (c->ppc + 14) & AMASK;
 }
 
-#ifdef CY_HLE_CHECK
-static bool blit_check(cybiko_t *m);
-static bool blit_check_return(cybiko_t *m);
-#endif
+static void stream_read(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    const uint32_t sp = r[7];
+    trap_word(c);
+    for (;;) {
+        r[0] = r[4] + 0x10;
+        r[1] = h8s_read32(c, r[0]);
+        r[5] = r[1] & 0x1fff;
+        r[2] = r[4] + r[5];
+        const uint8_t b = h8s_read8(c, r[2] + 0x14);
+        r[2] = (r[2] & ~0xffu) | b;
+        r[3] = h8s_read32(c, sp + 0x10);
+        h8s_write8(c, r[3], b);
+        r[3] += 1;
+        h8s_write32(c, sp + 0x10, r[3]);
+        r[1] += 1;
+        h8s_write32(c, r[0], r[1]);
+        r[6] += 1;
+        r[5] = h8s_read32(c, sp + 0x14);
+        c->ccr = arith_flags(c->ccr, r[6], r[5], 32, true);
+        if (r[6] == r[5]) {                     /* count reached */
+            words(c, 31);
+            c->icount -= 1;
+            c->pc = (c->ppc + 0x92) & AMASK;
+            return;
+        }
+        r[2] = h8s_read32(c, r[4] + 0xc);
+        c->ccr = arith_flags(c->ccr, r[1], r[2], 32, true);
+        words(c, 36);
+        if (!(((c->ccr >> 3) ^ (c->ccr >> 1)) & 1)) {   /* pos >= end: refill */
+            c->pc = (c->ppc + 0x48) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
+static void fill(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    trap_word(c);
+    for (;;) {
+        r[3] = (uint32_t)(int32_t)(int16_t)r[0];
+        const uint32_t base = r[5];
+        r[2] = base + r[3];
+        h8s_write8(c, r[2], (uint8_t)r[1]);
+        r[0] += 1;
+        r[4] -= 1;
+        words(c, 9);
+        if (!r[4]) {
+            /* H and C from the add.l, N Z V from mov.l er4,er4 */
+            c->ccr = nzv_flags(arith_flags(c->ccr, base, r[3], 32, false), 0, 0x80000000u);
+            c->pc = (c->ppc + 0x12) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) {
+            c->ccr = nzv_flags(arith_flags(c->ccr, base, r[3], 32, false), r[4], 0x80000000u);
+            c->pc = c->ppc;
+            return;
+        }
+    }
+}
+
+static void lz_copy(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    const uint32_t mask = (r[3] & 0xffff0000u) | r[6] >> 16;
+    trap_word(c);
+    for (;;) {
+        r[5] = ((r[2] - r[0]) & mask) + r[1];
+        const uint8_t b = h8s_read8(c, r[5]);
+        r[5] = (r[2] & mask) + r[1];
+        h8s_write8(c, r[5], b);
+        r[2] += 1;
+        const uint8_t n = (uint8_t)r[3];
+        r[3] = (r[3] & 0xffff0000u) | 0x0100u | (uint8_t)(n - 1);
+        c->ccr = arith_flags(c->ccr, n, 1, 8, true);
+        words(c, 15);
+        if (!n) {                               /* borrow: done */
+            c->pc = (c->ppc + 0x1e) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
 
 bool cy_hle(cybiko_t *m)
 {
     h8s_cpu_t *c = &m->cpu;
-    if (c->ppc == m->hle_lcd_pc) {
-        lcd_row(m);
-        return true;
-    }
-    if (rom_pc(c->ppc, m->hle_blit_pc)) {
+    const uint32_t pc = c->ppc < 0x10000u ? c->ppc & ~CY_ROM_SIZE : c->ppc;   /* ROM mirror */
+    for (int i = 0; i < HLE_COUNT; i++) {
+        if (pc != m->hle_pc[i]) continue;
 #ifdef CY_HLE_CHECK
-        if (blit_check(m)) return true;
+        if (hle_check(m, i)) return true;
 #endif
-        blit_row(m);
+        hle[i].run(m);
         return true;
     }
 #ifdef CY_HLE_CHECK
-    if (blit_check_return(m)) return true;
-#endif
-    if (c->ppc == m->hle_sum_pc) {
-        uint32_t p = c->er[0], v = 0, bit = 0;
-        int32_t len = (int32_t)c->er[1];
-        for (int32_t i = 0; i < len; i++) {
-            v = (v ^ peek8(c, p + (uint32_t)i) ^ (uint32_t)i) << 1;
-            bit = (v >> 16) & 1;
-            v |= bit;
-        }
-        /* Registers and flags as the loop leaves them (er4/er5 are restored). */
-        c->er[2] = len > 0 ? bit : p;
-        c->er[3] = len > 0 ? (uint32_t)len : 0;
-        uint32_t r = len > 0 ? 0 : 0u - (uint32_t)len;   /* the last cmp.l */
-        c->ccr = (uint8_t)((c->ccr & 0xf0) | (r ? 0 : 0x04) | (r & 0x80000000u ? 0x08 : 0) |
-                           (len < 0 ? 0x01 : 0) | ((uint32_t)len == 0x80000000u ? 0x02 : 0));
-        c->er[0] = v;
-        c->icount -= PAGE_SUM_FIXED + (len > 0 ? len * PAGE_SUM_BYTE : 0);
-        ret(c);
-        return true;
-    }
-    if (c->ppc == m->hle_mul_pc) {
-        uint32_t a = c->er[0], b = c->er[1], r = 0;
-        int steps = 0;
-        while (a) {
-            if (a & 1) r += b;
-            a >>= 1;
-            b <<= 1;
-            steps++;
-        }
-        c->er[0] = c->er[2] = r;
-        c->er[1] = b;
-        c->ccr = (uint8_t)((c->ccr & 0xf1) | (r ? 0 : 0x04) | (r & 0x80000000u ? 0x08 : 0));
-        c->icount -= MUL_FIXED + steps * MUL_STEP;
-        ret(c);
-        return true;
-    }
+    return hle_check_exit(m);
+#else
     return false;
+#endif
 }
 
 #ifdef CY_HLE_CHECK
-/* Debug check of blit_row (PC runner built with -DCY_HLE_CHECK): every call
- * runs both ways. The native version runs first and its result is put
- * aside; then the original runs from the same state, with a trap on the
- * return address, and the bytes around the destination, the argument slots
- * and the states taken are compared. Lines go to stderr:
- *   BLITCHK shifted mode mirror width original_states native_states */
+/* Debug check (PC runner built with -DCY_HLE_CHECK). Every Nth call of each
+ * routine (CY_HLE_CHECK_EVERY, default 200) runs both ways: the native
+ * version first, with its result put aside; then the machine goes back to
+ * the trap and runs the original on the spot, with interrupts held off and
+ * traps on its exits (or on the return address), and the two results are
+ * compared:
+ * registers, flags and states for the exact routines, and all of RAM and
+ * on-chip RAM (for the blit, only above the stack pointer). Differences go
+ * to stderr as HLEBAD lines; cy_hle_check_report() prints a summary. */
 #include <stdio.h>
+#include <stdlib.h>
 
-#define CHK_WIN 112
-#define CHK_ARGS 20
 static struct {
+    int every, fuzz;
+    uint32_t calls[HLE_COUNT], checked[HLE_COUNT], bad[HLE_COUNT];
+    int64_t states_native[HLE_COUNT], states_orig[HLE_COUNT];
     bool active;
-    uint32_t ret_pc, sp, dst;
-    uint8_t ret_word[2], want[CHK_WIN], want_args[CHK_ARGS];
+    int which;
+    uint32_t entry, exit_pc[2], ret_sp;
+    uint8_t exit_word[2][2];
     uint64_t t0;
-    int32_t want_states;
-    unsigned mode, mirror, w, sx, dx;
-    uint32_t calls, bad;
+    int32_t native_states;
+    cybiko_t want, start;
+    uint8_t *want_ram, *want_fine, *save_ram, *save_fine;
+    uint8_t ccr_i, exr;
 } chk;
 
-static bool blit_check(cybiko_t *m)
+static uint8_t *code_at(cybiko_t *m, uint32_t pc)
+{
+    return m->cpu.rpage[(pc >> 16) & 0xff] + (pc & 0xffff);
+}
+
+static bool hle_check(cybiko_t *m, int which)
 {
     h8s_cpu_t *c = &m->cpu;
-    const uint32_t sp = c->er[7], dst = c->er[2] - 8;
-    const int16_t w = (int16_t)peek16(c, sp + 0x0a);
-    if (chk.active || w > 4 * (CHK_WIN - 24)) return false;
-    uint8_t win[CHK_WIN], args[CHK_ARGS];
-    for (int i = 0; i < CHK_WIN; i++) win[i] = peek8(c, dst + (uint32_t)i);
-    for (int i = 0; i < CHK_ARGS; i++) args[i] = peek8(c, sp + 4 + (uint32_t)i);
-    chk.mode = peek16(c, sp + 0x0e);
-    chk.mirror = peek8(c, sp + 0x17);
-    chk.w = (uint16_t)w;
-    chk.sx = (uint16_t)c->er[1];
-    chk.dx = peek16(c, sp + 0x06);
-    const h8s_cpu_t saved = *c;
-    blit_row(m);
-    chk.want_states = saved.icount - c->icount;
-    for (int i = 0; i < CHK_WIN; i++) { chk.want[i] = peek8(c, dst + (uint32_t)i); poke8(c, dst + (uint32_t)i, win[i]); }
-    for (int i = 0; i < CHK_ARGS; i++) { chk.want_args[i] = peek8(c, sp + 4 + (uint32_t)i); poke8(c, sp + 4 + (uint32_t)i, args[i]); }
-    *c = saved;
-    chk.t0 = h8s_time(c);
-    chk.dst = dst;
-    chk.sp = sp + 4;
-    chk.ret_pc = (uint32_t)peek16(c, sp) << 16 | peek16(c, sp + 2);
-    chk.ret_pc &= AMASK;
-    uint8_t *p = c->rpage[chk.ret_pc >> 16] + (chk.ret_pc & 0xffff);
-    chk.ret_word[0] = p[0];
-    chk.ret_word[1] = p[1];
-    put_trap(p);
+    if (!chk.every) {
+        const char *e = getenv("CY_HLE_CHECK_EVERY");
+        chk.every = e ? atoi(e) : 200;
+        if (chk.every < 1) chk.every = 1;
+        chk.want_ram = malloc(CY_RAM_SIZE);
+        chk.save_ram = malloc(CY_RAM_SIZE);
+        chk.want_fine = malloc(c->fine_size);
+        chk.save_fine = malloc(c->fine_size);
+    }
+    if (chk.active) return false;                     /* nested: run natively */
+    if (!chk.fuzz && chk.calls[which]++ % (uint32_t)chk.every) return false;
+    const struct hle *h = &hle[which];
+
+    /* the native run, put aside */
+    chk.start = *m;
+    memcpy(chk.save_ram, m->ram, CY_RAM_SIZE);
+    memcpy(chk.save_fine, c->fine_mem, c->fine_size);
+    const uint64_t t = h8s_time(c);
+    hle_yield = false;
+    h->run(m);
+    hle_yield = true;
+    chk.native_states = (int32_t)(h8s_time(c) - t);
+    chk.want = *m;
+    memcpy(chk.want_ram, m->ram, CY_RAM_SIZE);
+    memcpy(chk.want_fine, c->fine_mem, c->fine_size);
+    *m = chk.start;
+    memcpy(m->ram, chk.save_ram, CY_RAM_SIZE);
+    memcpy(c->fine_mem, chk.save_fine, c->fine_size);
+
+    /* the original: put its first word back, trap its exits */
+    const uint32_t at = c->ppc;
+    const uint8_t *orig = h->code + h->trap;
+    uint8_t *p = code_at(m, at);
+    p[0] = orig[0];
+    p[1] = orig[1];
+    for (int i = 0; i < 2; i++) chk.exit_pc[i] = 0xffffffffu;
+    chk.ret_sp = 0xffffffffu;
+    if (!h->exit[0]) {
+        chk.exit_pc[0] = ((uint32_t)peek16(c, c->er[7]) << 16 | peek16(c, c->er[7] + 2)) & AMASK;
+        chk.ret_sp = c->er[7] + 4;
+    } else {
+        for (int i = 0; i < 2 && h->exit[i]; i++) chk.exit_pc[i] = (at + (uint32_t)h->exit[i]) & AMASK;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (chk.exit_pc[i] == 0xffffffffu) continue;
+        uint8_t *q = code_at(m, chk.exit_pc[i]);
+        chk.exit_word[i][0] = q[0];
+        chk.exit_word[i][1] = q[1];
+        put_trap(q);
+    }
+    chk.ccr_i = c->ccr & 0x80;
+    chk.exr = c->exr;
+    c->ccr |= 0x80;
+    c->exr |= 7;
+    c->pc = at;
+    chk.entry = at;
+    chk.which = which;
     chk.active = true;
-    /* the original's first instruction, sub.l #0x18,er7 (3 words) */
-    c->er[7] -= 0x18;
-    c->icount -= 2 * c->cost16[0];
-    c->pc = (c->ppc + 6) & AMASK;
+    chk.checked[which]++;
+
+    /* Run it right here, outside the machine's slices, so that no timer,
+     * DMA or DTC moves meanwhile; then account its states to the slice in
+     * progress as if the trap had taken them. */
+    const int32_t outer_icount = c->icount + c->cost16[(at >> 16) & 0xff];   /* fetched again */
+    const int32_t outer_slice = c->slice;
+    const uint64_t outer_cycles = c->cycles;
+    c->slice = c->icount = 0;
+    chk.t0 = c->cycles;
+    int64_t used = 0;
+    for (int guard = 0; chk.active && guard < 1000; guard++) used += h8s_run(c, 100000);
+    if (chk.active) {
+        fprintf(stderr, "HLEBAD %s: the original did not reach an exit\n", h->name);
+        chk.active = false;
+    }
+    c->cycles = outer_cycles;
+    c->slice = outer_slice;
+    c->icount = outer_icount - (int32_t)used;
     return true;
 }
 
-static bool blit_check_return(cybiko_t *m)
+static void report(int which, const char *what, uint32_t a, uint32_t want, uint32_t got)
+{
+    if (++chk.bad[which] <= 40)
+        fprintf(stderr, "HLEBAD %s: %s %06x: native %08x original %08x\n", hle[which].name, what,
+                (unsigned)a, (unsigned)want, (unsigned)got);
+}
+
+static bool hle_check_exit(cybiko_t *m)
 {
     h8s_cpu_t *c = &m->cpu;
-    if (!chk.active || c->ppc != chk.ret_pc) return false;
-    uint8_t *p = c->rpage[chk.ret_pc >> 16] + (chk.ret_pc & 0xffff);
-    p[0] = chk.ret_word[0];
-    p[1] = chk.ret_word[1];
-    c->icount += c->cost16[chk.ret_pc >> 16];   /* it is fetched again */
-    c->pc = c->ppc;
-    chk.active = false;
-    int32_t got = (int32_t)(h8s_time(c) - chk.t0);
-    int diff = -1;
-    for (int i = 0; i < CHK_WIN && diff < 0; i++) if (peek8(c, chk.dst + (uint32_t)i) != chk.want[i]) diff = i;
-    for (int i = 0; i < CHK_ARGS && diff < 0; i++) if (peek8(c, chk.sp + (uint32_t)i) != chk.want_args[i]) diff = 1000 + i;
-    chk.calls++;
-    if (c->er[7] != chk.sp) fprintf(stderr, "BLITCHK sp mismatch %06x %06x\n", (unsigned)c->er[7], (unsigned)chk.sp);
-    if (diff >= 0 && ++chk.bad <= 30) {
-        fprintf(stderr, "BLITBAD call %u at %s+%d: mode %u mirror %u w %u sx %u dx %u\n  orig:", chk.calls,
-                diff >= 1000 ? "args" : "dst-8", diff % 1000, chk.mode, chk.mirror, chk.w, chk.sx, chk.dx);
-        for (int i = 0; i < 24; i++) fprintf(stderr, " %02x", peek8(c, chk.dst + (uint32_t)i));
-        fprintf(stderr, "\n  hle: ");
-        for (int i = 0; i < 24; i++) fprintf(stderr, " %02x", chk.want[i]);
-        fprintf(stderr, "\n");
+    if (!chk.active) return false;
+    int e = c->ppc == chk.exit_pc[0] ? 0 : c->ppc == chk.exit_pc[1] ? 1 : -1;
+    if (e < 0 || (chk.ret_sp != 0xffffffffu && c->er[7] != chk.ret_sp)) return false;
+    const int which = chk.which;
+    const struct hle *h = &hle[which];
+    for (int i = 0; i < 2; i++) {
+        if (chk.exit_pc[i] == 0xffffffffu) continue;
+        uint8_t *q = code_at(m, chk.exit_pc[i]);
+        q[0] = chk.exit_word[i][0];
+        q[1] = chk.exit_word[i][1];
     }
-    unsigned sb = (chk.mirror ? 3 - chk.sx : chk.sx) & 0xffff;
-    fprintf(stderr, "BLITCHK %d %u %u %u %d %d\n", sb != chk.dx, chk.mode, chk.mirror, chk.w,
-            got, chk.want_states);
+    put_trap(code_at(m, chk.entry));
+    c->icount += c->cost16[(c->ppc >> 16) & 0xff];
+    c->pc = c->ppc;
+    const int32_t orig_states = (int32_t)(h8s_time(c) - chk.t0);
+    h8s_end_slice(c);
+    c->ccr = (uint8_t)((c->ccr & 0x7f) | chk.ccr_i);
+    c->exr = chk.exr;
+    chk.active = false;
+
+    const h8s_cpu_t *w = &chk.want.cpu;
+    const int32_t native_states = chk.native_states + c->cost16[(m->hle_pc[which] >> 16) & 0xff];
+    chk.states_native[which] += native_states;
+    chk.states_orig[which] += orig_states;
+    if (w->pc != c->pc) report(which, "pc", 0, w->pc, c->pc);
+    for (int i = h->exact ? 0 : 4; i < 8; i++)
+        if (w->er[i] != c->er[i]) report(which, "er", (uint32_t)i, w->er[i], c->er[i]);
+    if (h->exact && w->ccr != c->ccr) report(which, "ccr", 0, w->ccr, c->ccr);
+    if (h->exact && native_states != orig_states) report(which, "states", 0, (uint32_t)native_states, (uint32_t)orig_states);
+    uint32_t live = h->exact ? 0 : c->er[7] - 0x400000u;   /* the blit leaves dead locals below sp */
+    if (live > CY_RAM_SIZE) live = 0;
+    for (uint32_t i = live; i < CY_RAM_SIZE && memcmp(chk.want_ram + live, m->ram + live, CY_RAM_SIZE - live); i++) {
+        if (chk.want_ram[i] != m->ram[i]) {
+            report(which, "ram", 0x400000u + i, chk.want_ram[i], m->ram[i]);
+            break;
+        }
+    }
+    for (uint32_t i = 0; i < c->fine_size && memcmp(chk.want_fine, c->fine_mem, c->fine_size); i++) {
+        if (chk.want_fine[i] != c->fine_mem[i]) {
+            report(which, "on-chip ram", c->fine_base + i, chk.want_fine[i], c->fine_mem[i]);
+            break;
+        }
+    }
+    if (memcmp(&chk.want.lcd, &m->lcd, sizeof m->lcd)) report(which, "lcd", 0, 0, 0);
     return true;
+}
+
+void cy_hle_check_report(void)
+{
+    for (int i = 0; i < HLE_COUNT; i++) {
+        if (!chk.checked[i]) continue;
+        fprintf(stderr, "HLE %-12s %8u calls, %6u checked, %u differ, states native/original %.3f\n",
+                hle[i].name, chk.calls[i], chk.checked[i], chk.bad[i],
+                chk.states_orig[i] ? (double)chk.states_native[i] / (double)chk.states_orig[i] : 0.0);
+    }
 }
 
 /* Random calls of the blit, each checked as above. Run it on a machine that
@@ -459,37 +764,37 @@ static bool blit_check_return(cybiko_t *m)
 uint32_t cy_hle_blit_fuzz(cybiko_t *m, int n, uint32_t seed)
 {
     h8s_cpu_t *c = &m->cpu;
-    if (m->hle_blit_pc == 0xffffffffu) return 0;
+    if (m->hle_pc[HLE_BLIT] == 0xffffffffu) return 0;
     const h8s_cpu_t saved = *c;
     const uint32_t base = 0x5f0000u, ret_at = base, table = base + 0x100, src0 = base + 0x1000,
                    dst0 = base + 0x2000, stack = base + 0xff00;
-    const uint32_t bad0 = chk.bad;
+    const uint32_t bad0 = chk.bad[HLE_BLIT];
+    chk.fuzz = 1;
 #define RND() (seed = seed * 1103515245u + 12345u, seed >> 8)
     for (int k = 0; k < n; k++) {
         for (uint32_t i = 0; i < 0x300; i++) poke8(c, src0 + i, (uint8_t)RND());
         for (uint32_t i = 0; i < 0x100; i++) poke8(c, dst0 + i, (uint8_t)RND());
         for (uint32_t i = 0; i < 0x100; i++) poke8(c, table + i, (uint8_t)RND());
         poke8(c, ret_at, 0x00); poke8(c, ret_at + 1, 0x00);        /* nop */
-        uint32_t sp = stack;
         const uint16_t w = (uint16_t)(RND() % 8 == 0 ? (RND() % 12) - 4 : 1 + RND() % 200);
         const uint16_t dx = (uint16_t)(RND() % 4), mode = (uint16_t)(RND() % 3);
         const uint8_t mirror = (uint8_t)(RND() & 1);
         const uint32_t slots[6] = { ret_at, dx, w, mode, table, mirror };
-        for (int i = 0; i < 6; i++) {
-            for (int j = 0; j < 4; j++) poke8(c, sp + (uint32_t)(i * 4 + j), (uint8_t)(slots[i] >> (24 - 8 * j)));
-        }
-        c->er[7] = sp;
+        for (int i = 0; i < 6; i++)
+            for (int j = 0; j < 4; j++) poke8(c, stack + (uint32_t)(i * 4 + j), (uint8_t)(slots[i] >> (24 - 8 * j)));
+        c->er[7] = stack;
         c->er[0] = src0 + 0x100 + RND() % 0x80;
         c->er[1] = RND() % 4;
         c->er[2] = dst0 + 0x10 + RND() % 0x40;
         c->ccr |= 0x80;
         c->exr |= 7;
-        c->pc = m->hle_blit_pc;
+        c->pc = m->hle_pc[HLE_BLIT];
         c->sleeping = false;
         for (int guard = 0; c->pc != ret_at + 2 && guard < 1000000; guard++) h8s_run(c, 1);
     }
 #undef RND
+    chk.fuzz = 0;
     *c = saved;
-    return chk.bad - bad0;
+    return chk.bad[HLE_BLIT] - bad0;
 }
 #endif

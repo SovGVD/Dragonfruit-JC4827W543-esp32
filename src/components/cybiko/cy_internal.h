@@ -39,6 +39,12 @@ bool cy_hle(cybiko_t *m);
 
 /* cy_disk.c */
 void cy_disk_console(cybiko_t *m, uint8_t b);
+
+/* cy_rf.c: the radio co-processor on SCI2 */
+void cy_rf_reset(cybiko_t *m);
+void cy_rf_h8_byte(cybiko_t *m, uint8_t b);
+void cy_rf_advance(cybiko_t *m);
+uint32_t cy_rf_next(const cybiko_t *m);
 void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
 
 /* cy_periph.c: TPU, TMR, WDT, SCI and A/D converter */

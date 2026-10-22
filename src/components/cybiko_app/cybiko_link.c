@@ -1,35 +1,43 @@
 /* ESP-NOW transport for the Cybiko radio (see cybiko_link.h). Frames are
- * broadcast: "CY", a version byte, a sequence byte, then up to 240 payload
- * bytes. */
+ * broadcast: "CY", a version byte (2), the Cybiko radio channel, then the
+ * 50- or 200-byte packet. */
 #include <string.h>
 #include <stdlib.h>
 #include "cybiko_link.h"
 #include "palm_config.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "cybiko_rf";
 
-#define FRAME_PAYLOAD 240
+#define VERSION 2
+#define HEADER 4
+
+typedef struct {
+    uint8_t len, channel;
+    uint8_t data[CY_RF_LONG];
+} packet_t;
 
 static bool enabled;
-static int rf_port;
-static uint8_t seq;
-static uint8_t tx_buf[FRAME_PAYLOAD];
-static size_t tx_len;
-static StreamBufferHandle_t rx_stream;
+static QueueHandle_t rx_queue;
+static uint32_t dropped;
 static const uint8_t broadcast[ESP_NOW_ETH_ALEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
     (void)info;
-    if (len < 4 || data[0] != 'C' || data[1] != 'Y' || data[2] != 1) return;
-    xStreamBufferSend(rx_stream, data + 4, (size_t)len - 4, 0);
+    if (len < HEADER || data[0] != 'C' || data[1] != 'Y' || data[2] != VERSION) return;
+    int n = len - HEADER;
+    if (n != CY_RF_SHORT && n != CY_RF_LONG) return;
+    packet_t p = { .len = (uint8_t)n, .channel = data[3] };
+    memcpy(p.data, data + HEADER, (size_t)n);
+    if (xQueueSend(rx_queue, &p, 0) != pdTRUE) dropped++;
 }
 
 static bool start_radio(int channel)
@@ -54,41 +62,65 @@ static bool start_radio(int channel)
     return err == ESP_OK;
 }
 
-void cybiko_link_init(const char *text)
+/* The board's own Cybiko ID: the dump's first byte, then the last three
+ * bytes of the Wi-Fi MAC, unique per board. */
+static void set_id(cybiko_t *m, const char *cfg)
 {
-    char value[16];
-    if (!text || !config_get_value(text, "rf", value, sizeof value) || strcmp(value, "espnow") != 0) return;
-    int channel = 1;
-    if (config_get_value(text, "rf.port", value, sizeof value)) rf_port = atoi(value);
-    if (config_get_value(text, "rf.channel", value, sizeof value)) channel = atoi(value);
-    if (rf_port < 0 || rf_port > 1 || channel < 1 || channel > 13) {
-        ESP_LOGW(TAG, "bad rf.port/rf.channel in cybiko.cfg");
-        return;
+    char value[16] = "auto";
+    if (cfg) config_get_value(cfg, "rf.id", value, sizeof value);
+    uint32_t id = 0;
+    if (!strcmp(value, "keep")) {
+        id = 0;
+    } else if (!strcmp(value, "auto")) {
+        uint8_t mac[6];
+        if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK)
+            id = (cybiko_unit_id(m) & 0xff000000u) | (uint32_t)mac[3] << 16 | (uint32_t)mac[4] << 8 | mac[5];
+    } else {
+        id = (uint32_t)strtoul(value, NULL, 16);
     }
-    rx_stream = xStreamBufferCreate(2048, 1);
-    if (!rx_stream || !start_radio(channel)) return;
-    enabled = true;
-    ESP_LOGI(TAG, "ESP-NOW link on SCI%d, Wi-Fi channel %d (experimental)", rf_port, channel);
+    cybiko_set_unit_id(m, id);
+    ESP_LOGI(TAG, "Cybiko ID %08lx", (unsigned long)cybiko_unit_id(m));
 }
 
-void cybiko_link_serial_tx(int port, uint8_t b)
+void cybiko_link_init(cybiko_t *m, const char *cfg)
 {
-    if (!enabled || port != rf_port) return;
-    if (tx_len < sizeof tx_buf) tx_buf[tx_len++] = b;
+    char value[16];
+    set_id(m, cfg);
+    if (cfg && config_get_value(cfg, "rf", value, sizeof value) && strcmp(value, "espnow") != 0) {
+        ESP_LOGI(TAG, "radio link off (rf = %s)", value);
+        return;
+    }
+    int channel = 1;
+    if (cfg && config_get_value(cfg, "rf.channel", value, sizeof value)) channel = atoi(value);
+    if (channel < 1 || channel > 13) {
+        ESP_LOGW(TAG, "bad rf.channel in cybiko.cfg; using 1");
+        channel = 1;
+    }
+    rx_queue = xQueueCreate(8, sizeof(packet_t));
+    if (!rx_queue || !start_radio(channel)) return;
+    enabled = true;
+    ESP_LOGI(TAG, "radio over ESP-NOW, Wi-Fi channel %d", channel);
+}
+
+void cybiko_link_send(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
+{
+    (void)user;
+    if (!enabled || len > CY_RF_LONG) return;
+    uint8_t frame[HEADER + CY_RF_LONG] = { 'C', 'Y', VERSION, channel };
+    memcpy(frame + HEADER, pkt, len);
+    esp_now_send(broadcast, frame, HEADER + len);
 }
 
 void cybiko_link_poll(cybiko_t *m)
 {
     if (!enabled) return;
-    if (tx_len) {
-        uint8_t frame[4 + FRAME_PAYLOAD] = { 'C', 'Y', 1, seq++ };
-        memcpy(frame + 4, tx_buf, tx_len);
-        esp_now_send(broadcast, frame, 4 + tx_len);
-        tx_len = 0;
+    packet_t p;
+    /* Leave a packet in the queue while the machine's own queue is full. */
+    while (m->rf.queued < CY_RF_QUEUE && xQueueReceive(rx_queue, &p, 0) == pdTRUE)
+        cybiko_rf_receive(m, p.data, p.len, p.channel);
+    static uint32_t reported;
+    if (dropped != reported) {
+        reported = dropped;
+        ESP_LOGW(TAG, "%lu radio packet(s) dropped (queue full)", (unsigned long)dropped);
     }
-    uint8_t b;
-    /* Only take bytes the SCI queue can hold, so none are dropped. */
-    while (m->sci[rf_port].rx_count < sizeof m->sci[rf_port].rx_fifo &&
-           xStreamBufferReceive(rx_stream, &b, 1, 0) == 1)
-        cybiko_serial_rx(m, rf_port, b);
 }

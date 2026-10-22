@@ -169,7 +169,16 @@ static void port_output(cybiko_t *m, int p)
 /* On-chip registers fe80-ffff outside the peripherals                 */
 /* ------------------------------------------------------------------ */
 
+static uint8_t io_read_reg(cybiko_t *m, uint32_t a);
+
 static uint8_t io_read(cybiko_t *m, uint32_t a)
+{
+    uint8_t v = io_read_reg(m, a);
+    if (m->io_trace) m->io_trace(m, a, v, false);
+    return v;
+}
+
+static uint8_t io_read_reg(cybiko_t *m, uint32_t a)
 {
     uint8_t v;
     cy_sync(m);
@@ -223,6 +232,7 @@ void cy_bus_timing(cybiko_t *m)
 
 static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
 {
+    if (m->io_trace) m->io_trace(m, a, v, true);
     cy_sync(m);
     if (cy_periph_write(m, a, v)) return;
     switch (a) {
@@ -291,6 +301,7 @@ static void bus_write16(void *ctx, uint32_t a, uint16_t v)
 {
     cybiko_t *m = ctx;
     if (a >= 0xfffe80u) {
+        if (m->io_trace) { m->io_trace(m, a, (uint8_t)(v >> 8), true); m->io_trace(m, a + 1, (uint8_t)v, true); }
         cy_sync(m);
         if (cy_periph_write16(m, a, v)) return;
         io_write(m, a, (uint8_t)(v >> 8));
@@ -392,6 +403,7 @@ void cybiko_reset(cybiko_t *m)
     cy_lcd_reset(&m->lcd);
     cy_rtc_reset(m);
     cy_flash_reset(m);
+    cy_rf_reset(m);
 
     m->cpu.fine_base = IRAM_BASE;
     m->cpu.fine_size = sizeof m->iram;

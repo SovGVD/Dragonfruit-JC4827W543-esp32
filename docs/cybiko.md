@@ -147,28 +147,40 @@ been changed, `cybiko.cfg` can set it:
 sound.volume = 60    # 0-100, 0 = off
 ```
 
-## Radio (experimental)
+## Radio
 
-A real Cybiko talks to its radio through a co-processor on a serial port. That
-protocol is not documented, so the radio is not emulated yet. As a first step,
-the firmware can carry the raw bytes of one serial port between boards over
-ESP-NOW, which is useful for studying the traffic but will not make CyOS chat
-work on its own. It is off by default:
+The radio works between boards: every board running Cybiko sees the others
+in CyOS (the people nearby counter, Chat, games that play over the radio).
+
+A real Cybiko talks to its radio through a small AVR co-processor on serial
+port SCI2. The firmware emulates that co-processor (`cy_rf.c`, worked out from
+CyOS 1.5.08) and carries each radio packet to the other boards as an ESP-NOW
+broadcast. The packets themselves are CyOS's own and pass through unchanged.
+
+CyOS ignores packets that carry its own Cybiko ID, and every copy of a flash
+dump has the same one, so each board gives itself a new ID made from its MAC
+address. The ID lives in the flash dump with a CRC that the boot ROM checks;
+the firmware recomputes it in RAM and never changes the dump on the SD card.
 
 ```ini
-rf = espnow      # default: off
-rf.port = 0      # serial port to carry, 0 or 1 (1 also carries the console text)
-rf.channel = 1   # Wi-Fi channel; use the same one on every board
+rf = espnow      # default; off switches the radio off
+rf.channel = 1   # Wi-Fi channel, the same on every board (1-13)
+rf.id = auto     # auto (from the MAC), keep (the dump's own ID) or 8 hex digits
 ```
 
-Once the protocol has been worked out from the ROM, this layer is meant to
-emulate the radio co-processor so that Cybikos on different boards can see
-each other.
+The radio uses the Wi-Fi chip in station mode on a fixed channel, so it
+cannot share it with the Palm side's Wi-Fi; they never run at the same time.
+
+The co-processor protocol, from the H8S: `01 02 ch` tunes to channel `ch`,
+`01 03 xx xx` is an unknown setting, `30 f` plus 51 bytes sends a short
+packet (50 bytes and a spare byte), `cf f` plus 201 bytes sends a long one.
+Back to the H8S: `03` when a packet went out, `32` plus 50 bytes or `c8` plus
+200 bytes for a packet heard, and `13`/`11` for XOFF/XON. A packet starts with
+the 4-byte destination (`ffffffff` for everyone) and the sender's ID.
 
 ## Debug console
 
-The boot loader and CyOS print text on serial port SCI1 (SCI2 is a debug
-port too). The firmware logs those lines on the ESP32 serial monitor with the
+The boot loader and CyOS print text on serial port SCI1. The firmware logs those lines on the ESP32 serial monitor with the
 `cyos` tag.
 
 ## PC runner
@@ -182,13 +194,15 @@ build-host/cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin \
     --seconds 30 --screenshot screen.pgm --frames frames/ --press enter@8000
 ```
 
-It prints the text on SCI1 and SCI2 to stdout and bytes on SCI0 to stderr as
-hex, then a summary: emulation speed and anything the model saw but
+It prints the text on SCI1 to stdout and bytes on SCI0 to stderr as hex, then a summary: emulation speed and anything the model saw but
 does not cover (unmapped accesses, undefined opcodes, DMA DREQ use, watchdog
 resets). `--ramdisk FILE` loads and saves a RAM disk as on the board,
 `--disk-size KB` makes it bigger as the firmware does (the board uses 4096),
 `--install FILE` copies a file onto it first, and `--ls` lists its files at
-the end.
+the end. `--pair RAMDISK2` runs a second machine with its own RAM disk and
+links the two radios (`--press b:key@ms` presses keys on the second one, and
+its screenshot is written next to the first with `.b.pgm`); `--unit-id HEX`
+sets the first machine's Cybiko ID.
 
 ## Status and limits
 
@@ -212,11 +226,16 @@ the end.
 ## Future improvements
 
 - **MP3 module.** The Xtreme had an optional MP3 player add-on (CY65P10).
-  Emulating it through the board's speaker is planned but has low priority.
-  Its storage is covered by the bigger RAM disk (see [Storage](#storage)).
+  It cannot be emulated from the dumps alone: CyOS 1.5.08 only looks for the
+  module through a memory card scan that is stubbed out (it always finds
+  nothing), and the player software (`mp3init.dl`, `MP3.dl`,
+  `mp3_control.dl`, `mplayer.app`) shipped with the module, not in the flash.
+  If those files turn up, emulating the module becomes possible; otherwise a
+  native player for MP3 files in `/Cybiko/mp3/` would be the way. Its storage
+  is covered by the bigger RAM disk (see [Storage](#storage)).
 - **Mesh network and internet gateway.** Cybikos formed a mesh, and one device
   connected to a PC could share internet access, including the WAP browser,
-  with all the others. The plan is to emulate the radio over ESP-NOW and let a
+  with all the others. The radio now works over ESP-NOW; the next step is to let a
   board with Wi-Fi act as the PC gateway, set up through a web portal (the
   firmware already has one for Palm networking, see [Wi-Fi](wifi.md)) and later
   perhaps a native Cybiko setup app.

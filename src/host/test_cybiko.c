@@ -452,6 +452,82 @@ static void test_hle(void)
     CHECK(er[0][0] != 0);
 }
 
+static uint8_t rf_pkt[CY_RF_LONG];
+static size_t rf_len;
+static int rf_channel, rf_sends;
+static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
+{
+    (void)user;
+    memcpy(rf_pkt, pkt, len);
+    rf_len = len;
+    rf_channel = channel;
+    rf_sends++;
+}
+
+static uint32_t crc32_ref(const uint8_t *p, size_t n)
+{
+    uint32_t c = 0xffffffffu;
+    while (n--) {
+        c ^= *p++;
+        for (int k = 0; k < 8; k++) c = (c & 1) ? (c >> 1) ^ 0xedb88320u : c >> 1;
+    }
+    return ~c;
+}
+
+/* The radio co-processor as CyOS 1.5.08 drives it (cy_rf.c). */
+static void test_radio(void)
+{
+    boot(prog_spin, sizeof prog_spin);
+    m.host.rf_send = on_rf;
+    rf_sends = 0;
+    static const uint8_t tune[] = { 0x01, 0x02, 0x05 };
+    for (size_t i = 0; i < sizeof tune; i++) cy_rf_h8_byte(&m, tune[i]);
+    CHECK(m.rf.channel == 5);
+
+    /* a short packet: command, flag, 50 bytes and the spare byte */
+    cy_rf_h8_byte(&m, 0x30);
+    cy_rf_h8_byte(&m, 0x00);
+    for (int i = 0; i < CY_RF_SHORT; i++) cy_rf_h8_byte(&m, (uint8_t)(0xa0 + i));
+    CHECK(rf_sends == 0);                              /* waits for the spare byte */
+    cy_rf_h8_byte(&m, 0x00);
+    CHECK(rf_sends == 1 && rf_len == CY_RF_SHORT && rf_channel == 5);
+    CHECK(rf_pkt[0] == 0xa0 && rf_pkt[CY_RF_SHORT - 1] == 0xa0 + CY_RF_SHORT - 1);
+    cybiko_run(&m, CY_CLOCK_HZ / 100);                 /* the 03 comes 2 ms later */
+    CHECK(m.sci[2].rx_count == 1 && m.sci[2].rx_fifo[m.sci[2].rx_head] == 0x03);
+
+    /* a packet heard: only once SCI2 listens, and only on our channel */
+    m.sci[2].rx_count = 0;
+    uint8_t pkt[CY_RF_LONG];
+    for (int i = 0; i < CY_RF_LONG; i++) pkt[i] = (uint8_t)i;
+    CHECK(cybiko_rf_receive(&m, pkt, CY_RF_LONG, 7));  /* other channel */
+    CHECK(cybiko_rf_receive(&m, pkt, CY_RF_LONG, 5));
+    CHECK(!cybiko_rf_receive(&m, pkt, 10, 5));         /* not a packet size */
+    cybiko_run(&m, CY_CLOCK_HZ / 100);
+    CHECK(m.rf.heard == 0 && m.rf.queued == 2);        /* SCI2 is off */
+    m.mstpcr[1] &= 0x7f;
+    m.sci[2].scr = 0x10;                               /* receiver on, no interrupts */
+    cybiko_run(&m, CY_CLOCK_HZ / 100);
+    CHECK(m.rf.heard == 1 && m.rf.queued == 0);
+    CHECK(m.rf.inject[0] == 0xc8 && m.rf.inject[1 + 199] == 199);
+
+    /* each board can get its own ID; the record's CRC-32 follows */
+    boot(prog_spin, sizeof prog_spin);
+    flash[0x7f800] = 0xba; flash[0x7f801] = 0x0b; flash[0x7f802] = 0xab; flash[0x7f803] = 0x15;
+    flash[0x7f818] = 0x4c; flash[0x7f819] = 0x80; flash[0x7f81a] = 0x51; flash[0x7f81b] = 0xa3;
+    uint32_t crc = crc32_ref(flash + 0x7f800, 0x7fc);
+    for (int i = 0; i < 4; i++) flash[0x7fffc + i] = (uint8_t)(crc >> (24 - 8 * i));
+    static uint8_t copy[CY_FLASH_SIZE];
+    memcpy(copy, flash, sizeof copy);
+    cybiko_set_unit_id(&m, 0x4c123456);
+    CHECK(cybiko_unit_id(&m) == 0x4c123456);
+    crc = crc32_ref(flash + 0x7f800, 0x7fc);
+    CHECK(flash[0x7fffc] == (uint8_t)(crc >> 24) && flash[0x7ffff] == (uint8_t)crc);
+    static uint8_t saved[CY_FLASH_SIZE];
+    memcpy(saved, flash, sizeof saved);
+    cybiko_flash_original(&m, saved);
+    CHECK(memcmp(saved, copy, sizeof saved) == 0);
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -469,6 +545,7 @@ int main(void)
     test_dma();
     test_disk();
     test_hle();
+    test_radio();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

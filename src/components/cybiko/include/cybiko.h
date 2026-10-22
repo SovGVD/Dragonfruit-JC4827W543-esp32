@@ -17,7 +17,10 @@
  *   800000-dfffff  optional bigger RAM disk (cybiko_set_disk, not real hardware)
  *   e00000-efffff  keyboard matrix
  *   ffdc00-fffbff  8 KB on-chip RAM
- *   fffe80-ffffff  on-chip I/O registers */
+ *   fffe80-ffffff  on-chip I/O registers
+ *
+ * SCI1 carries the boot loader's and CyOS's debug text, SCI2 the radio
+ * co-processor (cy_rf.c). */
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -67,8 +70,8 @@ enum {
 /* Host hooks. Any of them may be NULL. */
 typedef struct {
     void *user;
-    /* A byte the CPU finished sending on SCI channel `port` (0-2). SCI2 is
-     * the debug console at 57600 baud. */
+    /* A byte the CPU finished sending on SCI channel `port` (0-2). SCI1 is
+     * the debug console; SCI2 bytes also go to the radio model. */
     void (*serial_tx)(void *user, int port, uint8_t byte);
     /* Current wall-clock time in seconds since 1970 (UTC is fine); the RTC
      * runs from it. NULL keeps a clock that counts emulated time from 0. */
@@ -78,6 +81,9 @@ typedef struct {
     /* The speaker tone changed: a rectangle wave of freq_hz with the given
      * duty, or silence when freq_hz is 0. Matches audio_tone(). */
     void (*speaker)(void *user, float freq_hz, float duty);
+    /* A radio packet CyOS sent (CY_RF_SHORT or CY_RF_LONG bytes) on radio
+     * channel `channel`; deliver it to the other machines' cybiko_rf_receive. */
+    void (*rf_send)(void *user, const uint8_t *pkt, size_t len, uint8_t channel);
 } cy_host_t;
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
@@ -133,6 +139,27 @@ typedef struct {
     uint32_t src, dst, count, bcount, blen;
 } cy_dma_sub_t;
 
+#define CY_RF_SHORT 50
+#define CY_RF_LONG  200
+#define CY_RF_QUEUE 4
+
+/* The radio co-processor (cy_rf.c). */
+typedef struct {
+    uint8_t parse, cmd, channel;
+    uint16_t have, need;
+    uint8_t buf[1 + CY_RF_LONG + 1];
+    bool ack_due;
+    uint32_t ack_at;
+    uint8_t q[CY_RF_QUEUE][CY_RF_LONG];        /* packets heard, waiting */
+    uint8_t q_len[CY_RF_QUEUE], q_channel[CY_RF_QUEUE];
+    uint8_t q_head, queued;
+    uint8_t inject[1 + CY_RF_LONG];            /* packet being handed to SCI2 */
+    uint16_t inject_len, inject_pos;
+    uint8_t id_orig[4], crc_orig[4];           /* flash bytes before cybiko_set_unit_id */
+    bool id_applied;
+    uint32_t sent, heard;                      /* packets, for diagnostics */
+} cy_rf_t;
+
 typedef struct cybiko {
     h8s_cpu_t cpu;
     cy_host_t host;
@@ -163,6 +190,7 @@ typedef struct cybiko {
     uint8_t wdt_tcsr, wdt_tcnt, wdt_rst;
     uint32_t wdt_acc;
     cy_sci_t sci[3];
+    cy_rf_t rf;
     uint8_t adcsr, adcr;
     uint16_t addr[4];
     uint32_t adc_left;
@@ -188,6 +216,8 @@ typedef struct cybiko {
     uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
     uint8_t disk_patched;      /* kernel patches applied since power-on */
     uint32_t hle_sum_pc, hle_mul_pc;  /* routines run natively (cy_hle.c) */
+    /* Debug: called for every on-chip register access when set (PC runner). */
+    void (*io_trace)(struct cybiko *m, uint32_t a, uint8_t v, bool write);
 
     /* diagnostics: things a ROM used that the model does not cover */
     uint32_t unmapped_reads, unmapped_writes, illegal_ops;
@@ -210,6 +240,18 @@ void cybiko_key(cybiko_t *m, int key, bool down);
 /* Queue a byte for the CPU to receive on SCI channel `port`. Returns false
  * when that channel's queue is full. */
 bool cybiko_serial_rx(cybiko_t *m, int port, uint8_t byte);
+
+/* Radio (cy_rf.c). A packet heard from another machine, as its rf_send hook
+ * gave it; returns false if the queue is full or the length is wrong. */
+bool cybiko_rf_receive(cybiko_t *m, const uint8_t *pkt, size_t len, uint8_t channel);
+/* Give this machine its own Cybiko ID (all copies of a flash dump share
+ * one, and CyOS ignores packets from its own ID) by rewriting the ID record
+ * in the flash image. Call before the machine boots; 0 keeps the dump's. */
+void cybiko_set_unit_id(cybiko_t *m, uint32_t id);
+/* The ID in the flash image. */
+uint32_t cybiko_unit_id(const cybiko_t *m);
+/* Undo the ID change in a copy of the flash about to be saved. */
+void cybiko_flash_original(const cybiko_t *m, uint8_t *copy);
 
 /* Render the LCD as 8-bit luminance (0 black, 255 white), CY_LCD_W x
  * CY_LCD_H, row 0 at the top. Returns lcd.version so callers can skip

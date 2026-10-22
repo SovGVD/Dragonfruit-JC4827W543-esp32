@@ -498,6 +498,7 @@ static void sci_advance(cybiko_t *m, uint32_t states)
             left -= s->tx_left;
             s->tx_busy = false;
             if (n == 1) cy_disk_console(m, s->tsr);
+            if (n == 2) cy_rf_h8_byte(m, s->tsr);
             if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
             if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
                 sci_tx_start(m, n);
@@ -725,6 +726,7 @@ void cy_periph_advance(cybiko_t *m, uint32_t states)
     wdt_advance(m, states);
     sci_advance(m, states);
     adc_advance(m, states);
+    cy_rf_advance(m);
 }
 
 uint32_t cy_periph_next_event(const cybiko_t *m)
@@ -733,6 +735,7 @@ uint32_t cy_periph_next_event(const cybiko_t *m)
     if ((t = tmr_next(m)) < best) best = t;
     if ((t = wdt_next(m)) < best) best = t;
     if ((t = sci_next(m)) < best) best = t;
+    if ((t = cy_rf_next(m)) < best) best = t;
     if (m->adc_left && m->adc_left < best) best = m->adc_left;
     return best;
 }

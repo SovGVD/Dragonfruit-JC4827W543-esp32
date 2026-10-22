@@ -10,6 +10,7 @@
  *                have them yet, so games and apps can be dropped in here
  *   flash.bin    written only if CyOS reprograms its flash; it is the first
  *                flash name searched, so it then replaces the original image
+ *                (always with the dump's own Cybiko ID; see cybiko_link.h)
  *   state.bin    the Cybiko clock, so the time survives restarts
  *   cybiko.cfg   optional settings: sound.volume = 0-100 (default 60),
  *                disk.size = 1-6 (MB, default 4) and the radio keys
@@ -71,24 +72,19 @@ typedef struct { int16_t key; bool down; } key_event_t;
 static void on_serial_tx(void *user, int port, uint8_t b)
 {
     (void)user;
-    /* The boot loader and CyOS print text on SCI1, and SCI2 is a debug port
-     * too: log both a line at a time. SCI0 and SCI1 also go to the radio
-     * bridge when it carries that port. */
-    if (port == 1 || port == 2) {
-        static char line[2][128];
-        static size_t len[2];
-        char *l = line[port - 1];
-        size_t *n = &len[port - 1];
-        if (b == '\n' || b == '\r' || *n == sizeof line[0] - 1) {
-            if (*n) {
-                l[*n] = 0;
-                ESP_LOGI("cyos", "%s", l);
-                *n = 0;
-            }
+    /* The boot loader and CyOS print text on SCI1: log it a line at a time.
+     * SCI2 is the radio co-processor (cy_rf.c, cybiko_link.c). */
+    if (port != 1) return;
+    static char line[128];
+    static size_t len;
+    if (b == '\n' || b == '\r' || len == sizeof line - 1) {
+        if (len) {
+            line[len] = 0;
+            ESP_LOGI("cyos", "%s", line);
+            len = 0;
         }
-        if (b >= 0x20 && b < 0x7f) l[(*n)++] = (char)b;
     }
-    if (port != 2) cybiko_link_serial_tx(port, b);
+    if (b >= 0x20 && b < 0x7f) line[len++] = (char)b;
 }
 
 static void on_speaker(void *user, float freq_hz, float duty)
@@ -262,6 +258,7 @@ void cybiko_app_save(bool force)
         if (!flash_copy) flash_copy = heap_caps_malloc(CY_FLASH_SIZE, MALLOC_CAP_SPIRAM);
         if (flash_copy) {
             memcpy(flash_copy, flash, CY_FLASH_SIZE);
+            cybiko_flash_original(machine, flash_copy);   /* the dump's own ID */
             machine->flash.dirty = false;
             fl = true;
         }
@@ -459,11 +456,12 @@ void cybiko_app_start(void)
     if (audio_saved_volume(&saved_volume)) volume = saved_volume;
     if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
 
-    cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker };
+    cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker,
+                       .rf_send = cybiko_link_send };
     cybiko_init(machine, &host, rom, flash, ram);
     cybiko_set_disk(machine, disk, disk_size);
     memcpy(ram, disk, CY_RAMDISK_SIZE);         /* in case the disk cannot be moved */
-    cybiko_link_init(have_cfg ? cfg : NULL);
+    cybiko_link_init(machine, have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));
     cybiko_ui_start();

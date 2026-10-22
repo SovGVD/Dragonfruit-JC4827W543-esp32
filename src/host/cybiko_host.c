@@ -55,14 +55,53 @@ static bool print_file(void *user, const cy_disk_file_t *f)
 }
 
 #define MAX_PRESSES 64
-static struct { int key; uint64_t at, until; bool down; } presses[MAX_PRESSES];
+/* who: 0 first machine, 1 second (--pair, KEY written b:KEY), 2 both */
+static struct { int key, who; uint64_t at, until; bool down; } presses[MAX_PRESSES];
 static int npresses;
+
+static int hex_port = -1;           /* --hex-port N: show that port's bytes as hex */
+static cybiko_t *the_machine;
 
 static void on_tx(void *user, int port, uint8_t b)
 {
     (void)user;
-    if (port == 1 || port == 2) { putchar(b); fflush(stdout); }
-    else fprintf(stderr, "[sci%d %02x]", port, b);
+    if (port == hex_port) {
+        fprintf(stderr, "[%.3f sci%d %02x]\n", (double)the_machine->cpu.cycles / CY_CLOCK_HZ, port, b);
+        return;
+    }
+    if (port == 1) { putchar(b); fflush(stdout); }
+    else if (port == 0) fprintf(stderr, "[sci%d %02x]", port, b);
+}
+
+/* --trace-io LO-HI: count register accesses in [LO, HI] by PC, address and
+ * direction, and list them at the end (for working out undocumented
+ * peripherals such as the radio co-processor's port). */
+#define TRACE_MAX 4096
+static uint32_t trace_lo, trace_hi;
+static struct { uint32_t pc, a; bool w; uint32_t n; uint8_t first, last; } traces[TRACE_MAX];
+static int ntraces;
+static void io_trace(cybiko_t *m, uint32_t a, uint8_t v, bool w)
+{
+    if (a < trace_lo || a > trace_hi) return;
+    uint32_t pc = m->cpu.ppc;
+    for (int i = 0; i < ntraces; i++)
+        if (traces[i].pc == pc && traces[i].a == a && traces[i].w == w) {
+            traces[i].n++;
+            traces[i].last = v;
+            return;
+        }
+    if (ntraces < TRACE_MAX)
+        traces[ntraces++] = (typeof(traces[0])){ pc, a, w, 1, v, v };
+}
+
+/* --pair: a second machine on the same radio channel */
+static cybiko_t *machines[2];
+
+static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
+{
+    int from = (int)(intptr_t)user;
+    cybiko_t *to = machines[!from];
+    if (to) cybiko_rf_receive(to, pkt, len, channel);
 }
 
 static int64_t wall(void *user) { (void)user; return (int64_t)time(NULL); }
@@ -101,7 +140,10 @@ static int key_by_name(const char *s)
 int main(int argc, char **argv)
 {
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
-    const char *shot = NULL, *frames = NULL;
+    const char *shot = NULL, *frames = NULL, *dump = NULL;
+    const char *pair_path = NULL;
+    bool press_both = false;          /* --press keys go to the second machine too */
+    uint32_t unit_id = 0;
     double seconds = 20;
     unsigned disk_kb = 0;
     bool ls = false;
@@ -116,14 +158,28 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--disk-size") && v) { disk_kb = (unsigned)atoi(v); i++; }
         else if (!strcmp(a, "--install") && v && ninstalls < MAX_INSTALL) { installs[ninstalls++] = v; i++; }
         else if (!strcmp(a, "--ls")) ls = true;
+        else if (!strcmp(a, "--dump-ram") && v) { dump = v; i++; }
+        else if (!strcmp(a, "--hex-port") && v) { hex_port = atoi(v); i++; }
+        else if (!strcmp(a, "--pair") && v) { pair_path = v; i++; }
+        else if (!strcmp(a, "--press-both")) press_both = true;
+        else if (!strcmp(a, "--unit-id") && v) { unit_id = (uint32_t)strtoul(v, NULL, 16); i++; }
+        else if (!strcmp(a, "--trace-io") && v) {
+            trace_lo = (uint32_t)strtoul(v, NULL, 16);
+            const char *dash = strchr(v, '-');
+            trace_hi = dash ? (uint32_t)strtoul(dash + 1, NULL, 16) : trace_lo;
+            i++;
+        }
         else if (!strcmp(a, "--press") && v && npresses < MAX_PRESSES) {
             char name[32];
             unsigned ms, dur = 200;
+            int who = 0;
+            if (!strncmp(v, "b:", 2)) { who = 1; v += 2; }
             if (sscanf(v, "%31[^@]@%u:%u", name, &ms, &dur) < 2 || key_by_name(name) < 0) {
                 fprintf(stderr, "bad --press %s\n", v);
                 return 2;
             }
             presses[npresses].key = key_by_name(name);
+            presses[npresses].who = who;
             presses[npresses].at = (uint64_t)ms * (CY_CLOCK_HZ / 1000);
             presses[npresses].until = presses[npresses].at + (uint64_t)dur * (CY_CLOCK_HZ / 1000);
             npresses++;
@@ -131,7 +187,9 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "usage: %s --rom FILE --flash FILE [--ramdisk FILE] [--seconds S]\n"
                             "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n"
-                            "       [--disk-size KB] [--install FILE]... [--ls]\n", argv[0]);
+                            "       [--disk-size KB] [--install FILE]... [--ls]\n"
+                            "       [--unit-id HEX] [--pair RAMDISK2] [--press-both] [--hex-port N]\n"
+                            "       [--trace-io LO-HI] [--dump-ram FILE]\n", argv[0]);
             return 2;
         }
     }
@@ -169,10 +227,31 @@ int main(int argc, char **argv)
         free(data);
     }
 
-    static cybiko_t m;
-    cy_host_t host = { .serial_tx = on_tx, .wall_time = wall };
+    static cybiko_t m, m2;
+    cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf };
     cybiko_init(&m, &host, rom, flash, ram);
     if (disk_kb) cybiko_set_disk(&m, disk, disk_size);
+    if (unit_id) cybiko_set_unit_id(&m, unit_id);
+    if (trace_hi) m.io_trace = io_trace;
+    the_machine = &m;
+    machines[0] = &m;
+
+    /* The second machine: same ROM and flash, its own RAM disk and ID. */
+    uint8_t *disk2 = NULL;
+    if (pair_path) {
+        if (!disk_kb) { fprintf(stderr, "--pair needs --disk-size\n"); return 2; }
+        uint8_t *rom2 = calloc(1, CY_ROM_BUF), *flash2 = malloc(CY_FLASH_SIZE);
+        memcpy(rom2, rom, CY_ROM_SIZE);
+        memcpy(flash2, flash, CY_FLASH_SIZE);
+        disk2 = calloc(1, disk_size);
+        FILE *f = fopen(pair_path, "rb");
+        if (f) { if (fread(disk2, 1, disk_size, f) == 0) fprintf(stderr, "second RAM disk is empty\n"); fclose(f); }
+        cy_host_t host2 = { .user = (void *)1, .wall_time = wall, .rf_send = on_rf };
+        cybiko_init(&m2, &host2, rom2, flash2, calloc(1, CY_RAM_SIZE));
+        cybiko_set_disk(&m2, disk2, disk_size);
+        cybiko_set_unit_id(&m2, (unit_id ? unit_id : 0x4c000001u) + 1);
+        machines[1] = &m2;
+    }
 
     static uint8_t lum[CY_LCD_W * CY_LCD_H];
     uint32_t last_version = 0xffffffff;
@@ -186,16 +265,29 @@ int main(int argc, char **argv)
         for (int i = 0; i < npresses; i++) {
             uint64_t now = m.cpu.cycles;
             if (!presses[i].down && now >= presses[i].at && now < presses[i].until) {
-                cybiko_key(&m, presses[i].key, true);
+                int who = press_both ? 2 : presses[i].who;
+                if (who != 1) cybiko_key(&m, presses[i].key, true);
+                if (who != 0 && pair_path) cybiko_key(&m2, presses[i].key, true);
                 presses[i].down = true;
             } else if (presses[i].down && now >= presses[i].until) {
-                cybiko_key(&m, presses[i].key, false);
+                int who = press_both ? 2 : presses[i].who;
+                if (who != 1) cybiko_key(&m, presses[i].key, false);
+                if (who != 0 && pair_path) cybiko_key(&m2, presses[i].key, false);
                 presses[i].down = false;
             }
             uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
             if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
         }
-        cybiko_run(&m, step);
+        if (pair_path) {
+            /* 1 ms turns keep radio replies well inside CyOS's timeouts */
+            for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
+                int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
+                cybiko_run(&m, n);
+                cybiko_run(&m2, n);
+            }
+        } else {
+            cybiko_run(&m, step);
+        }
         if (frames && m.cpu.cycles / chunk != (m.cpu.cycles - step) / chunk) {
             uint32_t v = cybiko_lcd_render(&m, lum);
             if (v != last_version) {
@@ -211,10 +303,33 @@ int main(int argc, char **argv)
     if (shot) {
         cybiko_lcd_render(&m, lum);
         write_pgm(shot, lum);
+        if (pair_path) {
+            char path[512];
+            snprintf(path, sizeof path, "%s.b.pgm", shot);
+            cybiko_lcd_render(&m2, lum);
+            write_pgm(path, lum);
+        }
     }
+    if (pair_path) {
+        FILE *f = fopen(pair_path, "wb");
+        if (f) { fwrite(disk2, 1, disk_size, f); fclose(f); }
+    }
+    fprintf(stderr, "radio: id %08x sent %u heard %u", (unsigned)cybiko_unit_id(&m),
+            (unsigned)m.rf.sent, (unsigned)m.rf.heard);
+    if (pair_path)
+        fprintf(stderr, "; second machine id %08x sent %u heard %u", (unsigned)cybiko_unit_id(&m2),
+                (unsigned)m2.rf.sent, (unsigned)m2.rf.heard);
+    fprintf(stderr, "\n");
     if (ramdisk_path) {
         FILE *f = fopen(ramdisk_path, "wb");
         if (f) { fwrite(disk, 1, disk_size, f); fclose(f); }
+    }
+    for (int i = 0; i < ntraces; i++)
+        fprintf(stderr, "io %06x %s %06x x%u first %02x last %02x\n", traces[i].pc,
+                traces[i].w ? "W" : "R", traces[i].a, traces[i].n, traces[i].first, traces[i].last);
+    if (dump) {
+        FILE *f = fopen(dump, "wb");
+        if (f) { fwrite(m.ram, 1, CY_RAM_SIZE, f); fclose(f); }
     }
     if (ls) {
         fprintf(stderr, "RAM disk (%u KB, %u bytes free):\n", (unsigned)(disk_size / 1024),

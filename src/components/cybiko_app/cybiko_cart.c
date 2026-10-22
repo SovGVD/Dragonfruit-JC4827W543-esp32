@@ -68,9 +68,11 @@ static void decoder_task(void *arg)
         }
         size_t real = cy_mp3_render(d, pcm, sizeof pcm / sizeof *pcm, AUDIO_RATE);
         if (!real) {
-            /* Ran dry mid-stream: wait a little for more instead of spinning. */
-            size_t n = xStreamBufferReceive(mpeg, in, sizeof in, pdMS_TO_TICKS(20));
-            cy_mp3_feed(d, in, n);
+            /* Ran dry mid-stream: wait a little for more; if none comes,
+             * play out what is left. */
+            size_t n = xStreamBufferReceive(mpeg, in, sizeof in, pdMS_TO_TICKS(50));
+            if (n) cy_mp3_feed(d, in, n);
+            else cy_mp3_end(d);
             continue;
         }
         /* The player's volume, relative to its default (a guess at the

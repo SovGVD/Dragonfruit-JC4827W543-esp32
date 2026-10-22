@@ -21,8 +21,13 @@ void cy_mp3_init(cy_mp3_t *d);
 size_t cy_mp3_space(const cy_mp3_t *d);
 void cy_mp3_feed(cy_mp3_t *d, const uint8_t *data, size_t len);
 
+/* No more data is coming for now: decode what is buffered even when it is
+ * less than a frame and the next header. Feeding data clears it. */
+void cy_mp3_end(cy_mp3_t *d);
+
 /* Fill `n` samples at `rate` Hz. Returns how many of them came from the
- * stream; the rest are silence (the stream ran dry). */
+ * stream (junk in it plays as silence for as long as its bytes would last);
+ * the rest are silence because the stream ran dry. */
 size_t cy_mp3_render(cy_mp3_t *d, int16_t *out, size_t n, unsigned rate);
 
 /* True while decoded or undecoded data is left. */

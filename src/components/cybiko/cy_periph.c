@@ -488,6 +488,31 @@ static void sci_rx_done(cybiko_t *m, int n)
     if (s->scr & SCR_RIE) cy_irq(m, sci_vec(n, sci_error(s) ? 0 : 1));
 }
 
+/* The frame being sent has gone out. */
+static void sci_tx_done(cybiko_t *m, int n)
+{
+    cy_sci_t *s = &m->sci[n];
+    s->tx_busy = false;
+    if (n == 1) cy_disk_console(m, s->tsr);
+    if (n == 2) cy_rf_h8_byte(m, s->tsr);
+    if (n < 2 && (s->smr & 0x80)) {
+        /* clocked sync: a byte comes back for each one sent */
+        uint8_t in = cy_cart_spi(m, n, s->tsr);
+        if (s->scr & SCR_RE) {
+            if (s->ssr & SSR_RDRF) s->ssr |= SSR_ORER;
+            else { s->rdr = in; s->ssr |= SSR_RDRF; }
+            if (s->scr & SCR_RIE) cy_irq(m, sci_vec(n, sci_error(s) ? 0 : 1));
+        }
+    }
+    if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
+    if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
+        sci_tx_start(m, n);
+    } else {
+        s->ssr |= SSR_TEND;
+        if (s->scr & SCR_TEIE) cy_irq(m, sci_vec(n, 3));
+    }
+}
+
 static void sci_advance(cybiko_t *m, uint32_t states)
 {
     for (int n = 0; n < 3; n++) {
@@ -496,25 +521,7 @@ static void sci_advance(cybiko_t *m, uint32_t states)
         while (s->tx_busy) {
             if (left < s->tx_left) { s->tx_left -= left; break; }
             left -= s->tx_left;
-            s->tx_busy = false;
-            if (n == 1) cy_disk_console(m, s->tsr);
-            if (n == 2) cy_rf_h8_byte(m, s->tsr);
-            if (n < 2 && (s->smr & 0x80)) {
-                /* clocked sync: a byte comes back for each one sent */
-                uint8_t in = cy_cart_spi(m, n, s->tsr);
-                if (s->scr & SCR_RE) {
-                    if (s->ssr & SSR_RDRF) s->ssr |= SSR_ORER;
-                    else { s->rdr = in; s->ssr |= SSR_RDRF; }
-                    if (s->scr & SCR_RIE) cy_irq(m, sci_vec(n, sci_error(s) ? 0 : 1));
-                }
-            }
-            if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
-            if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
-                sci_tx_start(m, n);
-            } else {
-                s->ssr |= SSR_TEND;
-                if (s->scr & SCR_TEIE) cy_irq(m, sci_vec(n, 3));
-            }
+            sci_tx_done(m, n);
         }
         left = states;
         while (s->rx_busy) {
@@ -596,6 +603,11 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
     case 0: s->smr = v; break;
     case 1: s->brr = v; break;
     case 2: {
+        /* Clocked sync: the byte in flight still comes in when the SCI is
+         * switched off. The cartridge's SD driver turns it off from the DMA
+         * end interrupt just after the last byte starts, which CyOS's
+         * interrupt entry takes longer than that byte to reach. */
+        if (s->tx_busy && n < 2 && (s->smr & 0x80) && (s->scr & ~v & (SCR_TE | SCR_RE))) sci_tx_done(m, n);
         uint8_t delta = s->scr ^ v;
         s->scr = v;
         if ((delta & SCR_RE) && !(v & SCR_RE)) s->rx_busy = false;

@@ -233,7 +233,7 @@ typedef struct cybiko {
     bool dma_waiting;          /* a transfer waits for a peripheral interrupt */
     bool dxc;                  /* the DMAC or DTC (not the CPU) is on the bus */
     bool dma_running;          /* inside cy_dma_trigger */
-    int8_t dma_again;          /* interrupt a transfer raised meanwhile, or -1 */
+    uint32_t dma_again[3];     /* interrupts transfers raised meanwhile, by vector */
 
     uint64_t synced;
     bool in_sync;           /* CPU state count the peripherals have reached */

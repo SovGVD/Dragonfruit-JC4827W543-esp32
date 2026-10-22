@@ -142,9 +142,12 @@ static void done(cybiko_t *m, int id)
 static bool step_unit(cybiko_t *m, int id);
 static bool step(cybiko_t *m, int id)
 {
+    /* Restored, not cleared: the transfer's own register access can bring
+     * the peripherals up to date and start a DTC transfer inside this one. */
+    bool outer = m->dxc;
     m->dxc = true;
     bool fin = step_unit(m, id);
-    m->dxc = false;
+    m->dxc = outer;
     return fin;
 }
 
@@ -198,7 +201,7 @@ void cy_dma_reset(cybiko_t *m)
     memset(m->dma, 0, sizeof m->dma);
     m->dma_waiting = false;
     m->dma_running = false;
-    m->dma_again = -1;
+    memset(m->dma_again, 0, sizeof m->dma_again);
 }
 
 static void update_vectors(cybiko_t *m)
@@ -249,26 +252,31 @@ bool cy_dma_trigger(cybiko_t *m, int vec)
      * sending the byte just written and asks for the next one); run that
      * request after this one has updated its addresses and count. */
     if (m->dma_running) {
-        bool eat = false;
+        bool eat = false, wanted = false;
         for (int id = 0; id < 4; id++) {
             cy_dma_sub_t *d = &m->dma[id];
-            if (d->active && d->trigger == vec) eat |= d->eat;
+            if (d->active && d->trigger == vec) { eat |= d->eat; wanted = true; }
         }
-        if (eat || m->dma_again < 0) m->dma_again = (int8_t)vec;
+        /* Several can come up during one transfer (an SPI exchange raises
+         * TXI and RXI); keep them all. */
+        if (wanted) m->dma_again[vec >> 5] |= 1u << (vec & 31);
         return eat;
     }
     bool eaten = false;
     m->dma_running = true;
     for (;;) {
-        m->dma_again = -1;
         for (int id = 0; id < 4; id++) {
             cy_dma_sub_t *d = &m->dma[id];
             if (!d->active || d->trigger != vec) continue;
             if (step(m, id)) done(m, id);
             eaten |= d->eat;
         }
-        if (m->dma_again < 0) break;
-        vec = m->dma_again;
+        int w = 0;
+        while (w < 3 && !m->dma_again[w]) w++;
+        if (w == 3) break;
+        int b = __builtin_ctz(m->dma_again[w]);
+        m->dma_again[w] &= ~(1u << b);
+        vec = w * 32 + b;
     }
     m->dma_running = false;
     update_vectors(m);
@@ -360,7 +368,7 @@ bool cy_dtc_trigger(cybiko_t *m, int vec)
     /* The vector table entry at 0x400 + 2 * vector points at the register
      * information in on-chip RAM. Chained sets (CHNE) follow it. */
     uint32_t base = 0xff0000u | h8s_read16(&m->cpu, 0x400u + 2u * (uint32_t)vec);
-    bool last = false;
+    bool last = false, outer = m->dxc;
     m->dxc = true;
     for (int chain = 0; chain < 64; chain++) {
         uint32_t dar = h8s_read32(&m->cpu, base + 4);
@@ -368,7 +376,7 @@ bool cy_dtc_trigger(cybiko_t *m, int vec)
         if (!(dar & 0x80000000)) { last = fin; break; }
         base += 12;
     }
-    m->dxc = false;
+    m->dxc = outer;
     if (!last) return true;                   /* swallowed */
     m->misc[er - IO_BASE] &= (uint8_t)~bit;   /* DTCE clears; the CPU gets the interrupt */
     return false;

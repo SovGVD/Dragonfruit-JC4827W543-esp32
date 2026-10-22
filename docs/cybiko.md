@@ -37,7 +37,9 @@ cybiko.cfg    optional settings, written by you (see below)
 ```
 
 The RAM disk is saved within 30 seconds of a change, once the screen has not
-been touched for 2 seconds, and when you hold BOOT to leave. Only the parts
+been touched for 2 seconds and the emulation has been light for 5 seconds
+(not while a video, a song or a busy game runs, up to 5 minutes), and when
+you hold BOOT to leave. The emulation keeps running while it is written. Only the parts
 that changed are written. To start from an empty RAM disk, delete
 `ramdisk.bin`.
 
@@ -128,7 +130,7 @@ Portrait (272×480), every key on one page:
 
 ```text
 +--------------------------+
-|   Cybiko LCD (160x100)   |
+| Cybiko LCD (160x100) 100%|
 | F1 F2 F3 F4 F5 F6 F7 INS |
 |      UP     | ESC  MENU  |
 | LEFT SEL RIGHT| TAB  DEL |
@@ -144,6 +146,7 @@ Landscape (480×272), LCD at 2×:
 
 ```text
 +--------------------------+----------------+
+|                          | SPEED 100%     |
 |                          | ESC   UP  MENU |
 |  Cybiko LCD (x2)         | LEFT SEL RIGHT |
 |                          | TAB  DOWN  DEL |
@@ -158,6 +161,9 @@ Landscape (480×272), LCD at 2×:
 - Every key of the real Xtreme is there: F1-F7, Esc, Menu, the arrows,
   Select, Tab, Del, Ins, Enter, Help (the "?" key), On/Off, the letters,
   `; , . !`, `( )` beside the space bar, Shift and Fn.
+- The number beside the LCD (above the pad in landscape) is how fast the
+  emulation runs over the last second, against a real Cybiko: 100% is full
+  speed. It never goes much past 100%, since the emulator waits to keep real time.
 - In landscape, **MORE** shows F1–F7, INS, ON/OFF, `( ) , ; !` and HELP;
   **ABC** goes back.
 - The touchscreen sees one finger at a time, so **SHIFT** and **FN** latch: tap
@@ -281,18 +287,23 @@ interpreter and the machine's per-instruction paths from internal RAM, with
 real jump tables. It costs about 49 KB of internal RAM, which the Palm 68k
 JIT cache then does not get. Turn it off if Palm speed matters more.
 
-These `sdkconfig` settings may help too. Each one is untested on this board:
+`sdkconfig.defaults.jc4827w543` also sets these, which neither emulator
+had before (not yet tested on this board):
 
 | Setting | Effect | Cost |
 | --- | --- | --- |
-| `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (instead of DIO) | twice the flash bandwidth on cache misses | none, if the module's flash supports QIO (the ESP32-S3-WROOM-1 does); the board fails to boot if it does not |
+| `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (instead of DIO) | twice the flash bandwidth on cache misses | none, if the module's flash supports QIO (the ESP32-S3-WROOM-1 does); the board fails to boot if it does not, then go back to `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y` |
 | `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y` | fewer code cache misses | 16 KB of internal RAM |
-| `CONFIG_ESP32S3_DATA_CACHE_64KB=y` | more of the emulated RAM cached | 32 KB of internal RAM |
 | `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y` | faster sequential PSRAM reads | none |
 
-Change them in `idf.py menuconfig`, or delete `sdkconfig.jc4827w543` after
-editing `sdkconfig.defaults.jc4827w543`. The serial log prints the speed
-every 5 seconds.
+`CONFIG_ESP32S3_DATA_CACHE_64KB=y` would cache more of the emulated RAM but
+costs 32 KB more internal RAM, which Palm's Wi-Fi needs, so it stays off.
+
+The build starts the generated `sdkconfig.jc4827w543` again from the
+defaults whenever the defaults file is newer, so these apply after a pull
+with nothing to delete. The screen shows the speed of the
+last second, and the serial log prints it every 5 seconds with how busy the
+CPU loop was.
 
 ## Status and limits
 
@@ -303,9 +314,10 @@ every 5 seconds.
   native code (cy_hle.c) with their original timing: the CyOS 1.5.08 page
   checksum, which the RAM disk check at start-up spends about half its time
   in, the boot ROM's software multiply, the boot ROM's bitmap row blit, the
-  CyOS loop that sends rows to the LCD, the CyOS file read and memset loops
-  and the copy loop of the ROM's decompressor. Games are about 3 times and
-  videos about 1.3 times cheaper to run than without them.
+  CyOS loop that sends rows to the LCD, the CyOS file read and memset loops,
+  the ROM's decompressor, and the video player's loops that feed the MP3
+  decoder and wait for it. Games are about 3 times and videos about 1.7
+  times cheaper to run than without them.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
 - The DMA controller and the DTC are modelled (CyOS uses both at start-up).

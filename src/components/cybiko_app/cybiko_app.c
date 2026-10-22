@@ -66,6 +66,8 @@ static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BA
 static uint32_t disk_size;
 static QueueHandle_t key_queue;
 static volatile bool pause_req, paused;
+static volatile int speed_pct = -1;         /* emulation speed over the last second */
+static volatile int busy_pct;               /* share of the last second the CPU loop ran */
 static int64_t clock_base;                  /* Cybiko clock minus time(NULL) */
 
 typedef struct { int16_t key; bool down; } key_event_t;
@@ -146,6 +148,19 @@ static void cpu_task(void *arg)
             stat_c0 = machine->cpu.cycles;
             stat_busy = 0;
         }
+        /* Every second: the speed shown on the screen (cybiko_ui.c). */
+        static int64_t show_t0, show_busy;
+        static uint64_t show_c0;
+        show_busy += now - run_start;
+        if (!show_t0) { show_t0 = now; show_c0 = machine->cpu.cycles; show_busy = 0; }
+        if (now - show_t0 >= 1000000) {
+            uint64_t emu_us = (machine->cpu.cycles - show_c0) * 1000000ull / CY_CLOCK_HZ;
+            speed_pct = (int)(emu_us * 100 / (uint64_t)(now - show_t0));
+            busy_pct = (int)(show_busy * 100 / (now - show_t0));
+            show_t0 = now;
+            show_c0 = machine->cpu.cycles;
+            show_busy = 0;
+        }
         /* Say whether the kernel took the bigger RAM disk (cy_disk.c). */
         static uint8_t patched_seen;
         static bool unpatched_warned;
@@ -220,8 +235,9 @@ static void save_state(void)
 }
 
 /* Write the RAM disk chunks CyOS changed into ramdisk.bin in place: the
- * file is several MB, too slow to rewrite whole. */
-static void save_disk(const uint32_t *dirty)
+ * file is several MB, too slow to rewrite whole. The chunks come from
+ * staged, one after another, or straight from the disk when it is NULL. */
+static void save_disk(const uint32_t *dirty, const uint8_t *staged)
 {
     FILE *f = fopen(RAMDISK_PATH, "r+b");
     if (!f) { ESP_LOGW(TAG, "could not open %s", RAMDISK_PATH); return; }
@@ -230,7 +246,8 @@ static void save_disk(const uint32_t *dirty)
     for (uint32_t c = 0; c < disk_size / CY_DISK_CHUNK; c++) {
         if (!(dirty[c / 32] & (1u << (c % 32)))) continue;
         ok = fseek(f, (long)(c * CY_DISK_CHUNK), SEEK_SET) == 0 &&
-             fwrite(disk + c * CY_DISK_CHUNK, 1, CY_DISK_CHUNK, f) == CY_DISK_CHUNK && ok;
+             fwrite(staged ? staged + (size_t)n * CY_DISK_CHUNK : disk + c * CY_DISK_CHUNK, 1,
+                    CY_DISK_CHUNK, f) == CY_DISK_CHUNK && ok;
         n++;
     }
     ok = fclose(f) == 0 && ok;
@@ -242,7 +259,8 @@ void cybiko_app_save(bool force)
     (void)force;                                /* only changed parts are ever written */
     static uint8_t *flash_copy;
     uint32_t dirty[sizeof machine->disk_dirty / sizeof machine->disk_dirty[0]];
-    bool disk_changed = false, fl = false;
+    int changed = 0;
+    bool fl = false;
     cpu_pause(true);
     /* A CyOS whose RAM disk could not be moved keeps it at the start of
      * main RAM: carry that into the disk image. */
@@ -256,10 +274,23 @@ void cybiko_app_save(bool force)
     }
     memcpy(dirty, machine->disk_dirty, sizeof dirty);
     memset(machine->disk_dirty, 0, sizeof machine->disk_dirty);
-    for (size_t i = 0; i < sizeof dirty / sizeof dirty[0]; i++) disk_changed |= dirty[i] != 0;
-    /* The CPU stays paused while the disk is written so no chunk is caught
-     * half changed; it is usually a few KB. */
-    if (disk_changed) save_disk(dirty);
+    for (size_t i = 0; i < sizeof dirty / sizeof dirty[0]; i++) changed += __builtin_popcount(dirty[i]);
+    /* The changed chunks are copied while the CPU is paused, so none is
+     * caught half changed, and written to the SD card once it runs again:
+     * a video or a song then does not stop for the write. Without the
+     * memory for the copy, the CPU stays paused while the disk is written. */
+    uint8_t *staged = NULL;
+    if (changed) {
+        staged = heap_caps_malloc((size_t)changed * CY_DISK_CHUNK, MALLOC_CAP_SPIRAM);
+        if (staged) {
+            int n = 0;
+            for (uint32_t c = 0; c < disk_size / CY_DISK_CHUNK; c++)
+                if (dirty[c / 32] & (1u << (c % 32)))
+                    memcpy(staged + (size_t)n++ * CY_DISK_CHUNK, disk + c * CY_DISK_CHUNK, CY_DISK_CHUNK);
+        } else {
+            save_disk(dirty, NULL);
+        }
+    }
     if (machine->flash.dirty) {
         if (!flash_copy) flash_copy = heap_caps_malloc(CY_FLASH_SIZE, MALLOC_CAP_SPIRAM);
         if (flash_copy) {
@@ -270,6 +301,10 @@ void cybiko_app_save(bool force)
         }
     }
     cpu_pause(false);
+    if (staged) {
+        save_disk(dirty, staged);
+        heap_caps_free(staged);
+    }
     if (fl) {
         ESP_LOGI(TAG, "saving reprogrammed flash");
         write_file(FLASH_SAVE_PATH, flash_copy, CY_FLASH_SIZE);
@@ -292,6 +327,16 @@ cybiko_t *cybiko_app_machine(void) { return machine; }
 /* ------------------------------------------------------------------ */
 /* Orientation                                                         */
 /* ------------------------------------------------------------------ */
+
+int cybiko_app_speed(void)
+{
+    return speed_pct;
+}
+
+int cybiko_app_busy(void)
+{
+    return busy_pct;
+}
 
 bool cybiko_app_portrait(void)
 {

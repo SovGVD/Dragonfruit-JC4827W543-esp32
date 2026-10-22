@@ -18,5 +18,23 @@ if(NOT DEFINED IDF_TARGET AND NOT DEFINED ENV{IDF_TARGET})
     set(IDF_TARGET "esp32s3")
 endif()
 
+# The generated sdkconfig keeps its old values when the tracked defaults
+# change, so it is started again from the defaults whenever they are newer
+# (a pull that changes them). menuconfig changes made after that stay.
+if(DEFINED SDKCONFIG)
+    set(_dragonfruit_sdkconfig "${SDKCONFIG}")
+else()
+    set(_dragonfruit_sdkconfig "sdkconfig")
+endif()
+get_filename_component(_dragonfruit_sdkconfig "${_dragonfruit_sdkconfig}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+foreach(_dragonfruit_defaults ${SDKCONFIG_DEFAULTS})
+    get_filename_component(_dragonfruit_defaults "${_dragonfruit_defaults}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dragonfruit_defaults}")
+    if(EXISTS "${_dragonfruit_sdkconfig}" AND "${_dragonfruit_defaults}" IS_NEWER_THAN "${_dragonfruit_sdkconfig}")
+        message(STATUS "${_dragonfruit_defaults} changed: regenerating ${_dragonfruit_sdkconfig}")
+        file(REMOVE "${_dragonfruit_sdkconfig}")
+    endif()
+endforeach()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(dragonfruit)

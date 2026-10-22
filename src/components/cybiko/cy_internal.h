@@ -26,6 +26,13 @@ static inline void cy_irq(cybiko_t *m, int vec)
 /* cy_dma.c: DMA controller. cy_dma_control() acts on a DMABCR write. */
 void cy_dma_reset(cybiko_t *m);
 void cy_dma_control(cybiko_t *m);
+/* An SPI exchange driven by two transfers, one emptying RDR on RXI and one
+ * filling TDR on TXI: how many more frames can run without either
+ * finishing (0 if the transfers are not set up that way; else ids gets the
+ * two transfers), and one such frame: the received byte goes to memory,
+ * the byte to send next comes back. */
+int cy_dma_spi_frames(const cybiko_t *m, int rx_vec, uint32_t rdr, int tx_vec, uint32_t tdr, int ids[2]);
+uint8_t cy_dma_spi_frame(cybiko_t *m, const int ids[2], uint32_t rdr, uint32_t tdr, uint8_t in);
 
 /* Bring every peripheral up to the CPU's current time. */
 void cy_sync(cybiko_t *m);
@@ -36,6 +43,8 @@ void cy_bus_timing(cybiko_t *m);
 void cy_hle_patch_rom(cybiko_t *m);
 void cy_hle_patch_kernel(cybiko_t *m);
 bool cy_hle(cybiko_t *m);
+void cy_hle_probe(cybiko_t *m, uint32_t pc);
+bool cy_irq_deliverable(cybiko_t *m);     /* cybiko.c: an interrupt would be taken now */
 
 /* cy_disk.c */
 void cy_disk_console(cybiko_t *m, uint8_t b);
@@ -67,12 +76,14 @@ void cy_timers_restart(cybiko_t *m);
 void cy_timers_sync(cybiko_t *m, uint64_t now);
 void cy_periph_advance(cybiko_t *m, uint32_t states);
 uint32_t cy_periph_next_event(const cybiko_t *m);
+void cy_events_changed(cybiko_t *m);
 /* Register access for addresses the peripherals own; return false when the
  * address is not theirs. */
 bool cy_periph_read(cybiko_t *m, uint32_t a, uint8_t *v);
 bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v);
 bool cy_periph_write16(cybiko_t *m, uint32_t a, uint16_t v);
 void cy_sci_kick(cybiko_t *m);
+uint32_t cy_sci_frame(const cy_sci_t *s);      /* states per frame */
 /* Tone the TPU drives on TIOCB1 (the speaker pin), 0 if it is not driving
  * a periodic wave there. */
 float cy_tpu_speaker_tone(const cybiko_t *m, float *duty);

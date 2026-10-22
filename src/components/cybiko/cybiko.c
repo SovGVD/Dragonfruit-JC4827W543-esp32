@@ -65,9 +65,9 @@ static void irq_pins_changed(cybiko_t *m, uint8_t old_in)
 uint8_t cy_irq_pins(const cybiko_t *m) { return irq_pins(m); }
 void cy_irq_pins_changed(cybiko_t *m, uint8_t old_in) { if (irq_pins(m) != old_in) irq_pins_changed(m, old_in); }
 
-static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
+/* The interrupt the CPU would take now (0 if none), and its level. */
+static int irq_best(cybiko_t *m, const h8s_cpu_t *cpu, int *level)
 {
-    cybiko_t *m = ctx;
     uint32_t words[3] = {
         m->pend[0] | (uint32_t)(m->isr & m->ier) << CY_VEC_IRQ0,
         m->pend[1], m->pend[2],
@@ -104,6 +104,21 @@ static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
             if (lvl > best_level) { best = v; best_level = lvl; }
         }
     }
+    *level = best_level;
+    return best;
+}
+
+bool cy_irq_deliverable(cybiko_t *m)
+{
+    int level;
+    return irq_best(m, &m->cpu, &level) != 0;
+}
+
+static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
+{
+    cybiko_t *m = ctx;
+    int best_level;
+    const int best = irq_best(m, cpu, &best_level);
     if (!best) return 0;
 
     if (best >= CY_VEC_IRQ0 && best < CY_VEC_IRQ0 + 8) {
@@ -268,7 +283,12 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a >= 0xffff70 && a <= 0xffff74) { m->pcr[a - 0xffff70] = v; return; }
     if (a == 0xffff76 || a == 0xffff77) { m->odr[a - 0xffff76] = v; return; }
     m->misc[a - IO_BASE] = v;
-    if (a == 0xffff06 || a == 0xffff07) cy_dma_control(m);
+    if (a == 0xffff06 || a == 0xffff07) {
+        if (!m->dxc) cy_hle_probe(m, m->cpu.ppc);
+        cy_dma_control(m);
+        /* A stopped transfer can bring an SCI event closer (spi_bulk). */
+        cy_events_changed(m);
+    }
     if (a >= 0xfffed0 && a <= 0xfffed4) cy_bus_timing(m);
 }
 
@@ -473,6 +493,11 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
         }
         done += h8s_run(&m->cpu, slice);
         cy_sync(m);
+        /* Hot code in CyOS modules is found where the CPU is found. */
+        if (m->cpu.cycles >= m->hle_sample_at) {
+            m->hle_sample_at = m->cpu.cycles + CY_CLOCK_HZ / 20;
+            cy_hle_probe(m, m->cpu.pc);
+        }
         if (m->reset_pending) {
             m->wdt_resets++;
             uint8_t rst = m->wdt_rst;

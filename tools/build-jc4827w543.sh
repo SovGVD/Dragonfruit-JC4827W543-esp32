@@ -13,7 +13,7 @@ run_idf idf.py -B build-jc4827w543 \
     -D IDF_TARGET=esp32s3 -D SDKCONFIG=sdkconfig.jc4827w543 \
     -D SDKCONFIG_DEFAULTS=sdkconfig.defaults.jc4827w543 build
 run_idf python -m esptool --chip esp32s3 merge-bin \
-    --flash-mode dio --flash-size 4MB --flash-freq 80m \
+    --flash-mode keep --flash-size keep --flash-freq keep \
     -o build-jc4827w543/dragonfruit-jc4827w543.bin \
     0x0 build-jc4827w543/bootloader/bootloader.bin \
     0x8000 build-jc4827w543/partition_table/partition-table.bin \

@@ -6,7 +6,7 @@
  * Portrait, 272x480, every key on one page, LCD at 1x:
  *
  *        +------------------------+
- *        |   Cybiko LCD 160x100   |
+ *        | Cybiko LCD 160x100 100%|
  *        | F1 F2 F3 F4 F5 F6 F7 INS|
  *        |    UP     | ESC  MENU  |
  *        | LEFT SEL RIGHT| TAB DEL|
@@ -20,6 +20,7 @@
  * Landscape, LCD at 2x:
  *
  *   +--------------------------+----------------+
+ *   |                          | SPEED 100%     |
  *   |                          | ESC   UP  MENU |
  *   |  Cybiko LCD 160x100 x2   | LEFT SEL RIGHT |
  *   |        (320x200)         | TAB  DOWN  DEL |
@@ -36,6 +37,7 @@
  * drawn and when a touch is read. Touch is single point, so SHIFT and FN
  * latch: they apply to the next key and release with it. The BOOT button is
  * the On/Off key; holding it 3 s saves to SD and restarts to the boot menu. */
+#include <stdio.h>
 #include <string.h>
 #include "cybiko_ui.h"
 #include "display_ui.h"
@@ -61,6 +63,7 @@
 #define KB_ROW_H 24
 #define KB_COLS 10
 #define KB_KEY_W 48
+#define SAVE_BUSY_PCT 25    /* CPU loop load that holds off the RAM disk save */
 
 #define COL_BG      UI_RGB(0x20, 0x24, 0x2c)
 #define COL_KEY     UI_RGB(0x4a, 0x50, 0x5c)
@@ -79,13 +82,14 @@ typedef struct {
     const char *label;
 } ui_key_t;
 
-#define PAD_KEY(col, row, k, l) { PAD_X + (col) * 53, (row) * 50, (col) == 2 ? 54 : 53, 50, k, K_NORMAL, true, l }
+#define PAD_Y 14             /* the speed line above the pad */
+#define PAD_KEY(col, row, k, l) { PAD_X + (col) * 53, PAD_Y + (row) * 46, (col) == 2 ? 54 : 53, 46, k, K_NORMAL, true, l }
 static const ui_key_t pad_keys[] = {
     PAD_KEY(0, 0, CYK_ESC, "ESC"), PAD_KEY(1, 0, CYK_UP, "UP"), PAD_KEY(2, 0, CYK_MENU, "MENU"),
     PAD_KEY(0, 1, CYK_LEFT, "LEFT"), PAD_KEY(1, 1, CYK_SELECT, "SEL"), PAD_KEY(2, 1, CYK_RIGHT, "RIGHT"),
     PAD_KEY(0, 2, CYK_TAB, "TAB"), PAD_KEY(1, 2, CYK_DOWN, "DOWN"), PAD_KEY(2, 2, CYK_DEL, "DEL"),
-    { PAD_X, 150, 80, 50, CYK_ENTER, K_NORMAL, true, "ENTER" },
-    { PAD_X + 80, 150, 80, 50, CYK_SPACE, K_NORMAL, true, "SPACE" },
+    { PAD_X, PAD_Y + 138, 80, KB_Y - PAD_Y - 138, CYK_ENTER, K_NORMAL, true, "ENTER" },
+    { PAD_X + 80, PAD_Y + 138, 80, KB_Y - PAD_Y - 138, CYK_SPACE, K_NORMAL, true, "SPACE" },
 };
 
 #define KB(col, row, k, kind, l) { (col) * KB_KEY_W, KB_Y + (row) * KB_ROW_H, KB_KEY_W, KB_ROW_H, k, kind, false, l }
@@ -126,18 +130,20 @@ typedef struct {
     const ui_key_t *pages[2];     /* the bottom block; pages[1] NULL if none */
     int n_pages[2];
     int lcd_x, lcd_y, lcd_scale;
+    int speed_x, speed_y, speed_w, speed_h;    /* the emulation speed box */
 } ui_layout_t;
 
 static const ui_layout_t layout_landscape = {
     pad_keys, COUNT(pad_keys), { page_letters, page_more },
-    { COUNT(page_letters), COUNT(page_more) }, 0, 0, 2,
+    { COUNT(page_letters), COUNT(page_more) }, 0, 0, 2, PAD_X, 0, PAD_W, PAD_Y,
 };
 
 /* Portrait keys are laid out at start-up; see build_portrait(). */
 #define P_W BOARD_PANEL_H
 #define P_H BOARD_PANEL_W
 static EXT_RAM_BSS_ATTR ui_key_t portrait_keys[64];
-static ui_layout_t layout_portrait = { portrait_keys, 0, { NULL, NULL }, { 0, 0 }, 56, 10, 1 };
+static ui_layout_t layout_portrait = { portrait_keys, 0, { NULL, NULL }, { 0, 0 }, 56, 10, 1,
+                                     218, 10, 54, 20 };
 
 static void add_key(int x, int y, int w, int h, int key, int kind, bool alt, const char *label)
 {
@@ -336,6 +342,16 @@ static void draw_keys(void)
     draw_keyboard();
 }
 
+/* How fast the emulation runs against the real machine, over the last
+ * second (cybiko_app_speed()). */
+static void draw_speed(int pct)
+{
+    char buf[16];
+    if (pct < 0) buf[0] = 0;
+    else snprintf(buf, sizeof buf, portrait ? "%d%%" : "SPEED %d%%", pct > 999 ? 999 : pct);
+    draw_box(L->speed_x, L->speed_y, L->speed_w, L->speed_h, COL_BG, buf);
+}
+
 static void draw_all(void)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COL_BG);
@@ -454,8 +470,9 @@ static void ui_task(void *arg)
     uint8_t *lum = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
     cybiko_t *m = cybiko_app_machine();
     uint32_t shown = 0xffffffff;
+    int speed_shown = -2;
     bool was_down = false, boot_was = false, onoff_held = false;
-    int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0;
+    int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0, last_load = 0;
 
     build_lut();
     portrait = cybiko_app_portrait();
@@ -501,9 +518,19 @@ static void ui_task(void *arg)
             }
             last_frame = now;
         }
+        int speed = cybiko_app_speed();
+        if (speed != speed_shown) {
+            draw_speed(speed);
+            speed_shown = speed;
+        }
 
-        /* Save the RAM disk every 30 s if it changed, while the user is idle. */
-        if (now - last_save > 30000000 && now - last_touch > 2000000) {
+        /* Save the RAM disk every 30 s if it changed, while the user is idle
+         * and the CPU loop has had little to do for 5 s: the save pauses the
+         * emulation, which a video or a game would show. After 5 minutes of
+         * load it saves anyway. */
+        if (cybiko_app_busy() >= SAVE_BUSY_PCT) last_load = now;
+        if (now - last_save > 30000000 && now - last_touch > 2000000 &&
+            (now - last_load > 5000000 || now - last_save > 300000000)) {
             cybiko_app_save(false);
             last_save = now;
         }

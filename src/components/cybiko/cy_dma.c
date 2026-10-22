@@ -201,6 +201,7 @@ void cy_dma_reset(cybiko_t *m)
     memset(m->dma, 0, sizeof m->dma);
     m->dma_waiting = false;
     m->dma_running = false;
+    m->dma_stepping = 0;
     memset(m->dma_again, 0, sizeof m->dma_again);
 }
 
@@ -250,12 +251,23 @@ bool cy_dma_trigger(cybiko_t *m, int vec)
 {
     /* A transfer's own write can raise the interrupt again (an SCI starts
      * sending the byte just written and asks for the next one); run that
-     * request after this one has updated its addresses and count. */
+     * request after this one has updated its addresses and count. Another
+     * transfer's request runs at once: the write that brings the SCI up to
+     * date can end several frames, and the receiving transfer has to empty
+     * RDR after each, or the next one overruns it. */
     if (m->dma_running) {
         bool eat = false, wanted = false;
         for (int id = 0; id < 4; id++) {
             cy_dma_sub_t *d = &m->dma[id];
-            if (d->active && d->trigger == vec) { eat |= d->eat; wanted = true; }
+            if (!d->active || d->trigger != vec) continue;
+            eat |= d->eat;
+            if (m->dma_stepping >> id & 1) {
+                wanted = true;
+                continue;
+            }
+            m->dma_stepping |= (uint8_t)(1u << id);
+            if (step(m, id)) done(m, id);
+            m->dma_stepping &= (uint8_t)~(1u << id);
         }
         /* Several can come up during one transfer (an SPI exchange raises
          * TXI and RXI); keep them all. */
@@ -268,7 +280,9 @@ bool cy_dma_trigger(cybiko_t *m, int vec)
         for (int id = 0; id < 4; id++) {
             cy_dma_sub_t *d = &m->dma[id];
             if (!d->active || d->trigger != vec) continue;
+            m->dma_stepping |= (uint8_t)(1u << id);
             if (step(m, id)) done(m, id);
+            m->dma_stepping &= (uint8_t)~(1u << id);
             eaten |= d->eat;
         }
         int w = 0;
@@ -281,6 +295,75 @@ bool cy_dma_trigger(cybiko_t *m, int vec)
     m->dma_running = false;
     update_vectors(m);
     return eaten;
+}
+
+/* ------------------------------------------------------------------ */
+/* SPI exchanges in bulk                                               */
+/* ------------------------------------------------------------------ */
+
+/* The one transfer serving vector vec, if it is a plain byte transfer that
+ * swallows the interrupt and moves to or from I/O address io; else -1. */
+static int plain_for(const cybiko_t *m, int vec, uint32_t io, bool from_io)
+{
+    int found = -1;
+    for (int id = 0; id < 4; id++) {
+        const cy_dma_sub_t *d = &m->dma[id];
+        if (!d->active || d->trigger != vec) continue;
+        if (found >= 0 || !d->eat || d->word || d->block || d->repeat) return -1;
+        uint32_t mem = from_io ? d->dst : d->src;
+        if ((from_io ? d->src : d->dst) != io || mem >= 0xff0000u) return -1;
+        found = id;
+    }
+    return found;
+}
+
+int cy_dma_spi_frames(const cybiko_t *m, int rx_vec, uint32_t rdr, int tx_vec, uint32_t tdr, int ids[2])
+{
+    int rx = plain_for(m, rx_vec, rdr, true), tx = plain_for(m, tx_vec, tdr, false);
+    if (rx < 0 || tx < 0) return 0;
+    ids[0] = rx;
+    ids[1] = tx;
+    uint32_t n = m->dma[rx].count < m->dma[tx].count ? m->dma[rx].count : m->dma[tx].count;
+    return n > 1 ? (int)(n - 1 > 0x10000 ? 0x10000 : n - 1) : 0;
+}
+
+/* Writes back the address and count of a plain transfer, as step_unit does. */
+static void plain_regs(cybiko_t *m, int id)
+{
+    const cy_dma_sub_t *d = &m->dma[id];
+    uint32_t base = ch_base(id >> 1);
+    if (d->fae) {
+        set24(m, base, d->src);
+        set24(m, base + 8, d->dst);
+        set16(m, base + 6, (uint16_t)d->count);
+    } else {
+        uint32_t sub = base + 8u * (id & 1);
+        set24(m, sub, d->mar_dest ? d->dst : d->src);
+        set16(m, sub + 6, (uint16_t)d->count);
+    }
+}
+
+uint8_t cy_dma_spi_frame(cybiko_t *m, const int ids[2], uint32_t rdr, uint32_t tdr, uint8_t in)
+{
+    h8s_cpu_t *c = &m->cpu;
+    const int rx = ids[0], tx = ids[1];
+    cy_dma_sub_t *r = &m->dma[rx], *t = &m->dma[tx];
+    /* The same bus cycles as the two transfers, the I/O side included. */
+    bool outer = m->dxc;
+    m->dxc = true;
+    c->icount -= c->cost8[rdr >> 16];
+    h8s_write8(c, r->dst, in);
+    r->dst = (r->dst + (uint32_t)r->incd) & 0xffffff;
+    r->count--;
+    uint8_t out = h8s_read8(c, t->src);
+    c->icount -= c->cost8[tdr >> 16];
+    t->src = (t->src + (uint32_t)t->incs) & 0xffffff;
+    t->count--;
+    c->icount -= 4;
+    m->dxc = outer;
+    plain_regs(m, rx);
+    plain_regs(m, tx);
+    return out;
 }
 
 /* ------------------------------------------------------------------ */

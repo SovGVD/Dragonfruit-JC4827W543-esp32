@@ -129,6 +129,14 @@ static inline void h8s_end_slice(h8s_cpu_t *c)
     c->slice -= c->icount;
     c->icount = 0;
 }
+/* Make the slice end at most `states` from now. */
+static inline void h8s_trim_slice(h8s_cpu_t *c, uint32_t states)
+{
+    if (c->icount > 0 && (uint32_t)c->icount > states) {
+        c->slice -= c->icount - (int32_t)states;
+        c->icount = (int32_t)states;
+    }
+}
 
 /* Memory helpers for machine code and tests (go through the page tables). */
 uint8_t  h8s_read8(h8s_cpu_t *c, uint32_t a);

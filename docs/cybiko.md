@@ -297,8 +297,9 @@ had before (not yet tested on this board):
 `CONFIG_ESP32S3_DATA_CACHE_64KB=y` would cache more of the emulated RAM but
 costs 32 KB more internal RAM, which Palm's Wi-Fi needs, so it stays off.
 
-An existing `sdkconfig.jc4827w543` keeps the old values: delete it so the
-defaults apply, or change them in `idf.py menuconfig`. The screen shows the speed of the
+The build starts the generated `sdkconfig.jc4827w543` again from the
+defaults whenever the defaults file is newer, so these apply after a pull
+with nothing to delete. The screen shows the speed of the
 last second, and the serial log prints it every 5 seconds with how busy the
 CPU loop was.
 

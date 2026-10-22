@@ -285,17 +285,20 @@ interpreter and the machine's per-instruction paths from internal RAM, with
 real jump tables. It costs about 49 KB of internal RAM, which the Palm 68k
 JIT cache then does not get. Turn it off if Palm speed matters more.
 
-These `sdkconfig` settings may help too. Each one is untested on this board:
+`sdkconfig.defaults.jc4827w543` also sets these, which neither emulator
+had before (not yet tested on this board):
 
 | Setting | Effect | Cost |
 | --- | --- | --- |
-| `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (instead of DIO) | twice the flash bandwidth on cache misses | none, if the module's flash supports QIO (the ESP32-S3-WROOM-1 does); the board fails to boot if it does not |
+| `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (instead of DIO) | twice the flash bandwidth on cache misses | none, if the module's flash supports QIO (the ESP32-S3-WROOM-1 does); the board fails to boot if it does not, then go back to `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y` |
 | `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y` | fewer code cache misses | 16 KB of internal RAM |
-| `CONFIG_ESP32S3_DATA_CACHE_64KB=y` | more of the emulated RAM cached | 32 KB of internal RAM |
 | `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y` | faster sequential PSRAM reads | none |
 
-Change them in `idf.py menuconfig`, or delete `sdkconfig.jc4827w543` after
-editing `sdkconfig.defaults.jc4827w543`. The screen shows the speed of the
+`CONFIG_ESP32S3_DATA_CACHE_64KB=y` would cache more of the emulated RAM but
+costs 32 KB more internal RAM, which Palm's Wi-Fi needs, so it stays off.
+
+An existing `sdkconfig.jc4827w543` keeps the old values: delete it so the
+defaults apply, or change them in `idf.py menuconfig`. The screen shows the speed of the
 last second, and the serial log prints it every 5 seconds with how busy the
 CPU loop was.
 

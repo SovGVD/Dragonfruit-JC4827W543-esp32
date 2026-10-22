@@ -570,6 +570,33 @@ INLINE void execute(h8s_cpu_t *c)
         case 0x00: {                                 /* 0100 mov.l prefix */
             uint16_t w = fetch(c);
             if (w & 0x08 && (w >> 8) != 0x78) { illegal(c, op); return; }
+            /* The register indirect forms, most of them, without the call. */
+            const unsigned mode = w >> 8;
+            if (mode == 0x69 || mode == 0x6d || mode == 0x6f) {
+                const unsigned rs = (w >> 4) & 7, rd = w & 7;
+                const bool store = w & 0x80;
+                uint32_t ea;
+                if (mode == 0x69) {
+                    ea = R32(rs);
+                } else if (mode == 0x6f) {
+                    ea = R32(rs) + sx16(fetch(c));
+                } else {
+                    if (store) { R32(rs) -= 4; ea = R32(rs); }
+                    else { ea = R32(rs); R32(rs) += 4; }
+                    c->icount--;
+                }
+                if (store) {
+                    uint32_t v = R32(rd);
+                    if (mode == 0x6d && rd == rs) v += 4;   /* value before predecrement */
+                    nzv32(c, v);
+                    wr32(c, ea, v);
+                } else {
+                    uint32_t v = rd32(c, ea);
+                    nzv32(c, v);
+                    R32(rd) = v;
+                }
+                return;
+            }
             if (!prefixed_move(c, 0, w)) illegal(c, op);
             return;
         }

@@ -248,6 +248,7 @@ typedef struct cybiko {
     bool dma_waiting;          /* a transfer waits for a peripheral interrupt */
     bool dxc;                  /* the DMAC or DTC (not the CPU) is on the bus */
     bool dma_running;          /* inside cy_dma_trigger */
+    uint8_t dma_stepping;      /* transfers moving a unit now, by id */
     uint32_t dma_again[3];     /* interrupts transfers raised meanwhile, by vector */
 
     uint64_t synced;

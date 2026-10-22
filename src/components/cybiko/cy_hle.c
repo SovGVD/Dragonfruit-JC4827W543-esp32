@@ -44,7 +44,7 @@
 #define AMASK 0xffffffu
 
 enum { HLE_SUM, HLE_MUL, HLE_BLIT, HLE_LCD, HLE_STREAM, HLE_FILL, HLE_LZCOPY, HLE_LZ, HLE_SEND, HLE_WAIT, HLE_MEMSET,
-       HLE_ROWFILL, HLE_COPY, HLE_CLEAR, HLE_COUNT };
+       HLE_ROWFILL, HLE_COPY, HLE_CLEAR, HLE_UNPACK, HLE_COUNT };
 _Static_assert(HLE_COUNT <= CY_HLE_SLOTS, "cybiko_t.hle_pc too small");
 
 /* uint32 sum(const uint8 *p (er0), int32 len (er1)): for each byte
@@ -179,6 +179,19 @@ static const uint8_t clear_code[] = {
     0x0f, 0x93, 0x0f, 0xb2, 0x40, 0x06, 0x68, 0xbc, 0x0b, 0x03, 0x0f, 0x92, 0x7a, 0x12, 0x00, 0x00,
     0x02, 0x00, 0x1f, 0xa3, 0x45, 0xf0,
 };
+/* The boot ROM's 1-bit to 2-bit pixel loop (icons and text as the desktop
+ * draws them): r1 holds source bits, r3 the 2-bit mask (r3h) and value
+ * (r3l) of the pixel, r0l the destination byte; @(0x22,sp) counts pixels,
+ * @(0x14,sp) is the count left, @(0xc,sp) the destination, @(0x12,sp) the
+ * first pixel's mask and value. */
+static const uint8_t unpack_code[] = {
+    0x10, 0x11, 0x73, 0x01, 0x47, 0x0c, 0x0d, 0x32, 0x0c, 0x2a, 0x18, 0x22, 0x17, 0x0a, 0x16, 0xa8,
+    0x14, 0xb8, 0x6f, 0x75, 0x00, 0x22, 0x0b, 0x05, 0x6f, 0xf5, 0x00, 0x22, 0x11, 0x53, 0x0d, 0x32,
+    0x0c, 0x2a, 0x18, 0x22, 0x0d, 0x22, 0x46, 0x16, 0x01, 0x00, 0x6f, 0x75, 0x00, 0x0c, 0x68, 0xd8,
+    0x0b, 0x05, 0x01, 0x00, 0x6f, 0xf5, 0x00, 0x0c, 0x68, 0x58, 0x6f, 0x73, 0x00, 0x12, 0x6f, 0x72,
+    0x00, 0x22, 0xea, 0x07, 0xe2, 0x00, 0x0d, 0x22, 0x46, 0x06, 0x0b, 0x06, 0x68, 0x69, 0xf1, 0x00,
+    0x6f, 0x72, 0x00, 0x14, 0x0d, 0x24, 0x1b, 0x04, 0x6f, 0xf4, 0x00, 0x14, 0x0d, 0x22, 0x4e, 0xa0,
+};
 static bool lz_check(const uint8_t *mem, int32_t at);
 
 static void page_sum(cybiko_t *m);
@@ -195,6 +208,7 @@ static void memset_loop(cybiko_t *m);
 static void rowfill(cybiko_t *m);
 static void copy_loop(cybiko_t *m);
 static void clear_loop(cybiko_t *m);
+static void unpack(cybiko_t *m);
 
 /* found late (cy_hle_probe), near an instruction that sets up I/O */
 #define LATE 1
@@ -227,6 +241,7 @@ static const struct hle {
     [HLE_ROWFILL] = { "row fill", rowfill_code, sizeof rowfill_code, 0, true, true, rowfill, { 0x0c } },
     [HLE_COPY]   = { "copy", copy_code, sizeof copy_code, 4, false, true, copy_loop, { 0x0a }, NULL, LATE },
     [HLE_CLEAR]  = { "clear", clear_code, sizeof clear_code, 6, false, true, clear_loop, { 0x10 }, NULL, LATE },
+    [HLE_UNPACK] = { "unpack", unpack_code, sizeof unpack_code, 0, true, true, unpack, { 0x60 } },
 };
 
 static void put_trap(uint8_t *p)
@@ -328,14 +343,32 @@ void cy_hle_probe(cybiko_t *m, uint32_t pc)
     const uint32_t base = at & ~0xffffu;
     const uint32_t lo = base > NEAR ? base - NEAR : 0;
     const uint32_t hi = base + 0x10000u + NEAR < CY_RAM_SIZE ? base + 0x10000u + NEAR : CY_RAM_SIZE;
+    /* One pass over the window for all the patterns, each placed where it
+     * is first found. */
+    int late[HLE_COUNT], n = 0;
+    uint16_t first[HLE_COUNT], mask[HLE_COUNT];
+    uint32_t lead[8] = { 0 };                   /* first bytes, a bit each */
     for (int i = 0; i < HLE_COUNT; i++) {
-        const struct hle *h = &hle[i];
-        if (!h->late) continue;
-        for (uint32_t a = lo; a + h->len <= hi; a += 2) {
-            if (m->ram[a] != h->code[0] || !matches(m->ram + a, h) || (h->check && !h->check(m->ram, (int32_t)a)))
+        if (!hle[i].late) continue;
+        late[n] = i;
+        if (hle[i].any & 1) memset(lead, 0xff, sizeof lead);
+        else lead[hle[i].code[0] >> 5] |= 1u << (hle[i].code[0] & 31);
+        mask[n] = (uint16_t)((hle[i].any & 1 ? 0 : 0xff00) | (hle[i].any & 2 ? 0 : 0x00ff));
+        first[n] = (uint16_t)((hle[i].code[0] << 8 | hle[i].code[1]) & mask[n]);
+        n++;
+    }
+    uint32_t todo = (1u << n) - 1;
+    const uint8_t *ram = m->ram;
+    for (uint32_t a = lo; todo && a + 2 <= hi; a += 2) {
+        if (!(lead[ram[a] >> 5] >> (ram[a] & 31) & 1)) continue;
+        const uint16_t w = (uint16_t)(ram[a] << 8 | ram[a + 1]);
+        for (int k = 0; k < n; k++) {
+            if ((w & mask[k]) != first[k] || !(todo >> k & 1)) continue;
+            const struct hle *h = &hle[late[k]];
+            if (a + h->len > hi || !matches(ram + a, h) || (h->check && !h->check(ram, (int32_t)a)))
                 continue;
-            place_late(m, i, a);
-            break;
+            place_late(m, late[k], a);
+            todo &= ~(1u << k);
         }
     }
 }
@@ -1069,7 +1102,198 @@ static void lz_decode(cybiko_t *m)
     }
 }
 
+/* ---- 1-bit to 2-bit pixels ---- */
+
+#define LO16(reg, v) ((reg) = ((reg) & 0xffff0000u) | (uint16_t)(v))
+
+static void unpack(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    const uint32_t sp = r[7];
+    trap_word(c);
+    for (;;) {
+        LO16(r[1], r[1] << 1);                          /* shll.w r1 */
+        words(c, 3);                                    /* btst #0,r1h; beq */
+        if (r[1] & 0x100) {
+            const uint8_t mask = (uint8_t)(r[3] >> 8);
+            LO16(r[2], (uint8_t)~mask);                 /* r2l = ~r3h, r2h = 0 */
+            r[0] = (r[0] & ~0xffu) | (uint8_t)((r[0] & ~mask) | r[3]);
+            words(c, 6);
+        } else {
+            c->icount -= 1;
+        }
+        words(c, 2);
+        LO16(r[5], h8s_read16(c, sp + 0x22));
+        r[5] += 1;                                      /* adds #1,er5 */
+        words(c, 3);
+        h8s_write16(c, sp + 0x22, (uint16_t)r[5]);
+        LO16(r[3], (uint16_t)r[3] >> 2);                /* shlr.w #2,r3 */
+        LO16(r[2], (uint16_t)r[3] >> 8);                /* r2 = r3h */
+        words(c, 6);
+        if ((uint16_t)r[2]) {
+            c->icount -= 1;
+        } else {
+            words(c, 3);
+            r[5] = h8s_read32(c, sp + 0x0c);
+            words(c, 1);
+            h8s_write8(c, r[5], (uint8_t)r[0]);
+            r[5] += 1;
+            words(c, 4);
+            h8s_write32(c, sp + 0x0c, r[5]);
+            words(c, 1);
+            r[0] = (r[0] & ~0xffu) | h8s_read8(c, r[5]);
+            words(c, 2);
+            LO16(r[3], h8s_read16(c, sp + 0x12));
+        }
+        words(c, 2);
+        LO16(r[2], h8s_read16(c, sp + 0x22) & 7);       /* and.b #7,r2l; and.b #0,r2h */
+        words(c, 4);
+        if ((uint16_t)r[2]) {
+            c->icount -= 1;
+        } else {
+            words(c, 2);
+            r[6] += 1;
+            r[1] = (r[1] & ~0xffffu) | h8s_read8(c, r[6]);  /* mov.b @er6,r1l; mov.b #0,r1h */
+            words(c, 1);
+        }
+        words(c, 2);
+        const uint16_t n = h8s_read16(c, sp + 0x14);
+        LO16(r[2], n);
+        LO16(r[4], n);
+        r[4] -= 1;                                      /* subs #1,er4 */
+        words(c, 4);
+        h8s_write16(c, sp + 0x14, (uint16_t)r[4]);
+        words(c, 2);
+        /* mov.w r2,r2 sets N and Z; the sub.b before left H, V and C clear */
+        c->ccr = (uint8_t)((c->ccr & ~0x2f) | (n & 0x8000 ? 0x08 : 0) | (n ? 0 : 0x04));
+        if ((int16_t)n <= 0) {
+            c->pc = (c->ppc + 0x60) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
 /* ---- serial send ---- */
+
+/* SCI0 as CyOS drives it for the decoder: clocked sync, sending only, no
+ * interrupts, so the end of a frame only changes SSR and hands the byte to
+ * the cartridge. The send loop then runs without the bus: SCI0's frame,
+ * SSR and polling skip are worked out here as cy_periph.c would, the other
+ * peripherals catch up once at the end (none has an event before the slice
+ * ends), and states, registers and memory come out the same. */
+#define SSR_TDRE 0x80
+#define SSR_TEND 0x04
+#define SSR_MPB  0x02
+#define SSR_MPBT 0x01
+
+typedef struct {
+    bool on;                  /* SCI0 is worked out here; the rest wait */
+    uint64_t tx_end;          /* when the frame in flight ends */
+    uint64_t next;            /* the other peripherals' next event */
+} send_bulk_t;
+
+/* What cy_events_changed does after each register write; the other
+ * peripherals' next event stays where it was. */
+static void send_bulk_trim(h8s_cpu_t *c, const send_bulk_t *b)
+{
+    const uint64_t now = h8s_time(c);
+    h8s_trim_slice(c, b->next > now ? (uint32_t)(b->next - now > 0xffffffffu ? 0xffffffffu : b->next - now) : 0);
+}
+
+static bool send_bulk_ok(const cybiko_t *m, uint32_t src)
+{
+    const cy_sci_t *s = &m->sci[0];
+    return !m->io_trace && !m->dxc && src < 0xfffe80u && (s->smr & 0x80) && (s->scr & 0x20) &&
+           !(s->scr & 0x84) && !((s->scr & 0x50) == 0x50) && !s->rx_busy &&
+           (!(s->scr & 0x10) || !s->rx_count) && !s->tx_busy &&
+           (s->ssr & (SSR_TDRE | SSR_TEND)) == (SSR_TDRE | SSR_TEND);
+}
+
+/* SCI0's frame ends if its time has come (sci_tx_done in clocked sync mode
+ * with nothing to receive and TDR empty). */
+static void send_bulk_frame(cybiko_t *m, send_bulk_t *b)
+{
+    cy_sci_t *s = &m->sci[0];
+    if (!s->tx_busy || h8s_time(&m->cpu) < b->tx_end) return;
+    s->tx_busy = false;
+    cy_cart_spi(m, 0, s->tsr);
+    s->ssr |= SSR_TEND;
+}
+
+static void send_bulk_end(cybiko_t *m, send_bulk_t *b);
+
+/* The first access that the original makes at or after the other
+ * peripherals' next event goes over the bus, so that the event comes at the
+ * same point (a DTC transfer it starts takes states and writes memory); the
+ * rest of that byte does too. */
+static bool send_bulk_live(cybiko_t *m, send_bulk_t *b)
+{
+    if (b->on && h8s_time(&m->cpu) + (uint32_t)m->cpu.cost8[0xff] >= b->next) send_bulk_end(m, b);
+    return b->on;
+}
+
+/* A CPU read of SSR0 at c->ppc (sci_read and its poll_read). */
+static uint8_t send_bulk_ssr(cybiko_t *m, send_bulk_t *b)
+{
+    h8s_cpu_t *c = &m->cpu;
+    cy_sci_t *s = &m->sci[0];
+    if (!send_bulk_live(m, b)) return h8s_read8(c, 0xffff7c);
+    c->icount -= c->cost8[0xff];
+    send_bulk_frame(m, b);
+    const uint8_t v = s->ssr;
+    s->ssr_read = v;
+    uint64_t now = h8s_time(c);
+    const uint32_t left = s->tx_busy ? (uint32_t)(b->tx_end - now) : 0;
+    const uint32_t until = left ? left - 1 : 0;
+    cy_poll_t *p = &s->poll;
+    if (p->pc == c->ppc && p->value == v && now - p->at <= 256) {
+        int32_t skip = until < (uint32_t)c->icount ? (int32_t)until : c->icount;
+        if (skip > 0) {
+            c->icount -= skip;
+            now += (uint32_t)skip;
+        }
+    }
+    p->pc = c->ppc;
+    p->value = v;
+    p->at = now;
+    return v;
+}
+
+/* A CPU write of SSR0 (sci_write), which starts the frame once TDRE is
+ * cleared. */
+static void send_bulk_ssr_write(cybiko_t *m, send_bulk_t *b, uint8_t v)
+{
+    h8s_cpu_t *c = &m->cpu;
+    cy_sci_t *s = &m->sci[0];
+    if (!send_bulk_live(m, b)) { h8s_write8(c, 0xffff7c, v); return; }
+    c->icount -= c->cost8[0xff];
+    send_bulk_frame(m, b);
+    if ((s->scr & 0x20) && (s->ssr & s->ssr_read & SSR_TDRE) && !(v & SSR_TDRE))
+        s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
+    s->ssr = (uint8_t)((s->ssr & (~s->ssr_read | v | SSR_TDRE | SSR_TEND | SSR_MPB) & ~SSR_MPBT) | (v & SSR_MPBT));
+    s->ssr_read &= s->ssr;
+    if (!s->tx_busy && !(s->ssr & SSR_TDRE)) {
+        s->ssr |= SSR_TDRE;
+        s->tsr = s->tdr;
+        s->tx_busy = true;
+        b->tx_end = h8s_time(c) + cy_sci_frame(s);
+    }
+    send_bulk_trim(c, b);
+}
+
+/* Back to the bus: SCI0's frame in flight is handed over so that the
+ * catch-up of all the peripherals finishes it at the same time. */
+static void send_bulk_end(cybiko_t *m, send_bulk_t *b)
+{
+    if (!b->on) return;
+    b->on = false;
+    cy_sci_t *s = &m->sci[0];
+    if (s->tx_busy) s->tx_left = (uint32_t)(b->tx_end - m->synced);
+    cy_sync(m);
+}
 
 /* The peripherals see each access at the time, and from the instruction
  * (c->ppc, which their polling skips go by), that the original makes it. */
@@ -1078,8 +1302,61 @@ static void send(cybiko_t *m)
     h8s_cpu_t *c = &m->cpu;
     uint32_t *r = c->er;
     const uint32_t at = c->ppc;
+    send_bulk_t b = { false, 0, 0 };
     trap_word(c);
     for (;;) {
+        if (b.on || send_bulk_ok(m, r[1])) {
+            if (!b.on) {
+                cy_sync(m);
+                b.on = true;
+                b.next = m->synced + cy_periph_next_event(m);
+            }
+            words(c, 1);
+            c->icount -= 1;
+            const uint8_t v = h8s_read8(c, r[1]);
+            r[1] += 1;
+            words(c, 3);
+            c->ppc = at + 2;
+            if (send_bulk_live(m, &b)) {
+                c->icount -= c->cost8[0xff];
+                m->sci[0].tdr = v;
+                send_bulk_trim(c, &b);
+            } else {
+                h8s_write8(c, 0xffff7b, v);
+            }
+            words(c, 4);
+            c->ppc = at + 8;
+            send_bulk_ssr_write(m, &b, send_bulk_ssr(m, &b) & 0x7f);
+            uint8_t s;
+            for (;;) {
+                words(c, 3);
+                c->ppc = at + SEND_POLL;
+                s = send_bulk_ssr(m, &b);
+                c->ppc = at;
+                words(c, 2);
+                if (s & 0x04) break;
+                c->icount -= 1;
+                if (must_yield(c)) {
+                    send_bulk_end(m, &b);
+                    r[2] = (r[2] & ~0xffu) | s;
+                    c->ccr = (uint8_t)(nzv_flags(c->ccr, s, 0x80) | 0x04);
+                    c->pc = (at + SEND_POLL) & AMASK;
+                    return;
+                }
+            }
+            r[2] = (r[2] & ~0xffu) | s;
+            r[3] -= 1;
+            words(c, 5);
+            c->ccr = arith_flags(c->ccr, r[3], 0xffff, 16, true);
+            if ((uint16_t)r[3] == 0xffff) {
+                send_bulk_end(m, &b);
+                c->pc = (at + 0x24) & AMASK;
+                return;
+            }
+            c->icount -= 1;
+            if (must_yield(c)) { send_bulk_end(m, &b); c->pc = at; return; }
+            continue;
+        }
         words(c, 1);
         c->icount -= 1;
         const uint8_t v = h8s_read8(c, r[1]);
@@ -1374,11 +1651,16 @@ static bool hle_check(cybiko_t *m, int which)
     if (!chk.fuzz && chk.calls[which]++ % (uint32_t)chk.every) return false;
     const struct hle *h = &hle[which];
 
-    /* the native run, put aside */
+    /* the native run, put aside; it gets a slice as the original does
+     * below (polling skips and slice trims depend on what is left of it) */
     chk.start = *m;
     memcpy(chk.save_ram, m->ram, CY_RAM_SIZE);
     memcpy(chk.save_fine, c->fine_mem, c->fine_size);
     const uint64_t t = h8s_time(c);
+    const int32_t fetch = c->cost16[(c->ppc >> 16) & 0xff];   /* the trap, already fetched */
+    c->cycles = t - (uint64_t)fetch;
+    c->slice = 100000;
+    c->icount = 100000 - fetch;
     hle_yield = false;
     h->run(m);
     hle_yield = true;

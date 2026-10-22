@@ -15,7 +15,13 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# The module's quad flash runs in QIO: twice the bandwidth on cache misses.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# Emulator code outside internal RAM misses the cache less with 32 KB (costs
+# 16 KB of internal RAM, which the 68k JIT cache then does not get); 64-byte
+# data lines read PSRAM in longer bursts.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_FATFS_LFN_HEAP=y

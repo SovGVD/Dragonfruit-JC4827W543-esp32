@@ -286,6 +286,8 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a == 0xffff06 || a == 0xffff07) {
         if (!m->dxc) cy_hle_probe(m, m->cpu.ppc);
         cy_dma_control(m);
+        /* A stopped transfer can bring an SCI event closer (spi_bulk). */
+        cy_events_changed(m);
     }
     if (a >= 0xfffed0 && a <= 0xfffed4) cy_bus_timing(m);
 }

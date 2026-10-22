@@ -477,7 +477,7 @@ static bool wdt_write16(cybiko_t *m, uint32_t a, uint16_t v)
 #define SCR_RE   0x10
 #define SCR_TEIE 0x04
 
-static uint32_t sci_frame(const cy_sci_t *s)
+uint32_t cy_sci_frame(const cy_sci_t *s)
 {
     uint32_t n1 = (uint32_t)s->brr + 1;
     int cks = s->smr & 3;
@@ -496,7 +496,7 @@ static void sci_tx_start(cybiko_t *m, int n)
     s->ssr |= SSR_TDRE;
     s->tsr = s->tdr;
     s->tx_busy = true;
-    s->tx_left = sci_frame(s);
+    s->tx_left = cy_sci_frame(s);
     /* Last: a DMA or DTC transfer started by TXI refills TDR at once. */
     if (s->scr & SCR_TIE) cy_irq(m, sci_vec(n, 2));
 }
@@ -506,7 +506,7 @@ static void sci_rx_start(cybiko_t *m, int n)
     cy_sci_t *s = &m->sci[n];
     if (s->rx_busy || !(s->scr & SCR_RE) || !s->rx_count) return;
     s->rx_busy = true;
-    s->rx_left = sci_frame(s);
+    s->rx_left = cy_sci_frame(s);
 }
 
 static void sci_rx_done(cybiko_t *m, int n)
@@ -553,11 +553,52 @@ static void sci_tx_done(cybiko_t *m, int n)
     }
 }
 
+/* SPI in bulk. The cartridge's SD driver reads and writes blocks on SCI1
+ * in clocked sync mode with one DMA transfer filling TDR on TXI and one
+ * emptying RDR on RXI. While neither is about to finish, each frame does
+ * the same thing, so frames run here without the interrupt and register
+ * paths, and the slice can last until the transfers near their end. The
+ * CPU sees the same registers and states whenever it looks; only the
+ * bytes in memory land at the end of the slice instead of one by one. */
+#define SPI_RDR 0xffff85u
+#define SPI_TDR 0xffff83u
+
+static int spi_frames(const cybiko_t *m, int ids[2])
+{
+    const cy_sci_t *s = &m->sci[1];
+    const uint8_t on = SCR_TE | SCR_RE | SCR_TIE | SCR_RIE;
+    if (!s->tx_busy || !(s->smr & 0x80) || (s->scr & on) != on || !m->dma_waiting ||
+        (s->ssr & (SSR_TDRE | SSR_RDRF | SSR_ORER | SSR_FER | SSR_PER)))
+        return 0;
+    return cy_dma_spi_frames(m, sci_vec(1, 1), SPI_RDR, sci_vec(1, 2), SPI_TDR, ids);
+}
+
+/* Frame ends of SCI1 within `left` states, as sci_tx_done would run them;
+ * returns the states left over. */
+static uint32_t spi_bulk(cybiko_t *m, uint32_t left)
+{
+    cy_sci_t *s = &m->sci[1];
+    int ids[2];
+    int n = spi_frames(m, ids);
+    if (!n || left < s->tx_left) return left;
+    uint32_t frame = cy_sci_frame(s);
+    while (n-- && left >= s->tx_left) {
+        left -= s->tx_left;
+        uint8_t in = cy_cart_spi(m, 1, s->tsr);
+        s->rdr = in;
+        s->tsr = s->tdr;
+        s->tdr = cy_dma_spi_frame(m, ids, SPI_RDR, SPI_TDR, in);
+        s->tx_left = frame;
+    }
+    return left;
+}
+
 static void sci_advance(cybiko_t *m, uint32_t states)
 {
     for (int n = 0; n < 3; n++) {
         cy_sci_t *s = &m->sci[n];
-        uint32_t left = states;
+        if (!s->tx_busy && !s->rx_busy) continue;
+        uint32_t left = n == 1 ? spi_bulk(m, states) : states;
         while (s->tx_busy) {
             if (left < s->tx_left) { s->tx_left -= left; break; }
             left -= s->tx_left;
@@ -573,12 +614,31 @@ static void sci_advance(cybiko_t *m, uint32_t states)
     }
 }
 
+/* Whether the end of the frame in flight raises an interrupt (or starts a
+ * transfer). If not, it only changes SSR, RDR and what the cartridge got,
+ * and those catch up whenever the CPU next touches I/O, so it need not
+ * end a slice: the MP3 player then sends byte after byte, polling SSR,
+ * without a slice end for each. */
+static bool sci_tx_event(const cy_sci_t *s, int n)
+{
+    if (n == 2 || (s->scr & (SCR_TIE | SCR_TEIE))) return true;
+    if (!(s->smr & 0x80)) return n == 1;          /* asynchronous: console text */
+    return (s->scr & (SCR_RE | SCR_RIE)) == (SCR_RE | SCR_RIE);
+}
+
 static uint32_t sci_next(const cybiko_t *m)
 {
     uint32_t best = NO_EVENT;
     for (int n = 0; n < 3; n++) {
         const cy_sci_t *s = &m->sci[n];
-        if (s->tx_busy && s->tx_left < best) best = s->tx_left;
+        uint32_t tx = s->tx_busy && sci_tx_event(s, n) ? s->tx_left : NO_EVENT;
+        if (n == 1 && s->tx_busy) {
+            int ids[2];
+            int k = spi_frames(m, ids);
+            uint64_t far = tx + (uint64_t)k * cy_sci_frame(s);    /* frames spi_bulk runs */
+            tx = far < NO_EVENT ? (uint32_t)far : NO_EVENT;
+        }
+        if (tx < best) best = tx;
         if (s->rx_busy && s->rx_left < best) best = s->rx_left;
     }
     return best;
@@ -824,7 +884,16 @@ void cy_periph_advance(cybiko_t *m, uint32_t states)
     if (m->synced >= m->timers_due) cy_timers_sync(m, m->synced);
     sci_advance(m, states);
     adc_advance(m, states);
-    cy_rf_advance(m);
+    if (m->rf.ack_due || m->rf.queued || m->rf.inject_len) cy_rf_advance(m);
+}
+
+/* After a register write: the next event may now be sooner than the slice
+ * end. A write by a DMA or DTC transfer inside a catch-up (cy_sync) comes
+ * before the other peripherals have caught up, so the slice just ends. */
+void cy_events_changed(cybiko_t *m)
+{
+    if (m->in_sync) h8s_end_slice(&m->cpu);
+    else h8s_trim_slice(&m->cpu, cy_periph_next_event(m));
 }
 
 uint32_t cy_periph_next_event(const cybiko_t *m)
@@ -840,8 +909,8 @@ uint32_t cy_periph_next_event(const cybiko_t *m)
 bool cy_periph_read(cybiko_t *m, uint32_t a, uint8_t *v)
 {
     if (timer_reg(a)) cy_timers_sync(m, m->synced);
-    return tpu_read(m, a, v) || tmr_read(m, a, v) || wdt_read(m, a, v) ||
-           sci_read(m, a, v) || adc_read(m, a, v);
+    return sci_read(m, a, v) || tmr_read(m, a, v) || wdt_read(m, a, v) ||
+           adc_read(m, a, v) || tpu_read(m, a, v);
 }
 
 bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v)
@@ -855,8 +924,8 @@ bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v)
     } else {
         hit = sci_write(m, a, v) || adc_write(m, a, v);
     }
-    /* The next timer event may now be sooner than the slice end. */
-    if (hit) h8s_end_slice(&m->cpu);
+    /* The next event may now be sooner than the slice end. */
+    if (hit) cy_events_changed(m);
     return hit;
 }
 
@@ -864,6 +933,6 @@ bool cy_periph_write16(cybiko_t *m, uint32_t a, uint16_t v)
 {
     if (a < 0xffffbc || a > 0xffffbf) return false;
     cy_timers_sync(m, m->synced);
-    if (wdt_write16(m, a, v)) { timers_reschedule(m); h8s_end_slice(&m->cpu); return true; }
+    if (wdt_write16(m, a, v)) { timers_reschedule(m); cy_events_changed(m); return true; }
     return false;
 }

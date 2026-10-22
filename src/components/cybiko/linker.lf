@@ -1,0 +1,13 @@
+# With CYBIKO_CORE_IRAM (src/components/h8s/Kconfig) the parts of the machine
+# that run on every instruction or bus access (bus decode, peripheral timing,
+# DMA/DTC) run from internal RAM next to the H8S interpreter. The rest (disk,
+# radio, cartridge, HLE) stays in flash.
+[mapping:cybiko]
+archive: libcybiko.a
+entries:
+    if CYBIKO_CORE_IRAM = y:
+        cybiko (noflash)
+        cy_periph (noflash)
+        cy_dma (noflash)
+    else:
+        * (default)

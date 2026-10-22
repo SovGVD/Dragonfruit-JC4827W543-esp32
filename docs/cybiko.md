@@ -251,6 +251,33 @@ sets the first machine's Cybiko ID. `--card FOLDER_OR_IMAGE` plugs in the
 MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records
 its sound, and `--cart-log` traces every cartridge access.
 
+## Speed on the board
+
+While an MXD clip plays, CyOS runs about 3.2 million H8S instructions a
+second. The PC runner needs about 100 host instructions for each one, and
+the ESP32-S3 spent about 375 cycles on each one when it ran the core from
+flash. Most of that was waiting on memory. The 32 KB interpreter does not
+fit the S3's 16 KB instruction cache, the flash is read in DIO mode, and
+ESP-IDF's `-fno-jump-tables` turned every switch into a chain of compares.
+
+`CYBIKO_CORE_IRAM` (menuconfig, "Cybiko emulator", on by default) runs the
+interpreter and the machine's per-instruction paths from internal RAM, with
+real jump tables. It costs about 49 KB of internal RAM, which the Palm 68k
+JIT cache then does not get. Turn it off if Palm speed matters more.
+
+These `sdkconfig` settings may help too. Each one is untested on this board:
+
+| Setting | Effect | Cost |
+| --- | --- | --- |
+| `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (instead of DIO) | twice the flash bandwidth on cache misses | none, if the module's flash supports QIO (the ESP32-S3-WROOM-1 does); the board fails to boot if it does not |
+| `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y` | fewer code cache misses | 16 KB of internal RAM |
+| `CONFIG_ESP32S3_DATA_CACHE_64KB=y` | more of the emulated RAM cached | 32 KB of internal RAM |
+| `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y` | faster sequential PSRAM reads | none |
+
+Change them in `idf.py menuconfig`, or delete `sdkconfig.jc4827w543` after
+editing `sdkconfig.defaults.jc4827w543`. The serial log prints the speed
+every 5 seconds.
+
 ## Status and limits
 
 - CyOS boots on the PC runner; speed and sound on the board still need

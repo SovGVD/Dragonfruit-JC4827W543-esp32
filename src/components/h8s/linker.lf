@@ -1,0 +1,10 @@
+# With CYBIKO_CORE_IRAM the H8S interpreter runs from internal RAM ("noflash";
+# its .rodata, where GCC puts the opcode jump tables, goes to internal DRAM).
+# See the Kconfig help, and src/components/m68k/linker.lf for the same idea.
+[mapping:h8s]
+archive: libh8s.a
+entries:
+    if CYBIKO_CORE_IRAM = y:
+        * (noflash)
+    else:
+        * (default)

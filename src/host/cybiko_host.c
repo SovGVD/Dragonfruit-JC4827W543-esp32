@@ -18,7 +18,9 @@
  *                      (checked every 100 ms of emulated time)
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
- *                      select, del, tab, shift, fn, help, onoff
+ *                      select, del, tab, ins, menu, shift, fn, help, dot, comma,
+ *                      semi, excl, lparen, rparen, onoff, or rROW.BIT for
+ *                      any matrix position
  *
  * Text on SCI1 (where the boot loader and CyOS print) and SCI2 is copied to
  * stdout; bytes on SCI0 go to stderr as hex. A summary with the speed and anything the model
@@ -32,6 +34,9 @@
 #include <libgen.h>
 #include <sys/stat.h>
 #include "cybiko.h"
+#ifdef CY_CALLGRIND
+#include <valgrind/callgrind.h>
+#endif
 #include "cy_mp3.h"
 #include "cy_vfat.h"
 
@@ -45,7 +50,9 @@ static const struct { const char *name; int key; } key_names[] = {
     { "f4", CYK_F4 }, { "f5", CYK_F5 }, { "f6", CYK_F6 }, { "f7", CYK_F7 },
     { "enter", CYK_ENTER }, { "esc", CYK_ESC }, { "space", CYK_SPACE },
     { "up", CYK_UP }, { "down", CYK_DOWN }, { "left", CYK_LEFT }, { "right", CYK_RIGHT },
-    { "select", CYK_SELECT }, { "del", CYK_DEL }, { "tab", CYK_TAB }, { "as", CYK_AS },
+    { "select", CYK_SELECT }, { "del", CYK_DEL }, { "tab", CYK_TAB }, { "ins", CYK_INS },
+    { "as", CYK_INS }, { "menu", CYK_MENU }, { "comma", CYK_COMMA }, { "semi", CYK_SEMI },
+    { "excl", CYK_EXCL }, { "lparen", CYK_LPAREN }, { "rparen", CYK_RPAREN },
     { "shift", CYK_SHIFT }, { "fn", CYK_FN }, { "help", CYK_HELP }, { "dot", CYK_DOT },
     { "onoff", CYK_ONOFF },
 };
@@ -193,6 +200,9 @@ static int key_by_name(const char *s)
 {
     for (size_t i = 0; i < sizeof key_names / sizeof key_names[0]; i++)
         if (!strcasecmp(s, key_names[i].name)) return key_names[i].key;
+    unsigned row, bit;          /* rROW.BIT: any matrix position */
+    char end;
+    if (sscanf(s, "r%u.%u%c", &row, &bit, &end) == 2 && row < 16 && bit < 16) return (int)CY_KEY(row, bit);
     return -1;
 }
 
@@ -352,7 +362,17 @@ int main(int argc, char **argv)
     const int32_t chunk = CY_CLOCK_HZ / 10;      /* 100 ms */
     uint64_t total = (uint64_t)(seconds * CY_CLOCK_HZ);
     clock_t t0 = clock();
+#ifdef CY_CALLGRIND
+    /* Profiling builds: collect only from CY_PROFILE_FROM_MS on
+     * (run valgrind with --collect-atstart=no). */
+    const char *pf = getenv("CY_PROFILE_FROM_MS");
+    uint64_t profile_at = pf ? (uint64_t)atoll(pf) * (CY_CLOCK_HZ / 1000) : 0;
+    bool profiling = false;
+#endif
     while (m.cpu.cycles < total) {
+#ifdef CY_CALLGRIND
+        if (!profiling && m.cpu.cycles >= profile_at) { profiling = true; CALLGRIND_TOGGLE_COLLECT; }
+#endif
         /* press/release keys in 1 ms steps around scheduled presses */
         int32_t step = chunk;
         for (int i = 0; i < npresses; i++) {

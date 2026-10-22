@@ -42,28 +42,32 @@
  * scans rows 0-9 only, with every higher address bit low, so Help, "." and P
  * (A.13 in MAME) must sit in row 9: in row 13 they showed up in every row
  * scanned. On/Off is not in the matrix; it is PA7/IRQ7 (row 15 here is only
- * its slot in keys[], never scanned). */
+ * its slot in keys[], never scanned). Menu, Ins, the punctuation keys and
+ * the brackets are not in MAME; they were found by trying every free
+ * position in a CyOS text field. Ins is the key MAME calls "As". */
 #define CY_KEY(row, bit) (((row) << 4) | (bit))
 enum {
     CYK_F7 = CY_KEY(0, 0), CYK_M = CY_KEY(0, 8), CYK_K = CY_KEY(0, 11),
     CYK_I = CY_KEY(0, 12), CYK_O = CY_KEY(0, 13), CYK_L = CY_KEY(0, 14),
+    CYK_RPAREN = CY_KEY(0, 9), CYK_COMMA = CY_KEY(0, 10),
     CYK_F6 = CY_KEY(1, 0), CYK_G = CY_KEY(1, 1), CYK_B = CY_KEY(1, 2),
     CYK_N = CY_KEY(1, 3), CYK_H = CY_KEY(1, 4), CYK_Y = CY_KEY(1, 5),
     CYK_U = CY_KEY(1, 6), CYK_J = CY_KEY(1, 7),
     CYK_F5 = CY_KEY(2, 0), CYK_D = CY_KEY(2, 8), CYK_C = CY_KEY(2, 9),
     CYK_V = CY_KEY(2, 11), CYK_F = CY_KEY(2, 12), CYK_R = CY_KEY(2, 13),
-    CYK_T = CY_KEY(2, 14),
+    CYK_T = CY_KEY(2, 14), CYK_LPAREN = CY_KEY(2, 10),
     CYK_F4 = CY_KEY(3, 0), CYK_Q = CY_KEY(3, 1), CYK_A = CY_KEY(3, 2),
     CYK_Z = CY_KEY(3, 3), CYK_X = CY_KEY(3, 4), CYK_S = CY_KEY(3, 5),
     CYK_W = CY_KEY(3, 6), CYK_E = CY_KEY(3, 7),
     CYK_F3 = CY_KEY(4, 0), CYK_ENTER = CY_KEY(4, 3), CYK_SELECT = CY_KEY(4, 4),
-    CYK_SPACE = CY_KEY(4, 6),
+    CYK_SPACE = CY_KEY(4, 6), CYK_MENU = CY_KEY(4, 5),
     CYK_F2 = CY_KEY(5, 0), CYK_TAB = CY_KEY(5, 7), CYK_DEL = CY_KEY(5, 8),
-    CYK_AS = CY_KEY(5, 9), CYK_ESC = CY_KEY(5, 10),
+    CYK_INS = CY_KEY(5, 9), CYK_ESC = CY_KEY(5, 10),
     CYK_F1 = CY_KEY(6, 0), CYK_UP = CY_KEY(6, 11), CYK_RIGHT = CY_KEY(6, 12),
     CYK_DOWN = CY_KEY(6, 13), CYK_LEFT = CY_KEY(6, 14),
     CYK_FN = CY_KEY(7, 15), CYK_SHIFT = CY_KEY(8, 15),
     CYK_HELP = CY_KEY(9, 0), CYK_DOT = CY_KEY(9, 1), CYK_P = CY_KEY(9, 4),
+    CYK_EXCL = CY_KEY(9, 2), CYK_SEMI = CY_KEY(9, 3),
     CYK_ONOFF = CY_KEY(15, 15),
 };
 

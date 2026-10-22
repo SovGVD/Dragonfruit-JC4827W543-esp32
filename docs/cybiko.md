@@ -127,24 +127,24 @@ taps land in the wrong place, run the touch calibration from the boot menu
 Portrait (272×480), every key on one page:
 
 ```text
-+-------------------------+
-|   Cybiko LCD (160x100)  |
-| F1 F2 F3 F4 F5 F6 F7 AS |
-|      UP     | ESC  HELP |
-| LEFT SEL RIGHT| TAB DEL |
-|     DOWN    |  ON/OFF   |
-| Q W E R T Y U I O P     |
-| A S D F G H J K L .     |
-| SHIFT Z X C V B N M FN  |
-| SPACE           ENTER   |
-+-------------------------+
++--------------------------+
+|   Cybiko LCD (160x100)   |
+| F1 F2 F3 F4 F5 F6 F7 INS |
+|      UP     | ESC  MENU  |
+| LEFT SEL RIGHT| TAB  DEL |
+|     DOWN    | HELP ON/OFF|
+| Q W E R T Y U I O P      |
+| A S D F G H J K L ;      |
+| Z X C V B N M , . !      |
+| SHIFT ( SPACE ) FN ENTER |
++--------------------------+
 ```
 
 Landscape (480×272), LCD at 2×:
 
 ```text
 +--------------------------+----------------+
-|                          | ESC   UP  HELP |
+|                          | ESC   UP  MENU |
 |  Cybiko LCD (x2)         | LEFT SEL RIGHT |
 |                          | TAB  DOWN  DEL |
 |                          | ENTER   SPACE  |
@@ -155,12 +155,17 @@ Landscape (480×272), LCD at 2×:
 +-------------------------------------------+
 ```
 
-- In landscape, **MORE** shows F1–F7, AS and ON/OFF; **ABC** goes back.
+- Every key of the real Xtreme is there: F1-F7, Esc, Menu, the arrows,
+  Select, Tab, Del, Ins, Enter, Help (the "?" key), On/Off, the letters,
+  `; , . !`, `( )` beside the space bar, Shift and Fn.
+- In landscape, **MORE** shows F1–F7, INS, ON/OFF, `( ) , ; !` and HELP;
+  **ABC** goes back.
 - The touchscreen sees one finger at a time, so **SHIFT** and **FN** latch: tap
   one, then the key. They release with that key. While one is on, the keys
   show what they type: capitals with SHIFT, and with FN the digits on Q-P and
   the symbols CyOS puts on the other letters (`@ } (C) $ % * + - _ = > < & { #
-  "` and `/` on ".").
+  "`). On the punctuation keys FN gives `/ ' : ? [ ]` and SHIFT gives
+  `\ ~ | ^`, `` ` `` and a smiley.
 - **BOOT** is the Cybiko On/Off key. **Hold BOOT for 3 seconds** to save and
   restart to the boot menu.
 
@@ -233,7 +238,9 @@ X11/Wayland and ALSA/PulseAudio development packages.
 
 Keys: letters are letters. Enter, Esc, Space, Tab and the arrows are
 themselves. Backspace or Delete is Del, Shift is Shift and Ctrl is Fn.
-F1-F7 are F1-F7, F8 is Select, F9 is Help, F10 is AS and F12 is On/Off. The
+F1-F7 are F1-F7, F8 or Home is Select, F9 is Help, F10 or Insert is Ins, F11
+or the menu key is Menu and F12 is On/Off. `, ; .` are themselves, `[` and `]`
+are the Cybiko's `(` and `)` keys, and `/` is its `!` key. The
 window keeps integer zoom when resized. Closing it saves the RAM disk, which
 is also saved every 30 seconds. A reprogrammed flash is saved as `flash.bin`.
 

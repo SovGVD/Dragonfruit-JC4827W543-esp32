@@ -5,22 +5,22 @@
  *
  * Portrait, 272x480, every key on one page, LCD at 1x:
  *
- *        +-----------------------+
- *        |   Cybiko LCD 160x100  |
- *        | F1 F2 F3 F4 F5 F6 F7 AS|
- *        |    UP     | ESC  HELP |
- *        | LEFT SEL RIGHT TAB DEL|
- *        |   DOWN    |  ON/OFF   |
- *        | Q W E R T Y U I O P   |
- *        | A S D F G H J K L .   |
- *        | SHIFT Z X C V B N M FN|
- *        | SPACE          ENTER  |
- *        +-----------------------+
+ *        +------------------------+
+ *        |   Cybiko LCD 160x100   |
+ *        | F1 F2 F3 F4 F5 F6 F7 INS|
+ *        |    UP     | ESC  MENU  |
+ *        | LEFT SEL RIGHT| TAB DEL|
+ *        |   DOWN    | HELP ON/OFF|
+ *        | Q W E R T Y U I O P    |
+ *        | A S D F G H J K L ;    |
+ *        | Z X C V B N M , . !    |
+ *        | SHIFT ( SPACE ) FN ENTER|
+ *        +------------------------+
  *
  * Landscape, LCD at 2x:
  *
  *   +--------------------------+----------------+
- *   |                          | ESC   UP  HELP |
+ *   |                          | ESC   UP  MENU |
  *   |  Cybiko LCD 160x100 x2   | LEFT SEL RIGHT |
  *   |        (320x200)         | TAB  DOWN  DEL |
  *   |                          | ENTER   SPACE  |
@@ -30,7 +30,7 @@
  *   | SHIFT Z X  C  V  B  N  M  FN  MORE        |
  *   +--------------------------------------------+
  *
- * MORE swaps the bottom block to F1-F7, AS and ON/OFF. Only whole-number LCD
+ * MORE swaps the bottom block to F1-F7, INS, ON/OFF, ( ) , ; ! and HELP. Only whole-number LCD
  * zoom is used, so every Cybiko pixel stays square. Key positions are in
  * "logical" coordinates (272x480 in portrait), turned onto the panel when
  * drawn and when a touch is read. Touch is single point, so SHIFT and FN
@@ -81,7 +81,7 @@ typedef struct {
 
 #define PAD_KEY(col, row, k, l) { PAD_X + (col) * 53, (row) * 50, (col) == 2 ? 54 : 53, 50, k, K_NORMAL, true, l }
 static const ui_key_t pad_keys[] = {
-    PAD_KEY(0, 0, CYK_ESC, "ESC"), PAD_KEY(1, 0, CYK_UP, "UP"), PAD_KEY(2, 0, CYK_HELP, "HELP"),
+    PAD_KEY(0, 0, CYK_ESC, "ESC"), PAD_KEY(1, 0, CYK_UP, "UP"), PAD_KEY(2, 0, CYK_MENU, "MENU"),
     PAD_KEY(0, 1, CYK_LEFT, "LEFT"), PAD_KEY(1, 1, CYK_SELECT, "SEL"), PAD_KEY(2, 1, CYK_RIGHT, "RIGHT"),
     PAD_KEY(0, 2, CYK_TAB, "TAB"), PAD_KEY(1, 2, CYK_DOWN, "DOWN"), PAD_KEY(2, 2, CYK_DEL, "DEL"),
     { PAD_X, 150, 80, 50, CYK_ENTER, K_NORMAL, true, "ENTER" },
@@ -106,9 +106,13 @@ static const ui_key_t page_letters[] = {
 static const ui_key_t page_more[] = {
     KB(0, 0, CYK_F1, K_NORMAL, "F1"), KB(1, 0, CYK_F2, K_NORMAL, "F2"), KB(2, 0, CYK_F3, K_NORMAL, "F3"),
     KB(3, 0, CYK_F4, K_NORMAL, "F4"), KB(4, 0, CYK_F5, K_NORMAL, "F5"), KB(5, 0, CYK_F6, K_NORMAL, "F6"),
-    KB(6, 0, CYK_F7, K_NORMAL, "F7"), KB(7, 0, CYK_AS, K_NORMAL, "AS"),
+    KB(6, 0, CYK_F7, K_NORMAL, "F7"), KB(7, 0, CYK_INS, K_NORMAL, "INS"),
     { 8 * KB_KEY_W, KB_Y, 2 * KB_KEY_W, KB_ROW_H, CYK_ONOFF, K_NORMAL, false, "ON/OFF" },
-    { 0, KB_Y + KB_ROW_H, 10 * KB_KEY_W, KB_ROW_H, -1, K_NONE, true, "" },
+    KB(0, 1, CYK_LPAREN, K_NORMAL, "("), KB(1, 1, CYK_RPAREN, K_NORMAL, ")"),
+    KB(2, 1, CYK_COMMA, K_NORMAL, ","), KB(3, 1, CYK_SEMI, K_NORMAL, ";"),
+    KB(4, 1, CYK_EXCL, K_NORMAL, "!"),
+    { 5 * KB_KEY_W, KB_Y + KB_ROW_H, 2 * KB_KEY_W, KB_ROW_H, CYK_HELP, K_NORMAL, false, "HELP" },
+    { 7 * KB_KEY_W, KB_Y + KB_ROW_H, 3 * KB_KEY_W, KB_ROW_H, -1, K_NONE, true, "" },
     KB(0, 2, CYK_SHIFT, K_SHIFT, "SHIFT"),
     { KB_KEY_W, KB_Y + 2 * KB_ROW_H, 7 * KB_KEY_W, KB_ROW_H, -1, K_NONE, true, "" },
     KB(8, 2, CYK_FN, K_FN, "FN"), KB(9, 2, -1, K_PAGE, "ABC"),
@@ -158,7 +162,7 @@ static void build_portrait(void)
 {
     static const key_label_t fkeys[] = {
         { CYK_F1, "F1" }, { CYK_F2, "F2" }, { CYK_F3, "F3" }, { CYK_F4, "F4" },
-        { CYK_F5, "F5" }, { CYK_F6, "F6" }, { CYK_F7, "F7" }, { CYK_AS, "AS" },
+        { CYK_F5, "F5" }, { CYK_F6, "F6" }, { CYK_F7, "F7" }, { CYK_INS, "INS" },
     };
     static const key_label_t row0[] = {
         { CYK_Q, "Q" }, { CYK_W, "W" }, { CYK_E, "E" }, { CYK_R, "R" }, { CYK_T, "T" },
@@ -166,11 +170,11 @@ static void build_portrait(void)
     };
     static const key_label_t row1[] = {
         { CYK_A, "A" }, { CYK_S, "S" }, { CYK_D, "D" }, { CYK_F, "F" }, { CYK_G, "G" },
-        { CYK_H, "H" }, { CYK_J, "J" }, { CYK_K, "K" }, { CYK_L, "L" }, { CYK_DOT, "." },
+        { CYK_H, "H" }, { CYK_J, "J" }, { CYK_K, "K" }, { CYK_L, "L" }, { CYK_SEMI, ";" },
     };
     static const key_label_t row2[] = {
         { CYK_Z, "Z" }, { CYK_X, "X" }, { CYK_C, "C" }, { CYK_V, "V" }, { CYK_B, "B" },
-        { CYK_N, "N" }, { CYK_M, "M" },
+        { CYK_N, "N" }, { CYK_M, "M" }, { CYK_COMMA, "," }, { CYK_DOT, "." }, { CYK_EXCL, "!" },
     };
     layout_portrait.n_fixed = 0;
     add_row(fkeys, COUNT(fkeys), 0, P_W, 122, 36);
@@ -182,19 +186,23 @@ static void build_portrait(void)
     add_key(gx + 2 * c, gy + c, c, c, CYK_RIGHT, K_NORMAL, true, "RIGHT");
     add_key(gx + c, gy + 2 * c, c, c, CYK_DOWN, K_NORMAL, true, "DOWN");
     add_key(132, gy, 70, c, CYK_ESC, K_NORMAL, true, "ESC");
-    add_key(202, gy, 70, c, CYK_HELP, K_NORMAL, true, "HELP");
+    add_key(202, gy, 70, c, CYK_MENU, K_NORMAL, true, "MENU");
     add_key(132, gy + c, 70, c, CYK_TAB, K_NORMAL, true, "TAB");
     add_key(202, gy + c, 70, c, CYK_DEL, K_NORMAL, true, "DEL");
-    add_key(132, gy + 2 * c, 140, c, CYK_ONOFF, K_NORMAL, true, "ON/OFF");
-    /* keyboard: four 47 px rows down to the bottom edge */
-    const int ky = 292, kh = 47;
+    add_key(132, gy + 2 * c, 70, c, CYK_HELP, K_NORMAL, true, "HELP");
+    add_key(202, gy + 2 * c, 70, c, CYK_ONOFF, K_NORMAL, true, "ON/OFF");
+    /* keyboard: four 47 px rows down to the bottom edge, laid out like the
+     * Cybiko's own, with SHIFT and FN beside the space bar */
+    const int ky = 292, kh = 47, by = ky + 3 * kh;
     add_row(row0, COUNT(row0), 0, P_W, ky, kh);
     add_row(row1, COUNT(row1), 0, P_W, ky + kh, kh);
-    add_key(0, ky + 2 * kh, 40, kh, CYK_SHIFT, K_SHIFT, false, "SHIFT");
-    add_row(row2, COUNT(row2), 40, P_W - 40, ky + 2 * kh, kh);
-    add_key(P_W - 40, ky + 2 * kh, 40, kh, CYK_FN, K_FN, false, "FN");
-    add_key(0, ky + 3 * kh, 204, kh, CYK_SPACE, K_NORMAL, false, "SPACE");
-    add_key(204, ky + 3 * kh, P_W - 204, kh, CYK_ENTER, K_NORMAL, false, "ENTER");
+    add_row(row2, COUNT(row2), 0, P_W, ky + 2 * kh, kh);
+    add_key(0, by, 40, kh, CYK_SHIFT, K_SHIFT, false, "SHIFT");
+    add_key(40, by, 28, kh, CYK_LPAREN, K_NORMAL, false, "(");
+    add_key(68, by, 80, kh, CYK_SPACE, K_NORMAL, false, "SPACE");
+    add_key(148, by, 28, kh, CYK_RPAREN, K_NORMAL, false, ")");
+    add_key(176, by, 40, kh, CYK_FN, K_FN, false, "FN");
+    add_key(216, by, P_W - 216, kh, CYK_ENTER, K_NORMAL, false, "ENTER");
 }
 
 static const ui_layout_t *L;
@@ -277,6 +285,13 @@ static const char *const fn_chars[26] = {
     "<", "9", "0", "1", "4", "&", "5", "7", "{", "2", "#", "6", "\"",
 };
 
+/* What Fn and Shift type on the punctuation keys (found the same way). Shift
+ * + ")" gives a smiley, shown as ":)". */
+static const struct { char key; const char *fn, *shift; } punct_chars[] = {
+    { '.', "/", "\\" }, { ',', "'", "~" }, { ';', ":", "|" }, { '!', "?", "^" },
+    { '(', "[", "`" }, { ')', "]", ":)" },
+};
+
 /* The label a key shows: letters follow SHIFT (lower case otherwise, as
  * CyOS types them) and FN shows what Fn + the key types. */
 static const char *key_label(const ui_key_t *k)
@@ -284,7 +299,8 @@ static const char *key_label(const ui_key_t *k)
     static char buf[2];
     const char *l = k->label;
     if (k->kind != K_NORMAL || !l[0] || l[1]) return l;
-    if (l[0] == '.') return fn_on ? "/" : l;
+    for (int i = 0; i < COUNT(punct_chars); i++)
+        if (l[0] == punct_chars[i].key) return fn_on ? punct_chars[i].fn : shift_on ? punct_chars[i].shift : l;
     if (l[0] < 'A' || l[0] > 'Z') return l;
     if (fn_on && fn_chars[l[0] - 'A']) return fn_chars[l[0] - 'A'];
     buf[0] = shift_on ? l[0] : (char)(l[0] - 'A' + 'a');

@@ -192,22 +192,36 @@ bits are left 0. **Verified.**
 
 | Row | Bit 0 | Others |
 |---|---|---|
-| 0 | F7 | M 8, K 11, I 12, O 13, L 14 |
+| 0 | F7 | M 8, ) 9, "," 10, K 11, I 12, O 13, L 14 |
 | 1 | F6 | G 1, B 2, N 3, H 4, Y 5, U 6, J 7 |
-| 2 | F5 | D 8, C 9, V 11, F 12, R 13, T 14 |
+| 2 | F5 | D 8, C 9, ( 10, V 11, F 12, R 13, T 14 |
 | 3 | F4 | Q 1, A 2, Z 3, X 4, S 5, W 6, E 7 |
-| 4 | F3 | Enter 3, Select 4, Space 6 |
-| 5 | F2 | Tab 7, Del 8, AS 9, Esc 10 |
+| 4 | F3 | Enter 3, Select 4, Menu 5, Space 6 |
+| 5 | F2 | Tab 7, Del 8, Ins 9, Esc 10 |
 | 6 | F1 | Up 11, Right 12, Down 13, Left 14 |
 | 7 | | Fn 15 |
 | 8 | | Shift 15 |
-| 9 | Help | . 1, P 4 |
+| 9 | Help | . 1, ! 2, ; 3, P 4 |
 
 MAME puts Help, "." and P on address line A13 (row 13). On CyOS that cannot
 work: because CyOS leaves the higher address bits low while scanning, a key
 in row 13 shows up in every row it scans. Row 9 is the only place they
 behave, so they are in row 9 here (**Verified** that row 9 works; the real
 wiring is a **Guess**).
+
+Menu, Ins, `( ) , ; !` are not in MAME. They were found by pressing every
+free position of rows 0-9 in a CyOS text field and seeing what it typed
+(**Verified**); no other free position does anything. Ins is the key MAME
+calls "As". What Fn and Shift add on these keys:
+
+| Key | Fn | Shift |
+|---|---|---|
+| . | / | \ |
+| , | ' | ~ |
+| ; | : | \| |
+| ! | ? | ^ |
+| ( | [ | ` |
+| ) | ] | a smiley |
 
 On/Off is not in the matrix: it is PA7/IRQ7.
 

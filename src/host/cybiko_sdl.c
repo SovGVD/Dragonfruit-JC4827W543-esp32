@@ -275,8 +275,13 @@ static const struct { SDL_Keycode sdl; int key; const char *label; } keymap[] = 
     { SDLK_PERIOD, CYK_DOT, "." }, { SDLK_F1, CYK_F1, "F1-F7" }, { SDLK_F2, CYK_F2, NULL },
     { SDLK_F3, CYK_F3, NULL }, { SDLK_F4, CYK_F4, NULL }, { SDLK_F5, CYK_F5, NULL },
     { SDLK_F6, CYK_F6, NULL }, { SDLK_F7, CYK_F7, NULL },
-    { SDLK_F8, CYK_SELECT, "F8 = Select" }, { SDLK_INSERT, CYK_SELECT, NULL },
-    { SDLK_F9, CYK_HELP, "F9 = Help" }, { SDLK_F10, CYK_AS, "F10 = AS" },
+    { SDLK_COMMA, CYK_COMMA, "," }, { SDLK_SEMICOLON, CYK_SEMI, ";" },
+    { SDLK_LEFTBRACKET, CYK_LPAREN, "[ = (" }, { SDLK_RIGHTBRACKET, CYK_RPAREN, "] = )" },
+    { SDLK_SLASH, CYK_EXCL, "/ = !" },
+    { SDLK_F8, CYK_SELECT, "F8 = Select" }, { SDLK_HOME, CYK_SELECT, NULL },
+    { SDLK_F9, CYK_HELP, "F9 = Help" }, { SDLK_F10, CYK_INS, "F10 or Insert = Ins" },
+    { SDLK_INSERT, CYK_INS, NULL }, { SDLK_F11, CYK_MENU, "F11 or the menu key = Menu" },
+    { SDLK_APPLICATION, CYK_MENU, NULL }, { SDLK_MENU, CYK_MENU, NULL },
     { SDLK_F12, CYK_ONOFF, "F12 = On/Off" },
 };
 static const int letters[26] = {

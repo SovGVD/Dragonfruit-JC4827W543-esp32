@@ -14,6 +14,7 @@ set(m68k_srcs
     # interpreter compiles as one translation unit, letting -O2 inline the
     # per-instruction EA/flag call chain into the opcode handlers (see m68k_all.c).
     "m68k_all.c"
+    "m68k_palm_hle.c"       # native Palm OS ROM code (its own TU, kept in flash)
     "m68k_jit_core.c"       # neutral JIT driver (dispatch, async compiler, install)
     "m68k_jit_cache.c"      # neutral block hash + presence bitmap + segmented ring
 )

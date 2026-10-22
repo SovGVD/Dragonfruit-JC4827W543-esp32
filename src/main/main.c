@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -120,6 +121,7 @@ static bool ram_state_enabled;
 #endif
 static bool ram_restored;
 static uint8_t sound_volume = 60;   /* palm.cfg sound.volume, 0..100; 0 = off */
+static bool native_rom_calls = true; /* palm.cfg cpu.native: C versions of hot ROM code */
 #if CONFIG_BOARD_JC4827W543
 static bool card_enabled = true, card_read_only;
 /* Hold one mount reference for Palm's open file handles. */
@@ -568,16 +570,18 @@ static void maybe_enter_light_sleep(void)
 static void cpu_task(void *param)
 {
     const int cycles_per_batch = CYCLES_PER_BATCH;
-    uint32_t last_log_cycles = 0;
 
     ESP_LOGI(TAG, "CPU task started on core %d", xPortGetCoreID());
 
-    /* Per-batch counters feeding the live "EMU x.xx MHz (% of real)" readout
-     * below: meas_sb_total counts sub-batches, meas_sb_idle those entered while
-     * the emulated CPU was stopped (the idle fraction). */
-    static uint32_t meas_sb_total = 0, meas_sb_idle = 0;
-    TickType_t meas_last_tick = xTaskGetTickCount();
-    TickType_t last_yield_tick = meas_last_tick;
+    /* Counters for the speed line logged every few seconds: wall time and
+     * emulated cycles spent while Palm OS was running code (not dozing in
+     * STOP), which gives both how busy the CPU task is and how fast the 68k
+     * runs while busy. */
+    int64_t meas_t0 = esp_timer_get_time();
+    int64_t meas_busy_us = 0, meas_run_us = 0;
+    uint64_t meas_run_cyc = 0;
+    m68k_palm_hle_stats_t meas_hle0 = g_palm_hle_stats;
+    TickType_t last_yield_tick = xTaskGetTickCount();
 
     for (;;) {
         const int sub_batch = 4000;
@@ -585,9 +589,18 @@ static void cpu_task(void *param)
         while (remaining > 0) {
             int n = (remaining < sub_batch) ? remaining : sub_batch;
             bool was_stopped = cpu.regs.stopped;
+            int64_t t_sb = was_stopped ? 0 : esp_timer_get_time();
             m68k_execute(&cpu, n);
-            meas_sb_total++;
-            if (was_stopped) meas_sb_idle++;
+            if (!was_stopped) {
+                int64_t dt = esp_timer_get_time() - t_sb;
+                meas_busy_us += dt;
+                /* The speed comes only from slices that ran code throughout:
+                 * one that ends in STOP also counts the cycles it slept. */
+                if (!cpu.regs.stopped) {
+                    meas_run_us += dt;
+                    meas_run_cyc += (uint32_t)cpu.regs.cycles_executed;
+                }
+            }
 
             /* Check interrupts BEFORE timer advance so that lower-priority
              * interrupts (e.g. PEN at level 5) can fire in the window after
@@ -839,31 +852,33 @@ static void cpu_task(void *param)
         maybe_save_ram();
         maybe_enter_light_sleep();
 
-        if (total_cycles - last_log_cycles > cycles_per_batch * 2000) {
-            uint32_t cyc_delta = total_cycles - last_log_cycles;
-            last_log_cycles = total_cycles;
-            TickType_t now_tick = xTaskGetTickCount();
-            double secs = (double)((now_tick - meas_last_tick) * portTICK_PERIOD_MS) / 1000.0;
-            uint32_t idle_pct = meas_sb_total ? (meas_sb_idle * 100 / meas_sb_total) : 0;
-            uint32_t fb = db_lcd_framebuffer_addr();
-            extern dragonball_state_t db;
-            if (idle_pct >= 90) {
-                /* The emulated Palm is dozing (idle event loop / pre-sleep). The
-                 * MHz figure then tracks the slow idle clock, not JIT throughput,
-                 * so report idleness rather than a misleading "% of real". */
-                ESP_LOGI(TAG, "EMU idle (%lu%% dozing) | PC=%08lX SR=%04X cyc=%lu FB=%08lX",
-                         (unsigned long)idle_pct, (unsigned long)cpu.regs.pc, cpu.regs.sr,
-                         (unsigned long)total_cycles, (unsigned long)fb);
-            } else {
-                double mhz = secs > 0 ? (double)cyc_delta / secs / 1e6 : 0;
-                ESP_LOGI(TAG, "EMU %.2f MHz (target %.2f, %.0f%% of real) idle=%lu%% | PC=%08lX SR=%04X cyc=%lu FB=%08lX",
-                         mhz, CPU_MHZ, mhz / CPU_MHZ * 100.0, (unsigned long)idle_pct,
-                         (unsigned long)cpu.regs.pc, cpu.regs.sr,
-                         (unsigned long)total_cycles, (unsigned long)fb);
-            }
-            meas_last_tick = now_tick;
-            meas_sb_total = 0;
-            meas_sb_idle = 0;
+        /* Speed line every 5 s: how much of the time Palm OS kept the CPU
+         * busy, the 68k speed while busy (16.58 MHz is a real IIIx), and how
+         * often native ROM code stood in for 68k code. */
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - meas_t0 >= 5000000) {
+            int64_t span = now_us - meas_t0;
+            double mhz = meas_run_us ? (double)meas_run_cyc / (double)meas_run_us : 0;
+            const m68k_palm_hle_stats_t *h = &g_palm_hle_stats;
+            uint32_t secs = (uint32_t)(span / 1000000);
+            if (!secs) secs = 1;
+            uint32_t busy = (uint32_t)(meas_busy_us * 100 / span);
+            uint32_t calls = (h->dispatches - meas_hle0.dispatches) / secs;
+            uint32_t mem = (h->leaf_calls - meas_hle0.leaf_calls) / secs;
+            uint32_t loops = (h->loops - meas_hle0.loops) / secs;
+            if (meas_run_us < 1000)
+                ESP_LOGI(TAG, "EMU idle | PC=%08lX cyc=%lu",
+                         (unsigned long)cpu.regs.pc, (unsigned long)total_cycles);
+            else
+                ESP_LOGI(TAG, "EMU %.2f MHz while busy (%d%% of real), busy %lu%% | "
+                         "native/s: %lu calls, %lu MemMove/MemSet, %lu loops | PC=%08lX cyc=%lu",
+                         mhz, (int)(mhz * 100.0 / CPU_MHZ), (unsigned long)busy,
+                         (unsigned long)calls, (unsigned long)mem, (unsigned long)loops,
+                         (unsigned long)cpu.regs.pc, (unsigned long)total_cycles);
+            meas_t0 = now_us;
+            meas_busy_us = meas_run_us = 0;
+            meas_run_cyc = 0;
+            meas_hle0 = *h;
         }
 
         /* Yield ~1ms only every ~250ms of wall-clock, not after every ~16k-cycle
@@ -1168,6 +1183,8 @@ void app_main(void)
             if (config_get_value(cfg_text, "card.read_only", v, sizeof v))
                 card_read_only = !strcmp(v, "1");
 #endif
+            if (config_get_value(cfg_text, "cpu.native", v, sizeof v))
+                native_rom_calls = strcmp(v, "0") != 0;
             if (config_get_value(cfg_text, "sound.volume", v, sizeof v)) {
                 long vol = strtol(v, NULL, 10);
                 if (vol >= 0 && vol <= 100) sound_volume = (uint8_t)vol;
@@ -1269,6 +1286,9 @@ void app_main(void)
         ESP_LOGW(TAG, "Audio init failed: %s", esp_err_to_name(err));
 
     dragonball_init();
+    /* After the RAM-state checksum above: this patches the ROM image in PSRAM. */
+    if (native_rom_calls) m68k_palm_hle_init(rom_data, (uint32_t)rom_size);
+    else ESP_LOGI(TAG, "cpu.native=0: running all ROM code as 68k");
 
     cpup = heap_caps_calloc(1, sizeof(m68k_cpu_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!cpup) { ESP_LOGE(TAG, "CPU alloc fail"); return; }

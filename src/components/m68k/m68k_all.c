@@ -30,3 +30,6 @@
 #include "m68k_bcd.c"
 #include "m68k_system.c"
 #include "m68k_decode.c"
+#ifdef HOST_BUILD
+#include "m68k_palm_hle.c"     /* the device builds it on its own, in flash */
+#endif

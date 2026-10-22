@@ -6,5 +6,5 @@ endif()
 idf_component_register(
     SRCS ${main_srcs}
     INCLUDE_DIRS "."
-    REQUIRES board m68k bus dragonball display input esp_driver_gpio esp_driver_uart esp_adc rom_loader layout config installer ram_state m5_sd palm_card wifi_gateway audio cybiko_app nvs_flash
+    REQUIRES board m68k bus dragonball display input esp_driver_gpio esp_driver_uart esp_adc rom_loader layout config installer ram_state m5_sd palm_card wifi_gateway audio cybiko_app nvs_flash esp_timer
 )

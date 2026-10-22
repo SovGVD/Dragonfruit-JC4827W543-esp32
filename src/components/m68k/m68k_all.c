@@ -30,3 +30,4 @@
 #include "m68k_bcd.c"
 #include "m68k_system.c"
 #include "m68k_decode.c"
+#include "m68k_palm_hle.c"

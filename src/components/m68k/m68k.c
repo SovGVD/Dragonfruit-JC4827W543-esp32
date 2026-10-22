@@ -53,6 +53,12 @@ typedef struct {
 static trace_entry_t trace_buf[TRACE_BUF_SIZE];
 static int trace_idx = 0;
 
+#ifdef HOST_BUILD
+/* Per-PC profile buffers, one slot per instruction word: ROM first, then RAM.
+ * NULL unless the host runner asks for a profile. */
+uint32_t *g_m68k_prof_ops, *g_m68k_prof_cyc;
+#endif
+
 /* "UI is up" gate, mirroring CloudpilotEmu's IsUIInitialized(). The auto-installer and
  * pen/key injection wait on this — driving the OS (trap calls, event injection) before the
  * UI subsystem is initialised reenters it mid-init and corrupts its state (a task stack ends
@@ -804,6 +810,16 @@ void m68k_execute_interp(m68k_cpu_t *M68K_RESTRICT cpu, int target_cycles)
                              i, (unsigned long)ipc, (unsigned long)cpu->regs.a[7],
                              (unsigned long)cpu->regs.d[0], (unsigned long)cpu->regs.d[1]);
                 }
+            }
+        }
+        /* --profile: instructions and cycles per guest PC (host_main.c). */
+        if (g_m68k_prof_ops) {
+            uint32_t ipc = cpu->regs.inst_pc, slot = UINT32_MAX;
+            if (ipc - BUS_ROM_BASE < g_bus_rom_size) slot = (ipc - BUS_ROM_BASE) >> 1;
+            else if (ipc < BUS_RAM_SIZE) slot = (g_bus_rom_size + ipc) >> 1;
+            if (slot != UINT32_MAX) {
+                g_m68k_prof_ops[slot]++;
+                g_m68k_prof_cyc[slot] += (uint32_t)cpu->regs.cycles;
             }
         }
 #endif /* HOST_BUILD */

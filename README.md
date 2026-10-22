@@ -226,6 +226,11 @@ The JC4827W543 (ESP32-S3) build runs the same JIT; turn it off with `CONFIG_M68K
 menuconfig. [`src/bench`](src/bench/README.md) has a fixed 68000 workload with host, board
 and QEMU runners for measuring core changes.
 
+System calls, MemMove/MemSet and the hottest blitter loops of the ROM also run as native
+code with the same results, which cuts emulated instructions by about a third
+([docs/palm-native-rom-calls.md](docs/palm-native-rom-calls.md); `cpu.native = 0` in
+`palm.cfg` turns it off).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

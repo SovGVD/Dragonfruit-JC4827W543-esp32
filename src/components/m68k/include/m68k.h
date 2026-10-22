@@ -195,7 +195,26 @@ uint32_t m68k_call_trap(m68k_cpu_t *cpu, uint32_t handler,
                         const m68k_arg_t *args, int nargs,
                         uint32_t *a0_out, bool *timed_out);
 void m68k_set_irq(m68k_cpu_t *cpu, int level);
-void m68k_load_trap_table(m68k_cpu_t *cpu);
+
+/* --- Native Palm OS ROM calls (m68k_palm_hle.c) ---------------------------
+ * System calls skip the ROM's TrapDispatcher, MemMove/MemSet and the hot
+ * blitter loops run in C, with the same result as the ROM code. Call init once
+ * the ROM is loaded and checksummed: it finds the ROM routines and patches the
+ * loops' first words; without init everything runs as 68k code. */
+typedef struct {
+    uint32_t dispatches;          /* system calls dispatched natively */
+    uint32_t leaf_calls;          /* MemMove/MemSet calls done natively */
+    uint32_t loops;               /* native ROM loops run */
+    uint32_t checked, mismatches; /* host --hle-check results */
+    uint64_t leaf_rom_cycles, leaf_native_cycles;
+} m68k_palm_hle_stats_t;
+extern m68k_palm_hle_stats_t g_palm_hle_stats;
+void m68k_palm_hle_init(uint8_t *rom, uint32_t size);   /* patches the ROM image */
+bool m68k_palm_hle_trap15(m68k_cpu_t *cpu);   /* PC at the selector word */
+bool m68k_palm_hle_fline(m68k_cpu_t *cpu, uint16_t opcode);
+#ifdef HOST_BUILD
+extern int g_palm_hle_check;      /* check every Nth native call against the ROM */
+#endif
 
 /* --- JIT integration (m68k_jit.c, device only) --- */
 extern int g_m68k_accel_mode;            /* 0 = interpreter, 1 = JIT */

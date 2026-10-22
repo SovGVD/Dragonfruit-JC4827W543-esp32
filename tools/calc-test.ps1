@@ -17,14 +17,14 @@
   then report JIT throughput. The serial helpers (Key-M5/Send-M5) keep only the
   "= " command replies; the perf signal is in the firmware's async ESP_LOGI lines
   (the JIT "native=..% blocks=.. evict=.. drops=.." telemetry + the "EMU x.xx MHz
-  (.. % of real)" readout), so measure mode reads the raw stream itself. Reports:
+  while busy (.. % of real)" readout), so measure mode reads the raw stream itself. Reports:
     - delta-window native%  (delta native_cyc / (delta native+interp) over the run;
       the cumulative counters reset each boot, so a delta is the robust metric),
     - JIT cache health (blocks / evict / drops),
     - EMU MHz over the busy samples (noisier; ~+-3% run-to-run).
   Only the final frame is rendered in measure mode (mid-soak fbdumps would stall
-  the run). The "EMU MHz" line only prints while the emulated Palm is busy
-  (idle<90%); a static screen logs "EMU idle", so native% is the headline number.
+  the run). The "EMU MHz" line only prints while the emulated Palm did some work
+  in the 5 s window; a static screen logs "EMU idle", so native% is the headline number.
 
       ./tools/palm-setup.ps1 -Reset -LaunchCalc
       ./tools/calc-test.ps1 -Measure -Tag "baseline"
@@ -101,7 +101,7 @@ Close-M5
 # --- parse telemetry ---
 $text = $log.ToString()
 $tel = [regex]::Matches($text, 'native_cyc=(\d+) interp_cyc=(\d+) native=(\d+)% blocks=(\d+) evict=(\d+) (async|sync) drops=(\d+)')
-$emu = [regex]::Matches($text, 'EMU ([\d.]+) MHz \(target [\d.]+, (\d+)% of real\)')
+$emu = [regex]::Matches($text, 'EMU ([\d.]+) MHz while busy \((\d+)% of real\)')
 $idle = ([regex]::Matches($text, 'EMU idle')).Count
 
 Write-Host ""

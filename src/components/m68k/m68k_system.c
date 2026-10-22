@@ -19,7 +19,8 @@ void m68k_group_a(m68k_cpu_t *cpu, uint16_t opcode)
 /* F-line trap: $Fxxx opcodes */
 void m68k_group_f(m68k_cpu_t *cpu, uint16_t opcode)
 {
-    (void)opcode;
+    if (m68k_palm_hle_fline(cpu, opcode))   /* native ROM loop (m68k_palm_hle.c) */
+        return;
     cpu->regs.pc -= 2;
     m68k_take_exception(cpu, VEC_LINE_F);
     cpu->regs.cycles = 34;
@@ -36,6 +37,8 @@ void m68k_op_trap(m68k_cpu_t *cpu, uint16_t opcode)
         cpu->regs.cycles = 34;
         return;
     }
+    if (vector == 15 && m68k_palm_hle_trap15(cpu))   /* native TrapDispatcher */
+        return;
     m68k_take_exception(cpu, VEC_TRAP_BASE + vector);
     cpu->regs.cycles = 34;
 }

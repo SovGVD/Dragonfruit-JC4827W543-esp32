@@ -73,6 +73,83 @@ static bool host_save_state(void)
     return r == RAM_STATE_OK || r == RAM_STATE_UNCHANGED;
 }
 
+/* --profile FILE [--profile-from CYCLES]: count instructions and cycles per
+ * guest PC (m68k.c) and write "addr ops cycles" lines for every PC that ran.
+ * tools/palm_profile.py groups them by ROM function. */
+extern uint32_t *g_m68k_prof_ops, *g_m68k_prof_cyc;
+static const char *host_prof_path;
+static uint32_t host_prof_from;
+static size_t host_prof_slots;
+
+static void host_prof_write(void)
+{
+    if (!host_prof_path || !g_m68k_prof_ops) return;
+    FILE *pf = fopen(host_prof_path, "w");
+    if (!pf) { fprintf(stderr, "cannot write profile %s\n", host_prof_path); return; }
+    for (size_t i = 0; i < host_prof_slots; i++) {
+        if (!g_m68k_prof_ops[i]) continue;
+        uint32_t byte = (uint32_t)i * 2;
+        uint32_t addr = byte < g_bus_rom_size ? BUS_ROM_BASE + byte : byte - g_bus_rom_size;
+        fprintf(pf, "%08X %u %u\n", addr, g_m68k_prof_ops[i], g_m68k_prof_cyc[i]);
+    }
+    fclose(pf);
+    fprintf(stderr, "Profile written to %s (from %u cycles)\n", host_prof_path, host_prof_from);
+}
+
+/* --script FILE: scripted input for headless runs, one event per line:
+ *   <cycles> down X Y | <cycles> up | <cycles> tap X Y | <cycles> key ASCII [KEYCODE [MODS]]
+ * Numbers take C syntax (0x108). "tap" is pen down, then pen up 1M cycles later.
+ * Events fire at the first batch at or after their cycle count, in file order. */
+typedef struct { uint32_t at; char kind; int a, b, c; } host_ev_t;
+static host_ev_t host_evs[512];
+static int host_ev_n, host_ev_next;
+
+static void host_load_script(const char *path)
+{
+    FILE *sf = fopen(path, "r");
+    if (!sf) { fprintf(stderr, "cannot open --script %s\n", path); return; }
+    char line[160], kind[16];
+    while (fgets(line, sizeof line, sf) && host_ev_n < (int)(sizeof host_evs / sizeof host_evs[0]) - 1) {
+        char *h = strchr(line, '#');
+        if (h) *h = 0;
+        unsigned long at; char a[24] = "0", b[24] = "0", c[24] = "0";
+        if (sscanf(line, "%lu %15s %23s %23s %23s", &at, kind, a, b, c) < 2) continue;
+        host_ev_t e = { (uint32_t)at, kind[0], (int)strtol(a, NULL, 0),
+                        (int)strtol(b, NULL, 0), (int)strtol(c, NULL, 0) };
+        if (strcmp(kind, "tap") == 0) {
+            e.kind = 'd'; host_evs[host_ev_n++] = e;
+            e.kind = 'u'; e.at += 1000000;
+        } else if (strcmp(kind, "down") == 0) e.kind = 'd';
+        else if (strcmp(kind, "up") == 0) e.kind = 'u';
+        else if (strcmp(kind, "key") == 0) e.kind = 'k';
+        else { fprintf(stderr, "--script: unknown event '%s'\n", kind); continue; }
+        host_evs[host_ev_n++] = e;
+    }
+    fclose(sf);
+}
+
+static void host_run_script(m68k_cpu_t *c)
+{
+    while (host_ev_next < host_ev_n && host_evs[host_ev_next].at <= total_cycles) {
+        host_ev_t *e = &host_evs[host_ev_next++];
+        bool ok = false;
+        if (e->kind == 'd') ok = host_pen_inject(c, e->a, e->b, false);
+        else if (e->kind == 'u') ok = host_pen_inject(c, -1, -1, true);
+        else {
+            uint8_t *r = bus_ram_ptr();
+            uint32_t globals = be32(r + 0x122);
+            uint32_t enq = globals ? be32(r + globals + 0x12D * 4) : 0;   /* EvtEnqueueKey */
+            if (bus_addr_in_rom(enq)) {
+                m68k_key_enqueue(c, enq, (uint16_t)e->a, (uint16_t)e->b, (uint16_t)e->c);
+                c->regs.stopped = false;
+                ok = true;
+            }
+        }
+        fprintf(stderr, "[%uM] script %c %d %d %s\n", total_cycles / 1000000, e->kind,
+                e->a, e->b, ok ? "" : "(dropped: OS not ready)");
+    }
+}
+
 static void sigint_handler(int sig) { (void)sig; running = 0; }
 
 /* Big-endian stores into the raw RAM image at a byte offset (wb16/wb32 from bus.h). */
@@ -338,6 +415,7 @@ static int host_step(m68k_cpu_t *c, void *ctx)
     total_cycles += batch;
     m68k_set_irq(c, db_interrupt_pending_level());
     palm_card_pump(c);
+    host_run_script(c);
 
     /* PDB/PRC auto-install (host): drive the SAME pump the device uses. It waits for
      * the OS to settle (the launcher drawing over the boot splash) + a functional heap
@@ -433,6 +511,7 @@ int main(int argc, char **argv)
     const char *layout_arg = "upright";
     const char *card_dir = NULL;
     bool card_read_only = false;
+    bool no_hle = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-r") == 0 && i+1 < argc)
@@ -453,6 +532,16 @@ int main(int argc, char **argv)
             card_dir = argv[++i];
         else if (strcmp(argv[i], "--card-read-only") == 0)
             card_read_only = true;
+        else if (strcmp(argv[i], "--script") == 0 && i+1 < argc)
+            host_load_script(argv[++i]);
+        else if (strcmp(argv[i], "--no-hle") == 0)
+            no_hle = true;
+        else if (strcmp(argv[i], "--hle-check") == 0 && i+1 < argc)
+            g_palm_hle_check = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--profile") == 0 && i+1 < argc)
+            host_prof_path = argv[++i];
+        else if (strcmp(argv[i], "--profile-from") == 0 && i+1 < argc)
+            host_prof_from = (uint32_t)strtoul(argv[++i], NULL, 0);
     }
 
     FILE *f = fopen(rom_path, "rb");
@@ -480,6 +569,13 @@ int main(int argc, char **argv)
         }
     }
     dragonball_init();
+    /* After the RAM-state checksum: this patches the ROM image. */
+    if (!no_hle) m68k_palm_hle_init(rom_data, (uint32_t)rom_size);
+    if (host_prof_path) {
+        host_prof_slots = (g_bus_rom_size + BUS_RAM_SIZE) / 2;
+        g_m68k_prof_ops = calloc(host_prof_slots, sizeof(uint32_t));
+        g_m68k_prof_cyc = calloc(host_prof_slots, sizeof(uint32_t));
+    }
 
     cpup = calloc(1, sizeof(m68k_cpu_t));
     m68k_init(&cpu);
@@ -532,8 +628,14 @@ int main(int argc, char **argv)
      * Use a 1M status interval near boot (25-55M, to catch the boot animation),
      * 5M otherwise. */
     uint32_t last_fb_cksum = 0;
+    bool prof_cleared = host_prof_from == 0;
     while (running && total_cycles < (uint32_t)max_cycles) {
         host_step(&cpu, NULL);
+        if (!prof_cleared && total_cycles >= host_prof_from && g_m68k_prof_ops) {
+            memset(g_m68k_prof_ops, 0, host_prof_slots * sizeof(uint32_t));
+            memset(g_m68k_prof_cyc, 0, host_prof_slots * sizeof(uint32_t));
+            prof_cleared = true;
+        }
 
         uint32_t interval = (total_cycles >= 25000000 && total_cycles <= 55000000)
                             ? 1000000 : 5000000;
@@ -564,7 +666,16 @@ int main(int argc, char **argv)
 
     fprintf(stderr, "\n=== Final: PC=%08X A7=%08X cycles=%u IRQs=%u ===\n",
             cpu.regs.pc, cpu.regs.a[7], total_cycles, cpu.regs.irq_count);
+    fprintf(stderr, "native ROM calls: %u dispatches, %u MemMove/MemSet, %u loops",
+            g_palm_hle_stats.dispatches, g_palm_hle_stats.leaf_calls, g_palm_hle_stats.loops);
+    if (g_palm_hle_check)
+        fprintf(stderr, "; checked %u, %u mismatches; leaf+loop cycles rom=%llu native=%llu",
+                g_palm_hle_stats.checked, g_palm_hle_stats.mismatches,
+                (unsigned long long)g_palm_hle_stats.leaf_rom_cycles,
+                (unsigned long long)g_palm_hle_stats.leaf_native_cycles);
+    fprintf(stderr, "\n");
     save_bmp("screen.png");
+    host_prof_write();
     /* Give a running draw/event handler a bounded chance to reach an idle STOP
      * before a RAM-only checkpoint. Never persist half-way through a ROM call. */
     for (unsigned i = 0; host_state_prefix && !cpu.regs.stopped && i < 5000; i++)

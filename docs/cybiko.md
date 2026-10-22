@@ -19,8 +19,9 @@ images. They are the MAME `cybikoxt` set:
 | Boot ROM | 32 KB | `bootrom.bin`, `cyrom150.bin`, `xtreme-rom.bin` |
 | CyOS flash | 512 KB | `flash.bin`, `cyos_v1508.bin`, `xtreme-flash.bin` |
 
-Games and apps go in `/Cybiko/apps` (see [Games and apps](#games-and-apps)).
-The firmware writes these itself:
+Games and apps go in `/Cybiko/apps` (see [Games and apps](#games-and-apps)),
+and the MP3 cartridge's card is `/Cybiko/card` (see
+[MP3 cartridge](#mp3-cartridge)). The firmware writes these itself:
 
 ```text
 ramdisk.bin   the RAM disk where CyOS keeps user files, 4 MB by default
@@ -57,10 +58,28 @@ has unpacked it and before it runs, and moves the disk to addresses the real
 machine leaves free (`800000`-`dfffff`, so at most 6 MB). The format on the
 disk is unchanged.
 
-The Xtreme's MP3 player add-on also stored files, on a SmartMedia card. It
-was a separate computer (its own H8S CPU and firmware, linked through the
-expansion connector), and CyOS 1.5.08 has its memory card support stubbed
-out, so it is not emulated; the bigger RAM disk takes its place.
+More storage, and music, come with the emulated MP3 player cartridge: files
+dropped into `/Cybiko/card` on the SD card are on its card (see
+[MP3 cartridge](#mp3-cartridge)).
+
+## MP3 cartridge
+
+The Xtreme's MP3 player cartridge (CY45P01) is emulated: its SD card slot,
+its MP3 decoder and the MXD video clips. Its software came on the
+cartridge's CD and is not in the flash, so you need `MP3.cap` from that CD.
+In short:
+
+1. `python3 tools/cybiko_cap.py extract MP3.cap /Cybiko/apps` (on the SD
+   card) installs the cartridge software.
+2. Put `.mp3` files and MXD clips (`.app`) in `/Cybiko/card`, up to 1 GB.
+3. "MP3 Player" and the clips appear on the desktop. Sound comes out of the
+   speaker.
+
+`cart = auto | mp3 | off` in `cybiko.cfg` plugs the cartridge in or out
+(`auto`, the default, plugs it in when `/Cybiko/card` has files).
+`tools/cybiko_mxd.py` turns a video into an MXD clip. How the cartridge
+works, with everything needed to reimplement it, is in
+[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
 
 ## Games and apps
 
@@ -202,7 +221,9 @@ resets). `--ramdisk FILE` loads and saves a RAM disk as on the board,
 the end. `--pair RAMDISK2` runs a second machine with its own RAM disk and
 links the two radios (`--press b:key@ms` presses keys on the second one, and
 its screenshot is written next to the first with `.b.pgm`); `--unit-id HEX`
-sets the first machine's Cybiko ID.
+sets the first machine's Cybiko ID. `--card FOLDER_OR_IMAGE` plugs in the
+MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records
+its sound, and `--cart-log` traces every cartridge access.
 
 ## Status and limits
 
@@ -225,14 +246,9 @@ sets the first machine's Cybiko ID.
 
 ## Future improvements
 
-- **MP3 module.** The Xtreme had an optional MP3 player add-on (CY45P01; CY65P10 was the Classic one).
-  It cannot be emulated from the dumps alone: CyOS 1.5.08 only looks for the
-  module through a memory card scan that is stubbed out (it always finds
-  nothing), and the player software (`mp3init.dl`, `MP3.dl`,
-  `mp3_control.dl`, `mplayer.app`) shipped with the module, not in the flash.
-  If those files turn up, emulating the module becomes possible; otherwise a
-  native player for MP3 files in `/Cybiko/mp3/` would be the way. Its storage
-  is covered by the bigger RAM disk (see [Storage](#storage)).
+- **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
+  tested in the PC runner; the open questions are listed in
+  [cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md#6-open-questions).
 - **Mesh network and internet gateway.** Cybikos formed a mesh, and one device
   connected to a PC could share internet access, including the WAP browser,
   with all the others. The radio now works over ESP-NOW; the next step is to let a

@@ -1,13 +1,17 @@
 #pragma once
 #include "cybiko.h"
 
-/* The MP3 player cartridge (CY45P01). Its SD card is the FAT disk image
- * /Cybiko/mp3card.img (tools/cybiko_card.py makes one from a folder), and
- * the music CyOS plays through it comes out of the speaker. CyOS only uses
- * the cartridge once the MP3 module software from the cartridge's CD is on
- * the RAM disk (unpack MP3.cap with tools/cybiko_cap.py into /Cybiko/apps).
- * Key in /Cybiko/cybiko.cfg:
- *   cart = auto    # default: plugged in when mp3card.img exists
+/* The MP3 player cartridge (CY45P01). Its SD card is the folder
+ * /Cybiko/card: drop .mp3 files and MXD clips (.app) in it, up to 1 GB in
+ * all. CyOS sees the folder as a FAT16 card; what CyOS writes to the card
+ * is kept in memory until the next start and never changes the folder.
+ * With the folder empty, the FAT disk image /Cybiko/mp3card.img is used
+ * instead (tools/cybiko_card.py makes one), and writes do reach it.
+ * The music CyOS plays through the cartridge comes out of the speaker.
+ * CyOS only uses the cartridge once the MP3 module software from the
+ * cartridge's CD is on the RAM disk (unpack MP3.cap with tools/cybiko_cap.py
+ * into /Cybiko/apps). Key in /Cybiko/cybiko.cfg:
+ *   cart = auto    # default: plugged in when the card folder or image has files
  *   cart = mp3     # plugged in, with or without a card
  *   cart = off */
 

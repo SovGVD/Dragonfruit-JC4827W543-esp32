@@ -12,8 +12,10 @@
  *                flash name searched, so it then replaces the original image
  *                (always with the dump's own Cybiko ID; see cybiko_link.h)
  *   state.bin    the Cybiko clock, so the time survives restarts
- *   mp3card.img  the MP3 cartridge's SD card, a FAT disk image (see
- *                cybiko_cart.h)
+ *   card/        the MP3 cartridge's SD card: .mp3 files and MXD clips
+ *                dropped here are on the card (see cybiko_cart.h)
+ *   mp3card.img  the card as a FAT disk image instead, used while card/
+ *                is empty
  *   cybiko.cfg   optional settings: sound.volume = 0-100 (default 60),
  *                disk.size = 1-6 (MB, default 4), the radio keys described
  *                in cybiko_link.h and the cartridge key in cybiko_cart.h */

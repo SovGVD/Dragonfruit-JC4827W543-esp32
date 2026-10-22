@@ -71,3 +71,10 @@ POSSIBILITY OF SUCH DAMAGE.
 
 `tools/h8s-diff` links against the GNU H8 simulator from GDB (GPL v3) when you
 build it locally; nothing from it is part of the firmware or committed here.
+
+## minimp3
+
+`src/components/cy_mp3/minimp3.h` is [minimp3](https://github.com/lieff/minimp3)
+by lieff, used unchanged to decode the MP3 cartridge's audio in Cybiko mode.
+It is dedicated to the public domain under CC0 1.0
+(https://creativecommons.org/publicdomain/zero/1.0/).

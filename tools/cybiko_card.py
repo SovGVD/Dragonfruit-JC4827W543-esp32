@@ -3,10 +3,13 @@
 
     cybiko_card.py FOLDER mp3card.img [SIZE_MB]
 
-Copies FOLDER (subfolders too) into a new disk image with one FAT16
+On the board, a folder works too and needs no image: files in /Cybiko/card
+are on the card (see docs/cybiko-mp3-cartridge.md). Copies FOLDER (subfolders too) into a new disk image with one FAT16
 partition, long file names included, the way an SD card from a PC looks to
 the cartridge. SIZE_MB defaults to the content plus 16 MB, at least 16 and at
-most 2048. Put the image in /Cybiko on the board's SD card; CyOS sees the
+most 1024 (CyOS cannot read the 32 KB clusters a bigger FAT16 disk needs).
+Long names are folded to ASCII (accents dropped, Cyrillic transliterated),
+as CyOS does not list files with other characters in their names. Put the image in /Cybiko on the board's SD card; CyOS sees the
 card as "Removable Disk" and the MP3 player lists the .mp3 files on it.
 
 To change the files later, mount the image on a PC (it is an ordinary disk
@@ -16,6 +19,7 @@ import os
 import struct
 import sys
 import time
+import unicodedata
 
 SECTOR = 512
 PART_START = 63                 # first partition sector, as on most cards
@@ -82,6 +86,31 @@ def make_short_names(children):
         used.add(c.short.decode("ascii"))
 
 
+CYRILLIC = ["a", "b", "v", "g", "d", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p",
+            "r", "s", "t", "u", "f", "kh", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"]
+
+
+def ascii_name(name):
+    """The long name as CyOS can show it (the same folding as cy_vfat.c)."""
+    out = ""
+    for ch in name:
+        c = ord(ch)
+        if c < 0x80:
+            out += ch
+        elif 0x410 <= c <= 0x42f:
+            out += CYRILLIC[c - 0x410].capitalize()
+        elif 0x430 <= c <= 0x44f:
+            out += CYRILLIC[c - 0x430]
+        elif c in (0x401, 0x451):
+            out += "E" if c == 0x401 else "e"
+        else:
+            base = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
+            out += base or {"\u00c6": "AE", "\u00e6": "ae", "\u00df": "ss", "\u00d8": "O",
+                            "\u00f8": "o", "\u00de": "Th", "\u00fe": "th", "\u00d0": "D",
+                            "\u00f0": "d", "\u00d7": "x"}.get(ch, "_")
+    return out
+
+
 def lfn_checksum(short):
     s = 0
     for b in short:
@@ -90,7 +119,7 @@ def lfn_checksum(short):
 
 
 def lfn_entries(name, short):
-    units = list(name.encode("utf-16-le"))
+    units = list(ascii_name(name).encode("utf-16-le"))
     chars = [units[i] | units[i + 1] << 8 for i in range(0, len(units), 2)]
     chars.append(0)
     while len(chars) % 13:
@@ -144,7 +173,7 @@ def build(src, out, size_mb=None):
     content = sum(n.size for n in nodes)
     if size_mb is None:
         size_mb = max(16, (content >> 20) + 16)
-    size_mb = max(8, min(2048, size_mb))
+    size_mb = max(8, min(1024, size_mb))
     total = size_mb * 2048
     part = total - PART_START
 

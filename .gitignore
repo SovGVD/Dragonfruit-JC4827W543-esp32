@@ -38,3 +38,4 @@ reference/
 *.log
 screen*.png
 *_trace.log
+__pycache__/

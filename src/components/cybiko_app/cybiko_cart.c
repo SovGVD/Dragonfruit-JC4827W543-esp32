@@ -1,15 +1,18 @@
 /* The MP3 player cartridge (CY45P01) in Cybiko mode: the cartridge's SD
- * card is a disk image on the board's SD card, and the MPEG stream CyOS
+ * card is a folder on the board's SD card (shown to CyOS as a FAT16 card by
+ * cy_vfat) or a disk image, and the MPEG stream CyOS
  * sends to the cartridge's decoder is decoded here (cy_mp3) and played on
  * the speaker. See cybiko_cart.h for the settings. */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "cybiko_cart.h"
 #include "cybiko_app.h"
 #include "m5_sd.h"
 #include "cy_mp3.h"
+#include "cy_vfat.h"
 #include "audio.h"
 #include "palm_config.h"
 #include "esp_log.h"
@@ -20,12 +23,15 @@
 
 static const char *TAG = "cybiko_cart";
 
+#define CARD_DIR CYBIKO_SD_DIR "/card"
 #define CARD_PATH CYBIKO_SD_DIR "/mp3card.img"
+#define CARD_WRITES 1024            /* blocks of CyOS's writes kept in PSRAM */
 #define MPEG_QUEUE 8192             /* bytes between the CPU task and the decoder */
 #define DECODER_STACK (22 * 1024)   /* minimp3 keeps 16 KB of scratch on the stack */
 #define BLOCK 512
 
 static FILE *card;
+static cy_vfat_t *card_dir;
 static StreamBufferHandle_t mpeg;
 static volatile uint8_t volume = 0x6a;
 
@@ -34,12 +40,14 @@ static volatile uint8_t volume = 0x6a;
 static bool card_read(void *user, uint32_t block, uint8_t *buf)
 {
     (void)user;
+    if (card_dir) return cy_vfat_read(card_dir, block, buf);
     return fseek(card, (long)block * BLOCK, SEEK_SET) == 0 && fread(buf, 1, BLOCK, card) == BLOCK;
 }
 
 static bool card_write(void *user, uint32_t block, const uint8_t *buf)
 {
     (void)user;
+    if (card_dir) return cy_vfat_write(card_dir, block, buf);
     bool ok = fseek(card, (long)block * BLOCK, SEEK_SET) == 0 && fwrite(buf, 1, BLOCK, card) == BLOCK;
     fflush(card);
     return ok;
@@ -94,21 +102,39 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
 {
     char v[16] = "auto";
     if (cfg) config_get_value(cfg, "cart", v, sizeof v);
+    /* The folder is made on first start, to show where the files go. */
+    mkdir(CARD_DIR, 0777);
+    bool have_dir = false;
+    DIR *dir = opendir(CARD_DIR);
+    if (dir) {
+        struct dirent *de;
+        while (!have_dir && (de = readdir(dir)) != NULL) have_dir = de->d_name[0] != '.';
+        closedir(dir);
+    }
     struct stat st;
-    bool have_card = stat(CARD_PATH, &st) == 0 && st.st_size >= 64 * BLOCK;
-    bool on = !strcmp(v, "mp3") || (!strcmp(v, "auto") && have_card);
+    bool have_image = !have_dir && stat(CARD_PATH, &st) == 0 && st.st_size >= 64 * BLOCK;
+    bool on = !strcmp(v, "mp3") || (!strcmp(v, "auto") && (have_dir || have_image));
     if (!on) {
-        if (have_card) ESP_LOGI(TAG, "cartridge off (cart = %s)", v);
+        if (have_dir || have_image) ESP_LOGI(TAG, "cartridge off (cart = %s)", v);
         return;
     }
     m->cart.present = true;
-    if (have_card && (card = fopen(CARD_PATH, "r+b")) != NULL) {
+    if (have_dir && (card_dir = cy_vfat_open(CARD_DIR, CARD_WRITES)) != NULL) {
+        m->host.card_read = card_read;
+        m->host.card_write = card_write;
+        m->cart.card_blocks = cy_vfat_blocks(card_dir);
+        ESP_LOGI(TAG, "MP3 cartridge, card = %s: %u files on a %u MB disk", CARD_DIR,
+                 (unsigned)cy_vfat_files(card_dir), (unsigned)(cy_vfat_blocks(card_dir) >> 11));
+        if (cy_vfat_skipped(card_dir))
+            ESP_LOGW(TAG, "%u files left out (over 1 GB, too many, or names too long)",
+                     (unsigned)cy_vfat_skipped(card_dir));
+    } else if (have_image && (card = fopen(CARD_PATH, "r+b")) != NULL) {
         m->host.card_read = card_read;
         m->host.card_write = card_write;
         m->cart.card_blocks = (uint32_t)(st.st_size / BLOCK);
         ESP_LOGI(TAG, "MP3 cartridge with a %u MB card (%s)", (unsigned)(st.st_size >> 20), CARD_PATH);
     } else {
-        ESP_LOGI(TAG, "MP3 cartridge, no card (put a FAT disk image at %s)", CARD_PATH);
+        ESP_LOGI(TAG, "MP3 cartridge, no card (put files in %s)", CARD_DIR);
     }
 
     /* The decoder runs at playback speed on core 0, its stack in PSRAM. */

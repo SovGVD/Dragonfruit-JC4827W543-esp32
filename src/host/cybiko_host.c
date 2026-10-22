@@ -10,7 +10,8 @@
  *   --install FILE     copy FILE onto the RAM disk before starting (repeatable)
  *   --ls               list the files on the RAM disk at the end
  *   --cart             plug in the MP3 player cartridge (--cart-log: and log it)
- *   --card IMG         ... with an SD card (a disk image, 512-byte blocks)
+ *   --card IMG|DIR     ... with an SD card: a disk image (512-byte blocks) or a
+ *                      folder, shown as a FAT16 card (writes stay in memory)
  *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
@@ -29,8 +30,10 @@
 #include <time.h>
 #include <ctype.h>
 #include <libgen.h>
+#include <sys/stat.h>
 #include "cybiko.h"
 #include "cy_mp3.h"
+#include "cy_vfat.h"
 
 static const struct { const char *name; int key; } key_names[] = {
     { "a", CYK_A }, { "b", CYK_B }, { "c", CYK_C }, { "d", CYK_D }, { "e", CYK_E },
@@ -98,16 +101,19 @@ static void io_trace(cybiko_t *m, uint32_t a, uint8_t v, bool w)
         traces[ntraces++] = (typeof(traces[0])){ pc, a, w, 1, v, v };
 }
 
-/* --card IMG: the MP3 cartridge's SD card */
+/* --card IMG|DIR: the MP3 cartridge's SD card, a disk image or a folder */
 static FILE *card_file;
+static cy_vfat_t *card_dir;
 static bool card_read(void *user, uint32_t block, uint8_t *buf)
 {
     (void)user;
+    if (card_dir) return cy_vfat_read(card_dir, block, buf);
     return fseek(card_file, (long)block * 512, SEEK_SET) == 0 && fread(buf, 1, 512, card_file) == 512;
 }
 static bool card_write(void *user, uint32_t block, const uint8_t *buf)
 {
     (void)user;
+    if (card_dir) return cy_vfat_write(card_dir, block, buf);
     return fseek(card_file, (long)block * 512, SEEK_SET) == 0 && fwrite(buf, 1, 512, card_file) == 512;
 }
 
@@ -293,7 +299,15 @@ int main(int argc, char **argv)
     if (unit_id) cybiko_set_unit_id(&m, unit_id);
     if (trace_hi) m.io_trace = io_trace;
     m.cart.present = cart;
-    if (card_path) {
+    struct stat card_st;
+    if (card_path && stat(card_path, &card_st) == 0 && S_ISDIR(card_st.st_mode)) {
+        card_dir = cy_vfat_open(card_path, 4096);
+        if (!card_dir) { fprintf(stderr, "%s: cannot read the folder\n", card_path); return 1; }
+        m.cart.card_blocks = cy_vfat_blocks(card_dir);
+        fprintf(stderr, "card: %s as a %u MB disk, %u files (%u left out)\n", card_path,
+                (unsigned)(cy_vfat_blocks(card_dir) >> 11), (unsigned)cy_vfat_files(card_dir),
+                (unsigned)cy_vfat_skipped(card_dir));
+    } else if (card_path) {
         card_file = fopen(card_path, "r+b");
         if (!card_file) { perror(card_path); return 1; }
         fseek(card_file, 0, SEEK_END);

@@ -223,11 +223,17 @@ target_include_directories(test_cybiko PRIVATE ../components/cybiko ../component
 add_test(NAME cybiko COMMAND test_cybiko)
 
 # Headless runner for the real Cybiko Xtreme ROM/flash dumps (see cybiko_host.c)
-add_executable(cybiko_host cybiko_host.c ../components/cy_mp3/cy_mp3.c ${CYBIKO_SOURCES})
-target_include_directories(cybiko_host PRIVATE ../components/cybiko/include ../components/h8s/include ../components/cy_mp3/include)
+add_executable(cybiko_host cybiko_host.c ../components/cy_mp3/cy_mp3.c ../components/cy_vfat/cy_vfat.c ${CYBIKO_SOURCES})
+target_include_directories(cybiko_host PRIVATE ../components/cybiko/include ../components/h8s/include ../components/cy_mp3/include ../components/cy_vfat/include)
+
+# A folder shown as a FAT16 card (the cartridge's card in Cybiko mode)
+add_executable(test_vfat test_vfat.c ../components/cy_vfat/cy_vfat.c)
+target_include_directories(test_vfat PRIVATE ../components/cy_vfat/include)
+add_test(NAME vfat COMMAND test_vfat)
 if(NOT MSVC)
     target_compile_options(test_cybiko PRIVATE -O2 -Wall -Wextra)
     target_compile_options(cybiko_host PRIVATE -O2 -Wall -Wextra)
+    target_compile_options(test_vfat PRIVATE -O2 -Wall -Wextra -UNDEBUG)
 endif()
 
 add_test(NAME layout COMMAND test_layout)

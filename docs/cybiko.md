@@ -225,7 +225,7 @@ sets the first machine's Cybiko ID.
 
 ## Future improvements
 
-- **MP3 module.** The Xtreme had an optional MP3 player add-on (CY65P10).
+- **MP3 module.** The Xtreme had an optional MP3 player add-on (CY45P01; CY65P10 was the Classic one).
   It cannot be emulated from the dumps alone: CyOS 1.5.08 only looks for the
   module through a memory card scan that is stubbed out (it always finds
   nothing), and the player software (`mp3init.dl`, `MP3.dl`,

@@ -283,7 +283,10 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a >= 0xffff70 && a <= 0xffff74) { m->pcr[a - 0xffff70] = v; return; }
     if (a == 0xffff76 || a == 0xffff77) { m->odr[a - 0xffff76] = v; return; }
     m->misc[a - IO_BASE] = v;
-    if (a == 0xffff06 || a == 0xffff07) cy_dma_control(m);
+    if (a == 0xffff06 || a == 0xffff07) {
+        if (!m->dxc) cy_hle_probe(m, m->cpu.ppc);
+        cy_dma_control(m);
+    }
     if (a >= 0xfffed0 && a <= 0xfffed4) cy_bus_timing(m);
 }
 
@@ -488,6 +491,11 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
         }
         done += h8s_run(&m->cpu, slice);
         cy_sync(m);
+        /* Hot code in CyOS modules is found where the CPU is found. */
+        if (m->cpu.cycles >= m->hle_sample_at) {
+            m->hle_sample_at = m->cpu.cycles + CY_CLOCK_HZ / 20;
+            cy_hle_probe(m, m->cpu.pc);
+        }
         if (m->reset_pending) {
             m->wdt_resets++;
             uint8_t rst = m->wdt_rst;

@@ -128,7 +128,7 @@ Portrait (272×480), every key on one page:
 
 ```text
 +--------------------------+
-|   Cybiko LCD (160x100)   |
+| Cybiko LCD (160x100) 100%|
 | F1 F2 F3 F4 F5 F6 F7 INS |
 |      UP     | ESC  MENU  |
 | LEFT SEL RIGHT| TAB  DEL |
@@ -144,6 +144,7 @@ Landscape (480×272), LCD at 2×:
 
 ```text
 +--------------------------+----------------+
+|                          | SPEED 100%     |
 |                          | ESC   UP  MENU |
 |  Cybiko LCD (x2)         | LEFT SEL RIGHT |
 |                          | TAB  DOWN  DEL |
@@ -158,6 +159,9 @@ Landscape (480×272), LCD at 2×:
 - Every key of the real Xtreme is there: F1-F7, Esc, Menu, the arrows,
   Select, Tab, Del, Ins, Enter, Help (the "?" key), On/Off, the letters,
   `; , . !`, `( )` beside the space bar, Shift and Fn.
+- The number beside the LCD (above the pad in landscape) is how fast the
+  emulation runs over the last second, against a real Cybiko: 100% is full
+  speed. It never goes much past 100%, since the emulator waits to keep real time.
 - In landscape, **MORE** shows F1–F7, INS, ON/OFF, `( ) , ; !` and HELP;
   **ABC** goes back.
 - The touchscreen sees one finger at a time, so **SHIFT** and **FN** latch: tap
@@ -291,8 +295,9 @@ These `sdkconfig` settings may help too. Each one is untested on this board:
 | `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y` | faster sequential PSRAM reads | none |
 
 Change them in `idf.py menuconfig`, or delete `sdkconfig.jc4827w543` after
-editing `sdkconfig.defaults.jc4827w543`. The serial log prints the speed
-every 5 seconds.
+editing `sdkconfig.defaults.jc4827w543`. The screen shows the speed of the
+last second, and the serial log prints it every 5 seconds with how busy the
+CPU loop was.
 
 ## Status and limits
 

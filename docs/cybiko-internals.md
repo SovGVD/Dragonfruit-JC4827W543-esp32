@@ -504,7 +504,10 @@ hardware:
   XOR, optionally mirrored; about 60% of all instructions in a scrolling
   game), the CyOS loop that sends a 40-byte row to the LCD (about 20%), the
   CyOS loop that copies bytes out of a file's 8 KB buffer (a quarter of all
-  instructions while a video plays), a CyOS memset loop, the boot ROM's LZ
+  instructions while a video plays), a CyOS memset loop, the boot ROM's
+  memset and its loop that fills a row of a bitmap, a copy loop and a clear loop in a CyOS module
+  (the file system code that runs for each file on the MP3 card while the
+  desktop loads; with 150+ files they were most of the work), the boot ROM's LZ
   decompressor (its bit-by-bit decoding loop, 44% of all instructions in a
   video, and its back-reference copy), and two loops in a CyOS module the
   video player uses: one sends a buffer to the MP3 decoder on SCI0 waiting
@@ -522,8 +525,12 @@ hardware:
   (the decompressor also by a hash of the ROM code and jump tables it
   follows), so other ROM or CyOS versions just run unpatched. Code in CyOS
   modules, loaded after start-up, is looked for when it first runs: a write
-  to SCI0's transmit register makes the emulator check the code around the
-  writing instruction once, and then nearby. The PC runner built with
+  to SCI0's transmit register or a DMA start, and a look at the program
+  counter every 50 ms of emulated time, make the emulator scan the 64 KB page
+  around that code (and 32 KB either side) for the module patterns, each page
+  at most once every 10 s. A trap met at an address it did not place (the
+  module was loaded again elsewhere) is taken up if the code around it
+  matches. The PC runner built with
   `-DCY_HLE_CHECK` runs every 200th call (`CY_HLE_CHECK_EVERY`) both ways
   and compares registers, flags, states and all of RAM (the spin loop one
   round at a time); `--blit-fuzz N` adds N random blit calls.

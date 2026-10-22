@@ -66,6 +66,7 @@ static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BA
 static uint32_t disk_size;
 static QueueHandle_t key_queue;
 static volatile bool pause_req, paused;
+static volatile int speed_pct = -1;         /* emulation speed over the last second */
 static int64_t clock_base;                  /* Cybiko clock minus time(NULL) */
 
 typedef struct { int16_t key; bool down; } key_event_t;
@@ -145,6 +146,16 @@ static void cpu_task(void *arg)
             stat_t0 = now;
             stat_c0 = machine->cpu.cycles;
             stat_busy = 0;
+        }
+        /* Every second: the speed shown on the screen (cybiko_ui.c). */
+        static int64_t show_t0;
+        static uint64_t show_c0;
+        if (!show_t0) { show_t0 = now; show_c0 = machine->cpu.cycles; }
+        if (now - show_t0 >= 1000000) {
+            uint64_t emu_us = (machine->cpu.cycles - show_c0) * 1000000ull / CY_CLOCK_HZ;
+            speed_pct = (int)(emu_us * 100 / (uint64_t)(now - show_t0));
+            show_t0 = now;
+            show_c0 = machine->cpu.cycles;
         }
         /* Say whether the kernel took the bigger RAM disk (cy_disk.c). */
         static uint8_t patched_seen;
@@ -292,6 +303,11 @@ cybiko_t *cybiko_app_machine(void) { return machine; }
 /* ------------------------------------------------------------------ */
 /* Orientation                                                         */
 /* ------------------------------------------------------------------ */
+
+int cybiko_app_speed(void)
+{
+    return speed_pct;
+}
 
 bool cybiko_app_portrait(void)
 {

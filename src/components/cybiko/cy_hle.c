@@ -28,6 +28,9 @@
  *     in videos.
  *   wait loop (CyOS module, next to the send loop): spins until an interrupt
  *     handler clears a flag, a tenth of instructions in videos.
+ *   memset and row fill loops (boot ROM), and a copy and a clear loop of
+ *     512-byte buffers (CyOS module): together about a third of all
+ *     instructions while the desktop loads with many files on the card.
  *
  * Loops run in C until they end, or until the slice ends or an interrupt
  * is pending; then they stop at the top of an iteration, where the trap
@@ -40,7 +43,8 @@
 
 #define AMASK 0xffffffu
 
-enum { HLE_SUM, HLE_MUL, HLE_BLIT, HLE_LCD, HLE_STREAM, HLE_FILL, HLE_LZCOPY, HLE_LZ, HLE_SEND, HLE_WAIT, HLE_COUNT };
+enum { HLE_SUM, HLE_MUL, HLE_BLIT, HLE_LCD, HLE_STREAM, HLE_FILL, HLE_LZCOPY, HLE_LZ, HLE_SEND, HLE_WAIT, HLE_MEMSET,
+       HLE_ROWFILL, HLE_COPY, HLE_CLEAR, HLE_COUNT };
 _Static_assert(HLE_COUNT <= CY_HLE_SLOTS, "cybiko_t.hle_pc too small");
 
 /* uint32 sum(const uint8 *p (er0), int32 len (er1)): for each byte
@@ -150,6 +154,31 @@ static const uint8_t wait_code[] = {
 };
 #define WAIT_ANY (0xeu | 0xfu << 16 | 0xfu << 24)
 static bool wait_check(const uint8_t *mem, int32_t at);
+
+/* er3 = er0; goto 2f; 1: *er3++ = r1l; 2: if (--er2 >= 0) goto 1b; rts
+ * The trap goes on 1. */
+static const uint8_t memset_code[] = {
+    0x0f, 0x83, 0x40, 0x04, 0x68, 0xb9, 0x0b, 0x03, 0x1b, 0x02, 0x0f, 0xa2, 0x4c, 0xf6, 0x54, 0x70,
+};
+
+/* 1: er0++; r4 -= 4; if (r4 <= 0) goto 2f; *er0 = r1l; goto 1b; 2: — the
+ * middle bytes of a bitmap row. */
+static const uint8_t rowfill_code[] = {
+    0x0b, 0x00, 0x1b, 0x94, 0x0d, 0x44, 0x4f, 0x04, 0x68, 0x89, 0x40, 0xf4,
+};
+
+/* if (er3 < er1) do { *er3++ = *er4++ (via r2l); } while (er3 < er1)
+ * The trap goes on the loop. */
+static const uint8_t copy_code[] = {
+    0x1f, 0x93, 0x44, 0x0a, 0x6c, 0x4a, 0x68, 0xba, 0x0b, 0x03, 0x1f, 0x93, 0x45, 0xf6,
+};
+
+/* er3 = er2 = er1; goto 2f; 1: *er3++ = r4l; er2 = er1; 2: er2 += 0x200;
+ * if (er3 < er2) goto 1b — clears a 512-byte buffer. Trap on 1. */
+static const uint8_t clear_code[] = {
+    0x0f, 0x93, 0x0f, 0xb2, 0x40, 0x06, 0x68, 0xbc, 0x0b, 0x03, 0x0f, 0x92, 0x7a, 0x12, 0x00, 0x00,
+    0x02, 0x00, 0x1f, 0xa3, 0x45, 0xf0,
+};
 static bool lz_check(const uint8_t *mem, int32_t at);
 
 static void page_sum(cybiko_t *m);
@@ -162,10 +191,13 @@ static void lz_copy(cybiko_t *m);
 static void lz_decode(cybiko_t *m);
 static void send(cybiko_t *m);
 static void wait_loop(cybiko_t *m);
+static void memset_loop(cybiko_t *m);
+static void rowfill(cybiko_t *m);
+static void copy_loop(cybiko_t *m);
+static void clear_loop(cybiko_t *m);
 
-/* found late (cy_hle_probe): from the instruction this far into the code */
-#define LATE(off) (1 + (off))
-#define LATE_NEAR 0xff      /* ... or near another one found late */
+/* found late (cy_hle_probe), near an instruction that sets up I/O */
+#define LATE 1
 
 static const struct hle {
     const char *name;
@@ -176,7 +208,7 @@ static const struct hle {
     void (*run)(cybiko_t *m);
     int16_t exit[2];          /* where the original ends, from the trap; none: returns */
     bool (*check)(const uint8_t *mem, int32_t at);   /* more to check where found */
-    uint8_t late;             /* 0, LATE(offset) or LATE_NEAR */
+    uint8_t late;             /* in a CyOS module: found late */
     uint32_t any;             /* bytes of the code (bit n: byte n) that may differ */
     bool spin;                /* waits for an interrupt: checked one round at a time */
 } hle[HLE_COUNT] = {
@@ -188,9 +220,13 @@ static const struct hle {
     [HLE_FILL]   = { "fill", fill_code, sizeof fill_code, 0, false, true, fill, { 0x12 } },
     [HLE_LZCOPY] = { "lz copy", lzcopy_code, sizeof lzcopy_code, 8, true, true, lz_copy, { 0x1e } },
     [HLE_LZ]     = { "lz decode", lz_code, sizeof lz_code, 0x28, true, true, lz_decode, { 0x56 }, lz_check },
-    [HLE_SEND]   = { "serial send", send_code, sizeof send_code, 4, false, true, send, { 0x24 }, NULL, LATE(6) },
+    [HLE_SEND]   = { "serial send", send_code, sizeof send_code, 4, false, true, send, { 0x24 }, NULL, LATE },
     [HLE_WAIT]   = { "wait loop", wait_code, sizeof wait_code, 4, false, true, wait_loop, { 0x1a, -4 },
-                     wait_check, LATE_NEAR, WAIT_ANY, true },
+                     wait_check, LATE, WAIT_ANY, true },
+    [HLE_MEMSET] = { "memset", memset_code, sizeof memset_code, 4, true, true, memset_loop, { 0x0a } },
+    [HLE_ROWFILL] = { "row fill", rowfill_code, sizeof rowfill_code, 0, true, true, rowfill, { 0x0c } },
+    [HLE_COPY]   = { "copy", copy_code, sizeof copy_code, 4, false, true, copy_loop, { 0x0a }, NULL, LATE },
+    [HLE_CLEAR]  = { "clear", clear_code, sizeof clear_code, 6, false, true, clear_loop, { 0x10 }, NULL, LATE },
 };
 
 static void put_trap(uint8_t *p)
@@ -243,7 +279,8 @@ static void patch(cybiko_t *m, bool rom)
 void cy_hle_patch_rom(cybiko_t *m)
 {
     memset(m->hle_pc, 0xff, sizeof m->hle_pc);
-    m->hle_probed = 0xffffffffu;
+    m->hle_scanned = 0;
+    m->hle_scan_reset = m->hle_sample_at = 0;
     patch(m, true);
 }
 
@@ -252,11 +289,12 @@ void cy_hle_patch_kernel(cybiko_t *m)
     patch(m, false);
 }
 
-/* Code CyOS loads later (its modules) is found when it first runs: the
- * peripherals call this when an instruction writes a register that such
- * code uses (for now: SCI0's TDR), and the code around it is checked once.
- * What is found that way is looked for nearby as well. If a routine was
- * found elsewhere before, that copy gets its word back. */
+/* Code CyOS loads later (its modules) is found when it runs: the machine
+ * calls this with the address of an instruction that sets up I/O such code
+ * does (SCI0's transmit register, the DMA controller), and every 50 ms with
+ * the PC, and the RAM around it is searched (each 64 KB page at most once
+ * in 10 s). If a routine was found elsewhere before, that copy gets its
+ * word back; a trap copied along with the code is taken up by cy_hle(). */
 #ifdef CY_HLE_CHECK
 static bool hle_checking(void);
 #endif
@@ -271,33 +309,54 @@ static void place_late(cybiko_t *m, int i, uint32_t start)
     m->hle_pc[i] = 0x400000u + start + h->trap;
 }
 
-#define NEAR 0x4000u
+#define NEAR 0x8000u
 
-void cy_hle_probe(cybiko_t *m)
+void cy_hle_probe(cybiko_t *m, uint32_t pc)
 {
-    const uint32_t pc = m->cpu.ppc;
+    const uint32_t at = pc - 0x400000u;
+    if (at >= CY_RAM_SIZE) return;
+    if (m->cpu.cycles >= m->hle_scan_reset) {
+        m->hle_scan_reset = m->cpu.cycles + 10ull * CY_CLOCK_HZ;
+        m->hle_scanned = 0;
+    }
+    const uint32_t page = 1u << (at >> 16);
+    if (m->hle_scanned & page) return;
 #ifdef CY_HLE_CHECK
     if (hle_checking()) return;                 /* the original is running */
 #endif
-    m->hle_probed = pc;
+    m->hle_scanned |= page;
+    const uint32_t base = at & ~0xffffu;
+    const uint32_t lo = base > NEAR ? base - NEAR : 0;
+    const uint32_t hi = base + 0x10000u + NEAR < CY_RAM_SIZE ? base + 0x10000u + NEAR : CY_RAM_SIZE;
     for (int i = 0; i < HLE_COUNT; i++) {
         const struct hle *h = &hle[i];
-        if (!h->late || h->late == LATE_NEAR) continue;
-        const uint32_t start = pc - (h->late - 1u) - 0x400000u;
-        if (start >= CY_RAM_SIZE - h->len || !matches(m->ram + start, h)) continue;
-        place_late(m, i, start);
-        const uint32_t lo = start > NEAR ? start - NEAR : 0;
-        const uint32_t hi = start + NEAR < CY_RAM_SIZE ? start + NEAR : CY_RAM_SIZE;
-        for (int j = 0; j < HLE_COUNT; j++) {
-            const struct hle *n = &hle[j];
-            if (n->late != LATE_NEAR) continue;
-            for (uint32_t a = lo & ~1u; a + n->len <= hi; a += 2) {
-                if (!matches(m->ram + a, n) || (n->check && !n->check(m->ram, (int32_t)a))) continue;
-                place_late(m, j, a);
-                break;
-            }
+        if (!h->late) continue;
+        for (uint32_t a = lo; a + h->len <= hi; a += 2) {
+            if (m->ram[a] != h->code[0] || !matches(m->ram + a, h) || (h->check && !h->check(m->ram, (int32_t)a)))
+                continue;
+            place_late(m, i, a);
+            break;
         }
     }
+}
+
+/* A trap that is not where a routine was placed: code copied, trap and all.
+ * If the code around it is a routine's, that copy becomes the one used. */
+static int adopt(cybiko_t *m, uint32_t pc)
+{
+    for (int i = 0; i < HLE_COUNT; i++) {
+        const struct hle *h = &hle[i];
+        const uint32_t start = pc - h->trap - 0x400000u;
+        if (!h->late || start >= CY_RAM_SIZE - h->len) continue;
+        uint8_t buf[64];
+        memcpy(buf, m->ram + start, h->len);
+        memcpy(buf + h->trap, h->code + h->trap, 2);
+        if (!matches(buf, h) || (h->check && !h->check(m->ram, (int32_t)start))) continue;
+        memcpy(m->ram + start + h->trap, h->code + h->trap, 2);
+        place_late(m, i, start);
+        return i;
+    }
+    return -1;
 }
 
 /* Memory access for the native routines that charge their states as a
@@ -1151,6 +1210,98 @@ static void wait_loop(cybiko_t *m)
     }
 }
 
+/* ---- buffer loops ---- */
+
+static void memset_loop(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    trap_word(c);
+    for (;;) {
+        words(c, 1);
+        h8s_write8(c, r[3], (uint8_t)r[1]);
+        words(c, 4);
+        r[3] += 1;
+        r[2] -= 1;
+        c->ccr = nzv_flags(c->ccr, r[2], 0x80000000u);
+        if ((int32_t)r[2] < 0) {
+            c->pc = (c->ppc + 0x0a) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
+static void rowfill(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    trap_word(c);
+    for (;;) {
+        r[0] += 1;
+        r[4] -= 4;
+        words(c, 4);
+        c->ccr = nzv_flags(c->ccr, r[4], 0x8000);
+        if ((int16_t)r[4] <= 0) {
+            c->icount -= 1;
+            c->pc = (c->ppc + 0x0c) & AMASK;
+            return;
+        }
+        words(c, 2);
+        h8s_write8(c, r[0], (uint8_t)r[1]);
+        c->ccr = nzv_flags(c->ccr, (uint8_t)r[1], 0x80);
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
+static void copy_loop(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    trap_word(c);
+    for (;;) {
+        words(c, 1);
+        c->icount -= 1;
+        const uint8_t v = h8s_read8(c, r[4]);
+        r[4] += 1;
+        r[2] = (r[2] & ~0xffu) | v;
+        words(c, 4);
+        h8s_write8(c, r[3], v);
+        r[3] += 1;
+        c->ccr = arith_flags(c->ccr, r[3], r[1], 32, true);
+        if (r[3] >= r[1]) {
+            c->pc = (c->ppc + 0x0a) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
+static void clear_loop(cybiko_t *m)
+{
+    h8s_cpu_t *c = &m->cpu;
+    uint32_t *r = c->er;
+    trap_word(c);
+    for (;;) {
+        words(c, 1);
+        h8s_write8(c, r[3], (uint8_t)r[4]);
+        r[3] += 1;
+        r[2] = r[1] + 0x200;
+        words(c, 7);
+        c->ccr = arith_flags(c->ccr, r[1], 0x200, 32, false);
+        c->ccr = arith_flags(c->ccr, r[3], r[2], 32, true);
+        if (r[3] >= r[2]) {
+            c->pc = (c->ppc + 0x10) & AMASK;
+            return;
+        }
+        c->icount -= 1;
+        if (must_yield(c)) { c->pc = c->ppc; return; }
+    }
+}
+
 bool cy_hle(cybiko_t *m)
 {
     h8s_cpu_t *c = &m->cpu;
@@ -1164,10 +1315,12 @@ bool cy_hle(cybiko_t *m)
         return true;
     }
 #ifdef CY_HLE_CHECK
-    return hle_check_exit(m);
-#else
-    return false;
+    if (hle_check_exit(m)) return true;
 #endif
+    const int i = adopt(m, pc);
+    if (i < 0) return false;
+    hle[i].run(m);
+    return true;
 }
 
 #ifdef CY_HLE_CHECK

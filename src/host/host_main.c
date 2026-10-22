@@ -674,6 +674,8 @@ int main(int argc, char **argv)
                 (unsigned long long)g_palm_hle_stats.leaf_rom_cycles,
                 (unsigned long long)g_palm_hle_stats.leaf_native_cycles);
     fprintf(stderr, "\n");
+    if (g_palm_hle_check)
+        m68k_palm_hle_print_loops();
     save_bmp("screen.png");
     host_prof_write();
     /* Give a running draw/event handler a bounded chance to reach an idle STOP

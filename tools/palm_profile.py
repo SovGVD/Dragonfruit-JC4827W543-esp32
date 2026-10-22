@@ -35,11 +35,11 @@ def rom_symbols(rom):
         syms.append((i, name.decode(), nxt))
     return syms
 
-def func_range(syms, name):
-    for k, s in enumerate(syms):
-        if s[1] == name:
-            return (syms[k - 1][2] if k else 0), s[0]
-    raise SystemExit(f"no function {name}")
+def func_ranges(syms, name):
+    r = [((syms[k - 1][2] if k else 0), s[0]) for k, s in enumerate(syms) if s[1] == name]
+    if not r:
+        raise SystemExit(f"no function {name}")
+    return r
 
 def main():
     ap = argparse.ArgumentParser()
@@ -53,11 +53,14 @@ def main():
     syms = rom_symbols(rom)
     if a.disasm:
         import subprocess
-        lo, hi = func_range(syms, a.disasm)
         counts = {}
         for line in open(a.profile):
             addr, o, c = line.split()
             counts[int(addr, 16)] = (int(o), int(c))
+        # Some names occur more than once (stubs); take the busiest.
+        lo, hi = max(func_ranges(syms, a.disasm),
+                     key=lambda r: sum(v[0] for k, v in counts.items()
+                                       if ROM_BASE + r[0] <= k < ROM_BASE + r[1]))
         out = subprocess.run(["m68k-linux-gnu-objdump", "-D", "-b", "binary", "-m", "m68k:68000",
                               f"--adjust-vma={ROM_BASE:#x}", f"--start-address={ROM_BASE + lo:#x}",
                               f"--stop-address={ROM_BASE + hi:#x}", a.rom],

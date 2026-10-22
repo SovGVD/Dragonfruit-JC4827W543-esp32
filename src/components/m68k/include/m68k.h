@@ -212,8 +212,13 @@ extern m68k_palm_hle_stats_t g_palm_hle_stats;
 void m68k_palm_hle_init(uint8_t *rom, uint32_t size);   /* patches the ROM image */
 bool m68k_palm_hle_trap15(m68k_cpu_t *cpu);   /* PC at the selector word */
 bool m68k_palm_hle_fline(m68k_cpu_t *cpu, uint16_t opcode);
+/* Set when native code moved the PC somewhere new (a system call's handler, a
+ * native function's return address, a native loop's exit), so the JIT's
+ * interpreter burst stops there and the JIT can profile and compile it. */
+extern bool g_palm_hle_jumped;
 #ifdef HOST_BUILD
 extern int g_palm_hle_check;      /* check every Nth native call against the ROM */
+void m68k_palm_hle_print_loops(void);
 #endif
 
 /* --- JIT integration (m68k_jit.c, device only) --- */

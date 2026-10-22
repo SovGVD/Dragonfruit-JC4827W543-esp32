@@ -8,53 +8,70 @@ difference; it just takes fewer emulated instructions. Turn it all off with
 
 ## What runs natively
 
-| ROM code | How it is found | What it does |
+| ROM code | ROMs | What it does |
 |---|---|---|
-| TrapDispatcher | TRAP #15 vector points at its known 66 bytes | Every system call: looks the selector up in the trap table and jumps to the handler, leaving the same stack and registers |
-| MemMove, MemSet | MacsBug name in the ROM | Copy/fill in C straight from the dispatcher, back to the caller |
-| PrvBltConstCopy row loop | exact code bytes | Solid rectangle fill |
-| PrvBltSwap word loop | exact code bytes | Colour swap (selection highlight) |
-| PrvBlit1To8Copy row loop | exact code bytes | 1-bit bitmaps drawn on the 8-bit screen (text, icons) |
-| PrvGetBltInfo table compare | exact code bytes | Compares two 256-entry colour tables on every blit |
-| PrvBltMisAlignCopy_Generic word loop | exact code bytes | Bitmap copy across word boundaries |
-| PrvConvert1To8 | exact code bytes | 1-bit to 8-bit expansion |
+| TrapDispatcher | all | Every system call: looks the selector up in the trap table and jumps to the handler, leaving the same stack and registers |
+| MemMove, MemSet | all | Copy/fill in C straight from the dispatcher, back to the caller |
+| MemSemaphoreReserve/Release | all three | The Memory Manager's kernel semaphore and storage write protect, on every Mem* call |
+| 32-bit multiply helper | all three | The compiler's multiply, linked into the ROM 17–21 times; every copy |
+| PrvBltConstCopy, PrvBltSwap, PrvBlit1To8Copy, PrvGetBltInfo, PrvBltMisAlignCopy_Generic, PrvConvert1To8 | 4.1 | Colour blitter loops: fills, selection highlight, 1-bit to 8-bit text and icons, colour-table compare, misaligned copies |
+| FntLineWidth, Crc16CalcBlock, DmFindResource scan | 4.1 | Text width, CRC-16, resource lookup |
+| SysLaunch RAM clear | 3.1 | The byte-by-byte RAM clear at boot (40% of 3.1's boot) |
+| ScrRectangleRoutine, PrvMisAlignedForwardInnerBitBlt (6 loops), PrvCompressedInnerBitBlt, ScrDeCompressScanLine | 3.1 | Mono blitter: fills, bitmap copies, compressed bitmaps |
+| FntLineWidth, Crc16CalcBlock | 3.1 | Text width, CRC-16 |
+
+"4.1" means the Palm OS 4.1 colour ROM and the IIIx 4.1 ROM (same code);
+"3.1" the IIIx 3.1 ROM.
 
 System calls only go native when the CPU is in supervisor mode, not tracing,
 the trap is not a library trap, and the trap table still points at the ROM's
 own handler (an app that patches a trap with `SysSetTrapAddress` keeps its
 patch). MemMove/MemSet fall back to the ROM code when memory isn't plain RAM
 or video RAM, or when the destination is NULL (so the ROM reports the error).
+The semaphore functions only go native when nothing would have to wait or
+switch tasks (the semaphore is free or already ours, the kernel has nothing
+pending) and not from an interrupt; otherwise the ROM code runs.
 
-The loops are matched by their exact bytes, and the first word of each is
+Loops and functions are matched by their exact bytes (the semaphore code also
+by a hash of all the kernel code it calls), and the first word of each is
 replaced in the PSRAM copy of the ROM by an F-line opcode (`$FFxx`, which
-Palm OS never executes). A different ROM simply keeps its own loops; the boot
-log says which were found:
+Palm OS never executes). A different ROM simply keeps its own code; the boot
+log says what was found:
 
 ```
 I (m68k) native loop PrvBltConstCopy rows: on
-I (m68k) native loop PrvBltSwap words: not in this ROM
+I (m68k) native loop SysLaunch RAM clear: not in this ROM
+I (m68k) native loop 32-bit multiply: on, 17 copies
 I (m68k) native ROM calls: MemMove found, MemSet found
 ```
 
-The loops were taken from the Palm OS 4.1 colour ROM. The dispatcher and
-MemMove/MemSet work on any Palm OS 3.x/4.x ROM whose TrapDispatcher matches.
+The emulated cycles charged match the ROM code exactly for the dispatcher
+and within about 10% for the rest (most within a few percent). On the board
+the Palm timer runs on wall-clock time, so this only affects the speed figure
+in the log.
 
-The emulated cycles charged match the dispatcher exactly and the loops and
-MemMove/MemSet approximately (within a few percent). On the board the Palm
-timer runs on wall-clock time, so this only affects the speed figure in the log.
+On the device the native code sits in flash, apart from the system-call entry
+points, so it costs no internal RAM beyond those. After native code moves the
+PC (to a system call's handler, a function's return address, a loop's exit)
+the JIT's interpreter burst stops there, so the JIT profiles that address and
+compiles it once it's hot instead of interpreting it.
 
 ## Effect
 
-Instructions the 68k core executes on the PC build, Palm OS 4.1 colour ROM:
+Instructions the 68k core executes on the PC build, with the workload below
+(boot runs through first-boot Setup to the launcher, 290M cycles; apps are the
+launcher, Date Book, Memo typing, Address, Calc and Note Pad):
 
-| Run | ROM code only | Native | Change |
-|---|---|---|---|
-| Boot through Setup to the launcher (290M cycles) | 13.97 M | 9.25 M | −34% |
-| Launcher, Date Book, Memo typing, Address, Calc, Note Pad | 13.54 M | 8.95 M | −34% |
+| ROM | Boot: ROM code only | Native | Change | Apps: ROM code only | Native | Change |
+|---|---|---|---|---|---|---|
+| Palm OS 4.1 colour | 13.97 M | 6.49 M | −54% | 13.54 M | 6.44 M | −52% |
+| IIIx 4.1 | 11.79 M | 6.42 M | −46% | 10.31 M | 6.00 M | −42% |
+| IIIx 3.1 | 7.98 M | 2.16 M | −73% | 10.36 M | 5.67 M | −45% |
 
-In the app run the dispatcher and MemMove/MemSet account for 11 points and
-the blitter loops for the other 23. What's left on top is mostly the AMX
-kernel's semaphore calls around the Memory Manager, spread thin.
+What's left on top is spread thin: the AMX kernel's event and timer code,
+pen polling while the pen is down (a busy loop, no gain from speeding it up),
+Memory Manager bookkeeping (PrvHandleCheck, PrvChunkNew) and PrvGetLineInfo,
+which is straight-line code with no loop to take over.
 
 ## Checking it against the ROM
 
@@ -63,14 +80,24 @@ the same starting state through the ROM code with interrupts held off. It
 compares all registers, the flags, every byte of RAM and video RAM and, for
 the dispatcher, the cycle count. Leaf calls (MemMove/MemSet) are allowed to
 differ in the scratch registers D1/A0/A1 (the dispatcher already clobbers
-them), the condition codes and their own dead stack frame.
+them) and the condition codes; leaf calls and native loops and functions may
+leave different bytes in the dead stack below the final stack pointer.
+
+Checked with every second call (`--hle-check 2`) over the whole workload, and
+every call through the boot (`--hle-check 1`), on all three ROMs: no
+differences.
 
 ```sh
 cmake -S src/host -B build-host && cmake --build build-host --target dragonfruit
 ./build-host/dragonfruit -r palm.rom -c 1100000000 --script tools/palm-workload.txt --hle-check 3
 ...
-native ROM calls: 140719 dispatches, 2847 MemMove/MemSet, 11310 loops; checked ..., 0 mismatches
+native ROM calls: 111405 dispatches, 2859 MemMove/MemSet, 81152 loops; checked 96274, 0 mismatches; ...
+  PrvBltConstCopy rows                             475 checked, cycles rom 4708270 native 5038586 (+7.0%)
+  ...
 ```
+
+The lines after the total give, per native loop or function, how many calls
+were checked and the emulated cycles each way.
 
 `--no-hle` runs the ROM code only.
 
@@ -81,6 +108,7 @@ native ROM calls: 140719 dispatches, 2847 MemMove/MemSet, 11310 loops; checked .
     --profile run.prof --profile-from 290000000
 python3 tools/palm_profile.py palm.rom run.prof --top 40          # by ROM function
 python3 tools/palm_profile.py palm.rom run.prof --disasm MemMove  # with per-instruction counts
+                                                                  # (the busiest one if a name repeats)
 ```
 
 `--profile` counts instructions and cycles per guest PC; `palm_profile.py`

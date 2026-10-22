@@ -8,9 +8,11 @@
 # The JIT's code generator is the exception: it runs only when a hot block is
 # compiled (on core 0, off the emulation path), so it stays in flash and leaves
 # ~19 KB of internal RAM for the heap, which the ESP32-S3 is short of. Generated
-# code never calls into it.
+# code never calls into it. The native Palm OS ROM code (m68k_palm_hle, ~30 KB)
+# stays in flash too, except its per-system-call entry points (IRAM_ATTR).
 [mapping:m68k]
 archive: libm68k.a
 entries:
     * (noflash)
     m68k_jit_backend_xtensa (default)
+    m68k_palm_hle (default)

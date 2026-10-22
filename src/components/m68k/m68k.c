@@ -554,6 +554,8 @@ static __attribute__((noinline)) int interp_run(m68k_cpu_t *M68K_RESTRICT cpu, i
             cpu->regs.pending_irq = (level > 0) ? level : 0;
         }
         if (++ops >= max_ops) break;
+        /* Native Palm OS code just jumped: let the JIT sample the new PC. */
+        if (to_native && g_palm_hle_jumped) { g_palm_hle_jumped = false; break; }
     }
     return cyc;
 }

@@ -226,9 +226,9 @@ The JC4827W543 (ESP32-S3) build runs the same JIT; turn it off with `CONFIG_M68K
 menuconfig. [`src/bench`](src/bench/README.md) has a fixed 68000 workload with host, board
 and QEMU runners for measuring core changes.
 
-System calls, MemMove/MemSet, the Memory Manager semaphore and the hottest blitter and
+System calls, MemMove/MemSet, the Memory Manager semaphore and bookkeeping, and the hottest blitter and
 helper loops of the ROM also run as native code with the same results, which cuts emulated
-instructions by 42–73% on the Palm OS 4.1 colour, IIIx 4.1 and IIIx 3.1 ROMs
+instructions by 46–73% on the Palm OS 4.1 colour, IIIx 4.1 and IIIx 3.1 ROMs
 ([docs/palm-native-rom-calls.md](docs/palm-native-rom-calls.md); `cpu.native = 0` in
 `palm.cfg` turns it off).
 

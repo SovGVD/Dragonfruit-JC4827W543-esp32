@@ -16,9 +16,12 @@ difference; it just takes fewer emulated instructions. Turn it all off with
 | 32-bit multiply helper | all three | The compiler's multiply, linked into the ROM 17–21 times; every copy |
 | PrvBltConstCopy, PrvBltSwap, PrvBlit1To8Copy, PrvGetBltInfo, PrvBltMisAlignCopy_Generic, PrvConvert1To8 | 4.1 | Colour blitter loops: fills, selection highlight, 1-bit to 8-bit text and icons, colour-table compare, misaligned copies |
 | FntLineWidth, Crc16CalcBlock, DmFindResource scan | 4.1 | Text width, CRC-16, resource lookup |
+| PrvDraw8BitTransBitmap rows | 4.1 | Colour bitmaps with a transparent colour (icons, buttons) |
+| PrvHandleCheck, PrvPtrCheck, MemHandleLock, PrvPtrFree scan, PrvChunkNew free list | 4.1 | Memory Manager bookkeeping: handle and pointer checks, lock counts, heap walks |
 | SysLaunch RAM clear | 3.1 | The byte-by-byte RAM clear at boot (40% of 3.1's boot) |
 | ScrRectangleRoutine, PrvMisAlignedForwardInnerBitBlt (6 loops), PrvCompressedInnerBitBlt, ScrDeCompressScanLine | 3.1 | Mono blitter: fills, bitmap copies, compressed bitmaps |
 | FntLineWidth, Crc16CalcBlock | 3.1 | Text width, CRC-16 |
+| PrvChunkNew free list | 3.1 | The heap walk for a free chunk |
 
 "4.1" means the Palm OS 4.1 colour ROM and the IIIx 4.1 ROM (same code);
 "3.1" the IIIx 3.1 ROM.
@@ -64,14 +67,18 @@ launcher, Date Book, Memo typing, Address, Calc and Note Pad):
 
 | ROM | Boot: ROM code only | Native | Change | Apps: ROM code only | Native | Change |
 |---|---|---|---|---|---|---|
-| Palm OS 4.1 colour | 13.97 M | 6.49 M | −54% | 13.54 M | 6.44 M | −52% |
-| IIIx 4.1 | 11.79 M | 6.42 M | −46% | 10.31 M | 6.00 M | −42% |
-| IIIx 3.1 | 7.98 M | 2.16 M | −73% | 10.36 M | 5.67 M | −45% |
+| Palm OS 4.1 colour | 13.97 M | 5.73 M | −59% | 13.54 M | 5.81 M | −57% |
+| IIIx 4.1 | 11.74 M | 5.64 M | −52% | 10.31 M | 5.58 M | −46% |
+| IIIx 3.1 | 7.98 M | 2.12 M | −73% | 10.37 M | 5.59 M | −46% |
 
-What's left on top is spread thin: the AMX kernel's event and timer code,
-pen polling while the pen is down (a busy loop, no gain from speeding it up),
-Memory Manager bookkeeping (PrvHandleCheck, PrvChunkNew) and PrvGetLineInfo,
-which is straight-line code with no loop to take over.
+What's left on top is spread thin. The AMX kernel's event and timer code
+(HwrIRQ6Handler, cj_kpprivr, cj_kphang) looks big in the profile only because
+the workload is mostly idle: it runs at the fixed 100 Hz tick, about 0.3% of
+the CPU while Palm OS is busy, and it changes the interrupt mask, switches
+stacks and reads timer registers that change when read, which the checker
+can't replay. Pen polling while the pen is down is a busy loop (no gain from
+speeding it up), and PrvGetLineInfo is straight-line code with no loop to take
+over.
 
 ## Checking it against the ROM
 

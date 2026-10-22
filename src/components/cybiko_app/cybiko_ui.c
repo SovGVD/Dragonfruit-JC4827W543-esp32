@@ -63,6 +63,7 @@
 #define KB_ROW_H 24
 #define KB_COLS 10
 #define KB_KEY_W 48
+#define SAVE_BUSY_PCT 25    /* CPU loop load that holds off the RAM disk save */
 
 #define COL_BG      UI_RGB(0x20, 0x24, 0x2c)
 #define COL_KEY     UI_RGB(0x4a, 0x50, 0x5c)
@@ -471,7 +472,7 @@ static void ui_task(void *arg)
     uint32_t shown = 0xffffffff;
     int speed_shown = -2;
     bool was_down = false, boot_was = false, onoff_held = false;
-    int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0;
+    int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0, last_load = 0;
 
     build_lut();
     portrait = cybiko_app_portrait();
@@ -523,8 +524,13 @@ static void ui_task(void *arg)
             speed_shown = speed;
         }
 
-        /* Save the RAM disk every 30 s if it changed, while the user is idle. */
-        if (now - last_save > 30000000 && now - last_touch > 2000000) {
+        /* Save the RAM disk every 30 s if it changed, while the user is idle
+         * and the CPU loop has had little to do for 5 s: the save pauses the
+         * emulation, which a video or a game would show. After 5 minutes of
+         * load it saves anyway. */
+        if (cybiko_app_busy() >= SAVE_BUSY_PCT) last_load = now;
+        if (now - last_save > 30000000 && now - last_touch > 2000000 &&
+            (now - last_load > 5000000 || now - last_save > 300000000)) {
             cybiko_app_save(false);
             last_save = now;
         }

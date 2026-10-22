@@ -37,7 +37,9 @@ cybiko.cfg    optional settings, written by you (see below)
 ```
 
 The RAM disk is saved within 30 seconds of a change, once the screen has not
-been touched for 2 seconds, and when you hold BOOT to leave. Only the parts
+been touched for 2 seconds and the emulation has been light for 5 seconds
+(not while a video, a song or a busy game runs, up to 5 minutes), and when
+you hold BOOT to leave. The emulation keeps running while it is written. Only the parts
 that changed are written. To start from an empty RAM disk, delete
 `ramdisk.bin`.
 

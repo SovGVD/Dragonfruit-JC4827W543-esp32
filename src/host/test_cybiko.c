@@ -528,6 +528,72 @@ static void test_radio(void)
     CHECK(memcmp(saved, copy, sizeof saved) == 0);
 }
 
+/* The MP3 cartridge: its SD card answers in SPI mode on SCI1 with chip
+ * select on P2.2, and the decoder's MPEG input (SCI0) drives DEMAND. */
+static uint8_t card_img[4 * 512];
+static bool card_rd(void *user, uint32_t block, uint8_t *buf)
+{
+    (void)user;
+    if (block >= 4) return false;
+    memcpy(buf, card_img + block * 512, 512);
+    return true;
+}
+
+static uint8_t spi(uint8_t out) { return cy_cart_spi(&m, 1, out); }
+
+/* Send a command and return its R1, as a host polls for it. */
+static uint8_t sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc)
+{
+    uint8_t b[6] = { (uint8_t)(0x40 | cmd), (uint8_t)(arg >> 24), (uint8_t)(arg >> 16),
+                     (uint8_t)(arg >> 8), (uint8_t)arg, crc };
+    for (int i = 0; i < 6; i++) spi(b[i]);
+    for (int i = 0; i < 8; i++) {
+        uint8_t r = spi(0xff);
+        if (!(r & 0x80)) return r;
+    }
+    return 0xff;
+}
+
+static void test_cart(void)
+{
+    boot(prog_spin, sizeof prog_spin);
+    CHECK(cy_cart_adc(&m, 3) == 0x3ff);          /* empty slot */
+    m.cart.present = true;
+    CHECK(cy_cart_adc(&m, 3) == 0);              /* ID 0: the MP3 cartridge */
+    for (int i = 0; i < (int)sizeof card_img; i++) card_img[i] = (uint8_t)(i * 7);
+    m.host.card_read = card_rd;
+    m.cart.card_blocks = 4;
+    CHECK((cy_cart_p2_input(&m) & 0x01) == 0);   /* card detect: low with a card */
+
+    cy_cart_p2(&m, 0xfb, 0xfe);                  /* CS (P2.2) low */
+    CHECK(sd_cmd(0, 0, 0x95) == 0x01);           /* idle */
+    CHECK(sd_cmd(55, 0, 0xff) == 0x01);
+    CHECK(sd_cmd(41, 0, 0xff) == 0x00);          /* ready */
+    CHECK(sd_cmd(17, 512, 0xff) == 0x00);        /* read block 1 (byte address) */
+    int token = 0;
+    for (int i = 0; i < 16 && token != 0xfe; i++) token = spi(0xff);
+    CHECK(token == 0xfe);
+    bool same = true;
+    for (int i = 0; i < 512; i++) same &= spi(0xff) == card_img[512 + i];
+    CHECK(same);
+    spi(0xff); spi(0xff);                        /* CRC16 */
+    CHECK(sd_cmd(5, 0, 0xff) == 0x04);           /* illegal command */
+    cy_cart_p2(&m, 0xff, 0xfe);
+
+    /* DEMAND (P6.6, IRQ2 pin) is high from the first I2C access to the
+     * decoder until its buffer fills, and back once the host takes data. */
+    m.cart.mas_on = true;
+    CHECK((h8s_read8(&m.cpu, 0xffff55) & 0x40) != 0);
+    int sent = 0;
+    while ((h8s_read8(&m.cpu, 0xffff55) & 0x40) && sent < 2 * CY_MP3_FIFO) cy_cart_spi(&m, 0, (uint8_t)sent++);
+    CHECK(sent > CY_MP3_FIFO - 64 && sent <= CY_MP3_FIFO);
+    uint8_t got[CY_MP3_FIFO];
+    CHECK(cybiko_mp3_take(&m, got, 100) == 100 && got[0] == 0 && got[99] == 99);
+    CHECK((h8s_read8(&m.cpu, 0xffff55) & 0x40) == 0);   /* not yet half empty */
+    cybiko_mp3_take(&m, got, CY_MP3_FIFO);
+    CHECK((h8s_read8(&m.cpu, 0xffff55) & 0x40) != 0);
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -546,6 +612,7 @@ int main(void)
     test_disk();
     test_hle();
     test_radio();
+    test_cart();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

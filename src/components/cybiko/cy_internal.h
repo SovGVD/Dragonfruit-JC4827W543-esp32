@@ -47,6 +47,18 @@ void cy_rf_advance(cybiko_t *m);
 uint32_t cy_rf_next(const cybiko_t *m);
 void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
 
+/* cy_cart.c: the MP3 player cartridge */
+void cy_cart_reset(cybiko_t *m);
+uint16_t cy_cart_adc(cybiko_t *m, int ch);
+uint8_t cy_cart_p2_input(cybiko_t *m);
+void cy_cart_p2(cybiko_t *m, uint8_t level, uint8_t ddr);
+void cy_cart_p3(cybiko_t *m, uint8_t level, uint8_t ddr);
+uint8_t cy_cart_spi(cybiko_t *m, int port, uint8_t out);
+uint8_t cy_cart_irq_pins(const cybiko_t *m);
+uint8_t cy_cart_p6_input(const cybiko_t *m);
+void cy_irq_pins_changed(cybiko_t *m, uint8_t old_in);
+uint8_t cy_irq_pins(const cybiko_t *m);
+
 /* cy_periph.c: TPU, TMR, WDT, SCI and A/D converter */
 void cy_periph_reset(cybiko_t *m);
 void cy_periph_advance(cybiko_t *m, uint32_t states);

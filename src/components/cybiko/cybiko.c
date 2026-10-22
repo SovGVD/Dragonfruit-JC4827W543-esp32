@@ -34,7 +34,7 @@ static uint8_t irq_pins(const cybiko_t *m)
     /* The On/Off button is on PA7, which doubles as IRQ7 on the H8S/2323;
      * pressing it is what can wake the CPU from software standby. */
     bool onoff = (m->keys[CYK_ONOFF >> 4] >> (CYK_ONOFF & 15)) & 1;
-    return onoff ? 0x80 : 0x00;
+    return (onoff ? 0x80 : 0x00) | cy_cart_irq_pins(m);
 }
 
 static void irq_check_levels(cybiko_t *m)
@@ -61,6 +61,9 @@ static void irq_pins_changed(cybiko_t *m, uint8_t old_in)
     }
     m->cpu.irq_check = true;
 }
+
+uint8_t cy_irq_pins(const cybiko_t *m) { return irq_pins(m); }
+void cy_irq_pins_changed(cybiko_t *m, uint8_t old_in) { if (irq_pins(m) != old_in) irq_pins_changed(m, old_in); }
 
 static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
 {
@@ -136,6 +139,10 @@ static uint8_t port_input(cybiko_t *m, int p)
         bool onoff = (m->keys[CYK_ONOFF >> 4] >> (CYK_ONOFF & 15)) & 1;
         return onoff ? 0x40 : 0xc0;
     }
+    case 1:                   /* port 2: the cartridge */
+        return cy_cart_p2_input(m);
+    case 5:                   /* port 6: bit 6 the MP3 decoder's DEMAND */
+        return cy_cart_p6_input(m);
     case 14:                  /* port F: bit 6 RTC SDA */
         return cy_rtc_sda(m) ? 0x40 : 0x00;
     default:
@@ -158,6 +165,8 @@ static void port_output(cybiko_t *m, int p)
         if ((data ^ m->spk_pin) & 0x20) m->spk_edges++;
         m->spk_pin = data;
     }
+    if (p == 1) cy_cart_p2(m, data, m->ddr[1]);
+    if (p == 2) cy_cart_p3(m, data, m->ddr[2]);
     if (p == 14) {
         /* PF1 drives the RTC clock; SDA follows MAME's wiring: the line is
          * pulled low while PF6 outputs 1 or floats. */
@@ -404,6 +413,7 @@ void cybiko_reset(cybiko_t *m)
     cy_rtc_reset(m);
     cy_flash_reset(m);
     cy_rf_reset(m);
+    cy_cart_reset(m);
 
     m->cpu.fine_base = IRAM_BASE;
     m->cpu.fine_size = sizeof m->iram;

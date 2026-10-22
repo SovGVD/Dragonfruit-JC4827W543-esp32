@@ -101,7 +101,11 @@ static void start(cybiko_t *m, int id)
         d->word = r >> 7 & 1;
         int step = d->word ? 2 : 1;
         uint32_t mar = reg24(m, sub), ioar = 0xff0000u | reg16(m, sub + 4);
-        int incm = r >> 6 & 1 ? -step : step;
+        /* RPE with DTIE is idle mode: MAR stays where it is, otherwise it
+         * runs like a normal transfer and ends with the DEND interrupt (an
+         * SPI driver clocks out a fixed 0xff this way while it receives). */
+        d->idle = (r >> 5 & 1) && d->tend;
+        int incm = d->idle ? 0 : r >> 6 & 1 ? -step : step;
         d->mar_dest = r >> 4 & 1;                 /* DTDIR: IOAR to MAR */
         if (d->mar_dest) {
             d->src = ioar; d->dst = mar; d->incd = incm;
@@ -193,6 +197,8 @@ void cy_dma_reset(cybiko_t *m)
 {
     memset(m->dma, 0, sizeof m->dma);
     m->dma_waiting = false;
+    m->dma_running = false;
+    m->dma_again = -1;
 }
 
 static void update_vectors(cybiko_t *m)
@@ -215,6 +221,23 @@ void cy_dma_control(cybiko_t *m)
             }
         } else if (!on && m->dma[id].active) {
             m->dma[id].active = false;
+        } else if (on && !m->dma[id].fae) {
+            /* DTIE (and DTA) may be set after DTE; DTIE with RPE turns a
+             * running repeat transfer into idle mode. */
+            cy_dma_sub_t *d = &m->dma[id];
+            uint16_t b = dmabcr(m);
+            uint8_t r = id & 1 ? (uint8_t)dmacr(m, id >> 1) : (uint8_t)(dmacr(m, id >> 1) >> 8);
+            d->tend = b >> id & 1;
+            d->eat = b >> (8 + id) & 1;
+            bool idle = (r >> 5 & 1) && d->tend;
+            if (idle && !d->idle) {
+                d->idle = true;
+                d->repeat = false;
+                if (d->mar_dest) d->incd = 0; else d->incs = 0;
+                /* The count is the whole ETCR again, not the repeat length. */
+                uint16_t etcr = reg16(m, ch_base(id >> 1) + 8u * (id & 1) + 6);
+                d->count = etcr ? etcr : 0x10000;
+            }
         }
     }
     update_vectors(m);
@@ -222,13 +245,32 @@ void cy_dma_control(cybiko_t *m)
 
 bool cy_dma_trigger(cybiko_t *m, int vec)
 {
-    bool eaten = false;
-    for (int id = 0; id < 4; id++) {
-        cy_dma_sub_t *d = &m->dma[id];
-        if (!d->active || d->trigger != vec) continue;
-        if (step(m, id)) done(m, id);
-        eaten |= d->eat;
+    /* A transfer's own write can raise the interrupt again (an SCI starts
+     * sending the byte just written and asks for the next one); run that
+     * request after this one has updated its addresses and count. */
+    if (m->dma_running) {
+        bool eat = false;
+        for (int id = 0; id < 4; id++) {
+            cy_dma_sub_t *d = &m->dma[id];
+            if (d->active && d->trigger == vec) eat |= d->eat;
+        }
+        if (eat || m->dma_again < 0) m->dma_again = (int8_t)vec;
+        return eat;
     }
+    bool eaten = false;
+    m->dma_running = true;
+    for (;;) {
+        m->dma_again = -1;
+        for (int id = 0; id < 4; id++) {
+            cy_dma_sub_t *d = &m->dma[id];
+            if (!d->active || d->trigger != vec) continue;
+            if (step(m, id)) done(m, id);
+            eaten |= d->eat;
+        }
+        if (m->dma_again < 0) break;
+        vec = m->dma_again;
+    }
+    m->dma_running = false;
     update_vectors(m);
     return eaten;
 }

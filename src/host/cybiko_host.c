@@ -9,6 +9,9 @@
  *                      (a multiple of 64), as the firmware does
  *   --install FILE     copy FILE onto the RAM disk before starting (repeatable)
  *   --ls               list the files on the RAM disk at the end
+ *   --cart             plug in the MP3 player cartridge (--cart-log: and log it)
+ *   --card IMG         ... with an SD card (a disk image, 512-byte blocks)
+ *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
  *                      (checked every 100 ms of emulated time)
@@ -27,6 +30,7 @@
 #include <ctype.h>
 #include <libgen.h>
 #include "cybiko.h"
+#include "cy_mp3.h"
 
 static const struct { const char *name; int key; } key_names[] = {
     { "a", CYK_A }, { "b", CYK_B }, { "c", CYK_C }, { "d", CYK_D }, { "e", CYK_E },
@@ -94,6 +98,55 @@ static void io_trace(cybiko_t *m, uint32_t a, uint8_t v, bool w)
         traces[ntraces++] = (typeof(traces[0])){ pc, a, w, 1, v, v };
 }
 
+/* --card IMG: the MP3 cartridge's SD card */
+static FILE *card_file;
+static bool card_read(void *user, uint32_t block, uint8_t *buf)
+{
+    (void)user;
+    return fseek(card_file, (long)block * 512, SEEK_SET) == 0 && fread(buf, 1, 512, card_file) == 512;
+}
+static bool card_write(void *user, uint32_t block, const uint8_t *buf)
+{
+    (void)user;
+    return fseek(card_file, (long)block * 512, SEEK_SET) == 0 && fwrite(buf, 1, 512, card_file) == 512;
+}
+
+/* --cart-log: what the cartridge model sees */
+static void on_cart_log(cybiko_t *m, const char *msg)
+{
+    fprintf(stderr, "[%9.4f] cart: %s\n", (double)m->cpu.cycles / CY_CLOCK_HZ, msg);
+}
+
+/* The cartridge's decoder, run in step with emulated time. */
+#define WAV_RATE 32000
+static uint64_t wav_samples;
+
+static void put_le(FILE *f, uint32_t v, int n) { for (int i = 0; i < n; i++) fputc((int)(v >> (8 * i)) & 0xff, f); }
+
+static void wav_header(FILE *f, uint32_t samples)
+{
+    fseek(f, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, f); put_le(f, 36 + samples * 2, 4);
+    fwrite("WAVEfmt ", 1, 8, f); put_le(f, 16, 4); put_le(f, 1, 2); put_le(f, 1, 2);
+    put_le(f, WAV_RATE, 4); put_le(f, WAV_RATE * 2, 4); put_le(f, 2, 2); put_le(f, 16, 2);
+    fwrite("data", 1, 4, f); put_le(f, samples * 2, 4);
+}
+
+static void mp3_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
+{
+    uint64_t due = m->cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
+    static uint8_t in[4096];
+    static int16_t pcm[1024];
+    while (wav_samples < due) {
+        size_t n = cybiko_mp3_take(m, in, cy_mp3_space(d));
+        cy_mp3_feed(d, in, n);
+        size_t k = due - wav_samples < 1024 ? (size_t)(due - wav_samples) : 1024;
+        cy_mp3_render(d, pcm, k, WAV_RATE);
+        if (wav) fwrite(pcm, 2, k, wav);
+        wav_samples += k;
+    }
+}
+
 /* --pair: a second machine on the same radio channel */
 static cybiko_t *machines[2];
 
@@ -146,7 +199,8 @@ int main(int argc, char **argv)
     uint32_t unit_id = 0;
     double seconds = 20;
     unsigned disk_kb = 0;
-    bool ls = false;
+    bool ls = false, cart = false, cart_log = false;
+    const char *card_path = NULL, *wav_path = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--rom") && v) { rom_path = v; i++; }
@@ -158,6 +212,10 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--disk-size") && v) { disk_kb = (unsigned)atoi(v); i++; }
         else if (!strcmp(a, "--install") && v && ninstalls < MAX_INSTALL) { installs[ninstalls++] = v; i++; }
         else if (!strcmp(a, "--ls")) ls = true;
+        else if (!strcmp(a, "--cart")) cart = true;
+        else if (!strcmp(a, "--card") && v) { card_path = v; cart = true; i++; }
+        else if (!strcmp(a, "--cart-log")) cart = cart_log = true;
+        else if (!strcmp(a, "--wav") && v) { wav_path = v; i++; }
         else if (!strcmp(a, "--dump-ram") && v) { dump = v; i++; }
         else if (!strcmp(a, "--hex-port") && v) { hex_port = atoi(v); i++; }
         else if (!strcmp(a, "--pair") && v) { pair_path = v; i++; }
@@ -189,7 +247,7 @@ int main(int argc, char **argv)
                             "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n"
                             "       [--disk-size KB] [--install FILE]... [--ls]\n"
                             "       [--unit-id HEX] [--pair RAMDISK2] [--press-both] [--hex-port N]\n"
-                            "       [--trace-io LO-HI] [--dump-ram FILE]\n", argv[0]);
+                            "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n", argv[0]);
             return 2;
         }
     }
@@ -228,11 +286,32 @@ int main(int argc, char **argv)
     }
 
     static cybiko_t m, m2;
-    cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf };
+    cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf,
+                       .card_read = card_read, .card_write = card_write };
     cybiko_init(&m, &host, rom, flash, ram);
     if (disk_kb) cybiko_set_disk(&m, disk, disk_size);
     if (unit_id) cybiko_set_unit_id(&m, unit_id);
     if (trace_hi) m.io_trace = io_trace;
+    m.cart.present = cart;
+    if (card_path) {
+        card_file = fopen(card_path, "r+b");
+        if (!card_file) { perror(card_path); return 1; }
+        fseek(card_file, 0, SEEK_END);
+        m.cart.card_blocks = (uint32_t)(ftell(card_file) / 512);
+    }
+    if (cart_log) m.cart_log = on_cart_log;
+    cy_mp3_t *mp3 = NULL;
+    FILE *wav = NULL;
+    if (cart) {
+        mp3 = malloc(cy_mp3_size());
+        cy_mp3_init(mp3);
+        wav_samples = m.cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
+    }
+    if (wav_path) {
+        wav = fopen(wav_path, "wb");
+        if (!wav) { perror(wav_path); return 1; }
+        wav_header(wav, 0);
+    }
     the_machine = &m;
     machines[0] = &m;
 
@@ -278,6 +357,7 @@ int main(int argc, char **argv)
             uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
             if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
         }
+        if (mp3 && step > (int32_t)(CY_CLOCK_HZ / 200)) step = CY_CLOCK_HZ / 200;   /* keep the decoder fed */
         if (pair_path) {
             /* 1 ms turns keep radio replies well inside CyOS's timeouts */
             for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
@@ -288,6 +368,7 @@ int main(int argc, char **argv)
         } else {
             cybiko_run(&m, step);
         }
+        if (mp3) mp3_pump(&m, mp3, wav);
         if (frames && m.cpu.cycles / chunk != (m.cpu.cycles - step) / chunk) {
             uint32_t v = cybiko_lcd_render(&m, lum);
             if (v != last_version) {
@@ -299,6 +380,11 @@ int main(int argc, char **argv)
         }
     }
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    if (wav) {
+        long bytes = ftell(wav) - 44;
+        wav_header(wav, (uint32_t)(bytes / 2));
+        fclose(wav);
+    }
 
     if (shot) {
         cybiko_lcd_render(&m, lum);

@@ -12,9 +12,11 @@
  *                flash name searched, so it then replaces the original image
  *                (always with the dump's own Cybiko ID; see cybiko_link.h)
  *   state.bin    the Cybiko clock, so the time survives restarts
+ *   mp3card.img  the MP3 cartridge's SD card, a FAT disk image (see
+ *                cybiko_cart.h)
  *   cybiko.cfg   optional settings: sound.volume = 0-100 (default 60),
- *                disk.size = 1-6 (MB, default 4) and the radio keys
- *                described in cybiko_link.h */
+ *                disk.size = 1-6 (MB, default 4), the radio keys described
+ *                in cybiko_link.h and the cartridge key in cybiko_cart.h */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +26,7 @@
 #include "cybiko_app.h"
 #include "cybiko_ui.h"
 #include "cybiko_link.h"
+#include "cybiko_cart.h"
 #include "cybiko.h"
 #include "display.h"
 #include "m5_sd.h"
@@ -120,6 +123,7 @@ static void cpu_task(void *arg)
         key_event_t ev;
         while (xQueueReceive(key_queue, &ev, 0) == pdTRUE) cybiko_key(machine, ev.key, ev.down);
         cybiko_link_poll(machine);
+        cybiko_cart_poll(machine);
 
         int64_t run_start = esp_timer_get_time();
         cybiko_run(machine, CHUNK_STATES);
@@ -462,6 +466,7 @@ void cybiko_app_start(void)
     cybiko_set_disk(machine, disk, disk_size);
     memcpy(ram, disk, CY_RAMDISK_SIZE);         /* in case the disk cannot be moved */
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
+    cybiko_cart_init(machine, have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));
     cybiko_ui_start();

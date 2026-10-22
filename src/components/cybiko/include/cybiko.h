@@ -84,6 +84,9 @@ typedef struct {
     /* A radio packet CyOS sent (CY_RF_SHORT or CY_RF_LONG bytes) on radio
      * channel `channel`; deliver it to the other machines' cybiko_rf_receive. */
     void (*rf_send)(void *user, const uint8_t *pkt, size_t len, uint8_t channel);
+    /* The MP3 cartridge's SD card: 512-byte blocks (see cy_cart_t). */
+    bool (*card_read)(void *user, uint32_t block, uint8_t *buf);
+    bool (*card_write)(void *user, uint32_t block, const uint8_t *buf);
 } cy_host_t;
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
@@ -133,7 +136,7 @@ typedef struct {
 /* One DMA subchannel (or a full-address channel, kept in the B slot) while a
  * transfer is set up; see cy_dma.c. */
 typedef struct {
-    bool active, fae, word, block, block_dest, repeat, mar_dest, tend, eat;
+    bool active, fae, word, block, block_dest, repeat, idle, mar_dest, tend, eat;
     int8_t trigger;            /* interrupt vector that requests a unit, or < 0 */
     int8_t incs, incd;
     uint32_t src, dst, count, bcount, blen;
@@ -159,6 +162,34 @@ typedef struct {
     bool id_applied;
     uint32_t sent, heard;                      /* packets, for diagnostics */
 } cy_rf_t;
+
+/* The MP3 player cartridge (cy_cart.c). */
+#define CY_MP3_FIFO 2048
+typedef struct {
+    bool present;
+    uint8_t p2_out, p2_ddr, p3_out, p3_ddr;
+    /* the decoder's I2C slave */
+    bool i2c_scl, i2c_sda, i2c_active, i2c_read, i2c_ack, i2c_drive, i2c_out;
+    uint8_t i2c_bits, i2c_sr, i2c_tx;
+    uint16_t i2c_n;
+    uint8_t i2c_msg[8];                /* the first bytes written after the address */
+    uint16_t codec[0x20];              /* the decoder's codec registers (6c writes) */
+    /* the SD card (SPI mode); the host sets card_blocks, 0 = no card */
+    uint32_t card_blocks;
+    uint8_t sd_cmd[6], sd_cmd_len;
+    bool sd_idle, sd_app, sd_multi;
+    uint8_t sd_wmode;                  /* 1 single block write, 2 multiple */
+    uint16_t sd_wpos;
+    uint32_t sd_block;
+    uint8_t sd_wbuf[512];
+    uint8_t sd_out[520];
+    int sd_out_len, sd_out_pos;
+    /* the decoder's MPEG input; the host takes bytes with cybiko_mp3_take */
+    bool mas_on;                       /* DEMAND works once the decoder is set up */
+    bool mas_demand;
+    uint8_t mp3[CY_MP3_FIFO];
+    uint16_t mp3_head, mp3_count;
+} cy_cart_t;
 
 typedef struct cybiko {
     h8s_cpu_t cpu;
@@ -191,6 +222,8 @@ typedef struct cybiko {
     uint32_t wdt_acc;
     cy_sci_t sci[3];
     cy_rf_t rf;
+    cy_cart_t cart;
+    uint8_t scmr[3];
     uint8_t adcsr, adcr;
     uint16_t addr[4];
     uint32_t adc_left;
@@ -199,6 +232,8 @@ typedef struct cybiko {
     cy_dma_sub_t dma[4];
     bool dma_waiting;          /* a transfer waits for a peripheral interrupt */
     bool dxc;                  /* the DMAC or DTC (not the CPU) is on the bus */
+    bool dma_running;          /* inside cy_dma_trigger */
+    int8_t dma_again;          /* interrupt a transfer raised meanwhile, or -1 */
 
     uint64_t synced;
     bool in_sync;           /* CPU state count the peripherals have reached */
@@ -218,6 +253,7 @@ typedef struct cybiko {
     uint32_t hle_sum_pc, hle_mul_pc;  /* routines run natively (cy_hle.c) */
     /* Debug: called for every on-chip register access when set (PC runner). */
     void (*io_trace)(struct cybiko *m, uint32_t a, uint8_t v, bool write);
+    void (*cart_log)(struct cybiko *m, const char *msg);
 
     /* diagnostics: things a ROM used that the model does not cover */
     uint32_t unmapped_reads, unmapped_writes, illegal_ops;
@@ -244,6 +280,12 @@ bool cybiko_serial_rx(cybiko_t *m, int port, uint8_t byte);
 /* Radio (cy_rf.c). A packet heard from another machine, as its rf_send hook
  * gave it; returns false if the queue is full or the length is wrong. */
 bool cybiko_rf_receive(cybiko_t *m, const uint8_t *pkt, size_t len, uint8_t channel);
+/* The MP3 cartridge: take up to `max` bytes of the MPEG stream CyOS sent to
+ * the decoder (call it as the audio output needs data). */
+size_t cybiko_mp3_take(cybiko_t *m, uint8_t *buf, size_t max);
+/* The player's volume setting (codec register 0010's high byte): 0 is mute,
+ * CyOS's default is 6a, louder is higher (taken as 1 dB a step, a guess). */
+uint8_t cybiko_mp3_volume(const cybiko_t *m);
 /* Give this machine its own Cybiko ID (all copies of a flash dump share
  * one, and CyOS ignores packets from its own ID) by rewriting the ID record
  * in the flash image. Call before the machine boots; 0 keeps the dump's. */

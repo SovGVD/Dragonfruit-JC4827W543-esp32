@@ -499,6 +499,15 @@ static void sci_advance(cybiko_t *m, uint32_t states)
             s->tx_busy = false;
             if (n == 1) cy_disk_console(m, s->tsr);
             if (n == 2) cy_rf_h8_byte(m, s->tsr);
+            if (n < 2 && (s->smr & 0x80)) {
+                /* clocked sync: a byte comes back for each one sent */
+                uint8_t in = cy_cart_spi(m, n, s->tsr);
+                if (s->scr & SCR_RE) {
+                    if (s->ssr & SSR_RDRF) s->ssr |= SSR_ORER;
+                    else { s->rdr = in; s->ssr |= SSR_RDRF; }
+                    if (s->scr & SCR_RIE) cy_irq(m, sci_vec(n, sci_error(s) ? 0 : 1));
+                }
+            }
             if (m->host.serial_tx) m->host.serial_tx(m->host.user, n, s->tsr);
             if ((s->scr & SCR_TE) && !(s->ssr & SSR_TDRE)) {
                 sci_tx_start(m, n);
@@ -572,7 +581,7 @@ static bool sci_read(cybiko_t *m, uint32_t a, uint8_t *v)
         *v = s->rdr;
         if (m->dxc) s->ssr &= (uint8_t)~SSR_RDRF;   /* a DMA/DTC read clears RDRF */
         break;
-    default: *v = 0x00; break;     /* SCMR */
+    default: *v = (uint8_t)(m->scmr[n] | 0xf2); break;     /* SCMR */
     }
     return true;
 }
@@ -613,6 +622,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
         if (!s->tx_busy && !(s->ssr & SSR_TDRE)) sci_tx_start(m, n);
         sci_rx_start(m, n);
         break;
+    case 6: m->scmr[n] = v & 0x0d; break;
     default: break;
     }
     return true;
@@ -636,7 +646,7 @@ static void adc_advance(cybiko_t *m, uint32_t states)
         states -= m->adc_left;
         m->adc_left = 0;
         int ch = m->adc_ch;
-        uint16_t val = m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
+        uint16_t val = ch == 3 ? cy_cart_adc(m, ch) : m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
         m->addr[ch & 3] = val & 0x3ff;
         bool scan = m->adcsr & 0x10;
         int end = m->adcsr & 7;

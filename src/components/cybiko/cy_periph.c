@@ -11,6 +11,30 @@
 
 #define NO_EVENT 0xffffffffu
 
+/* A CPU read of a timer counter. When the same instruction read the same
+ * value only POLL_GAP states ago, the program is spinning until the counter
+ * moves (CyOS's delay routine on TPU5 and its clock on TMR0 do this, for most
+ * of the time a video plays), so let the time until the next count pass at
+ * once, no further than the slice end (the next peripheral event). The loop
+ * then sees the new value as soon as it would have, minus the spinning. */
+#define POLL_GAP 256
+
+static void counter_read(cybiko_t *m, cy_poll_t *p, uint16_t value, uint32_t until_count)
+{
+    uint64_t now = h8s_time(&m->cpu);
+    if (m->dxc) return;
+    if (p->pc == m->cpu.ppc && p->value == value && now - p->at <= POLL_GAP) {
+        int32_t skip = until_count < (uint32_t)m->cpu.icount ? (int32_t)until_count : m->cpu.icount;
+        if (skip > 0) {
+            m->cpu.icount -= skip;
+            now += (uint32_t)skip;
+        }
+    }
+    p->pc = m->cpu.ppc;
+    p->value = value;
+    p->at = now;
+}
+
 /* ------------------------------------------------------------------ */
 /* TPU                                                                 */
 /* ------------------------------------------------------------------ */
@@ -142,7 +166,12 @@ static bool tpu_read(cybiko_t *m, uint32_t a, uint8_t *v)
         case 4: *v = (uint8_t)((t->tier & ~tpu_cfg[ch].tier_mask) | 0x40); break;
         case 5: *v = (uint8_t)(0xc0 | t->tsr); break;
         case 6: *v = (uint8_t)(t->tcnt >> 8); break;
-        case 7: *v = (uint8_t)t->tcnt; break;
+        case 7: {
+            *v = (uint8_t)t->tcnt;
+            int s = tpu_shift(m, ch);
+            if (s >= 0) counter_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
+            break;
+        }
         default: {
             int i = (int)(off - 8) >> 1;
             *v = i < tpu_cfg[ch].ntgr ? (uint8_t)(off & 1 ? t->tgr[i] : t->tgr[i] >> 8) : 0xff;
@@ -299,8 +328,9 @@ static uint32_t tmr_next(const cybiko_t *m)
         int s = tmr_shift(m, ch);
         if (s < 0) continue;
         const cy_tmr_ch_t *t = &m->tmr[ch];
-        /* A chained partner also needs exact compare/overflow timing. */
-        if (!(t->tcr & 0xe0) && !tmr_chained(m, ch ^ 1)) continue;
+        /* A chained partner also needs exact compare/overflow timing, and
+         * so does a compare match that starts the A/D converter (ADTE). */
+        if (!(t->tcr & 0xe0) && !(ch == 0 && (t->tcsr & 0x10)) && !tmr_chained(m, ch ^ 1)) continue;
         uint32_t limit;
         uint64_t st = ((uint64_t)tmr_step(t, t->tcnt, tmr_cycle(t), &limit) << s) - t->acc;
         if (st < best) best = (uint32_t)st;
@@ -318,7 +348,12 @@ static bool tmr_read(cybiko_t *m, uint32_t a, uint8_t *v)
     case 0xffffb2: *v = t->tcsr; break;
     case 0xffffb4: *v = t->tcor[0]; break;
     case 0xffffb6: *v = t->tcor[1]; break;
-    case 0xffffb8: *v = t->tcnt; break;
+    case 0xffffb8: {
+        *v = t->tcnt;
+        int s = tmr_shift(m, ch);
+        if (s >= 0) counter_read(m, &t->poll, t->tcnt, (1u << s) - t->acc);
+        break;
+    }
     }
     return true;
 }
@@ -744,11 +779,51 @@ void cy_periph_reset(cybiko_t *m)
     m->adc_ch = 0;
 }
 
+/* The timers are brought up to date lazily: when one of their registers is
+ * read or written, or when their next event is due. Nothing else sees their
+ * counters, and catching all of them up on every I/O access took a large
+ * share of the emulator's time. Their next event only moves when a timer
+ * register is written, so it is worked out again only then and when it
+ * passes. */
+static void timers_reschedule(cybiko_t *m)
+{
+    uint32_t best = tpu_next(m), t;
+    if ((t = tmr_next(m)) < best) best = t;
+    if ((t = wdt_next(m)) < best) best = t;
+    m->timers_due = m->timers_synced + best;
+}
+
+void cy_timers_sync(cybiko_t *m, uint64_t now)
+{
+    if (now <= m->timers_synced) return;
+    uint64_t d = now - m->timers_synced;
+    m->timers_synced = now;
+    while (d) {
+        uint32_t step = d > 0x40000000u ? 0x40000000u : (uint32_t)d;
+        tpu_advance(m, step);
+        tmr_advance(m, step);
+        wdt_advance(m, step);
+        d -= step;
+    }
+    timers_reschedule(m);
+}
+
+void cy_timers_restart(cybiko_t *m)
+{
+    m->timers_synced = m->synced;
+    timers_reschedule(m);
+}
+
+static bool timer_reg(uint32_t a)
+{
+    return (a >= 0xfffe80 && a < 0xfffeb0) ||       /* TPU3-5 */
+           (a >= 0xffffb0 && a < 0xffffc2) ||       /* TMR, WDT, TSTR, TSYR */
+           a >= 0xffffd0;                           /* TPU0-2 */
+}
+
 void cy_periph_advance(cybiko_t *m, uint32_t states)
 {
-    tpu_advance(m, states);
-    tmr_advance(m, states);
-    wdt_advance(m, states);
+    if (m->synced >= m->timers_due) cy_timers_sync(m, m->synced);
     sci_advance(m, states);
     adc_advance(m, states);
     cy_rf_advance(m);
@@ -756,9 +831,8 @@ void cy_periph_advance(cybiko_t *m, uint32_t states)
 
 uint32_t cy_periph_next_event(const cybiko_t *m)
 {
-    uint32_t best = tpu_next(m), t;
-    if ((t = tmr_next(m)) < best) best = t;
-    if ((t = wdt_next(m)) < best) best = t;
+    uint64_t due = m->timers_due > m->synced ? m->timers_due - m->synced : 1;
+    uint32_t best = due < NO_EVENT ? (uint32_t)due : NO_EVENT, t;
     if ((t = sci_next(m)) < best) best = t;
     if ((t = cy_rf_next(m)) < best) best = t;
     if (m->adc_left && m->adc_left < best) best = m->adc_left;
@@ -767,6 +841,7 @@ uint32_t cy_periph_next_event(const cybiko_t *m)
 
 bool cy_periph_read(cybiko_t *m, uint32_t a, uint8_t *v)
 {
+    if (timer_reg(a)) cy_timers_sync(m, m->synced);
     return tpu_read(m, a, v) || tmr_read(m, a, v) || wdt_read(m, a, v) ||
            sci_read(m, a, v) || adc_read(m, a, v);
 }
@@ -775,7 +850,13 @@ bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v)
 {
     bool hit;
     if (a >= 0xffffbc && a <= 0xffffbf) return true;     /* WDT: word writes only */
-    hit = tpu_write(m, a, v) || tmr_write(m, a, v) || sci_write(m, a, v) || adc_write(m, a, v);
+    if (timer_reg(a)) {
+        cy_timers_sync(m, m->synced);
+        hit = tpu_write(m, a, v) || tmr_write(m, a, v);
+        if (hit) timers_reschedule(m);
+    } else {
+        hit = sci_write(m, a, v) || adc_write(m, a, v);
+    }
     /* The next timer event may now be sooner than the slice end. */
     if (hit) h8s_end_slice(&m->cpu);
     return hit;
@@ -783,6 +864,8 @@ bool cy_periph_write(cybiko_t *m, uint32_t a, uint8_t v)
 
 bool cy_periph_write16(cybiko_t *m, uint32_t a, uint16_t v)
 {
-    if (wdt_write16(m, a, v)) { h8s_end_slice(&m->cpu); return true; }
+    if (a < 0xffffbc || a > 0xffffbf) return false;
+    cy_timers_sync(m, m->synced);
+    if (wdt_write16(m, a, v)) { timers_reschedule(m); h8s_end_slice(&m->cpu); return true; }
     return false;
 }

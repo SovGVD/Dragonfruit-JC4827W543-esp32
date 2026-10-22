@@ -95,15 +95,24 @@ typedef struct {
 
 /* ---- peripheral state (internal, visible for tests and save states) ---- */
 
+/* The last CPU read of a timer counter, to spot loops waiting on it. */
+typedef struct {
+    uint32_t pc;
+    uint16_t value;
+    uint64_t at;
+} cy_poll_t;
+
 typedef struct {
     uint8_t tcr, tmdr, tior[2], tier, tsr;
     uint16_t tcnt, tgr[4];
     uint32_t acc;              /* states not yet turned into counts */
+    cy_poll_t poll;
 } cy_tpu_ch_t;
 
 typedef struct {
     uint8_t tcr, tcsr, tcor[2], tcnt;
     uint32_t acc;
+    cy_poll_t poll;
 } cy_tmr_ch_t;
 
 typedef struct {
@@ -241,6 +250,9 @@ typedef struct cybiko {
 
     uint64_t synced;
     bool in_sync;           /* CPU state count the peripherals have reached */
+    /* The timers (TPU, TMR, WDT) only catch up when one of their registers
+     * is accessed or their next event (timers_due) comes. */
+    uint64_t timers_synced, timers_due;
 
     /* speaker (P1 bit 5, TIOCB1) */
     uint32_t spk_edges;        /* P15 toggles written by software */

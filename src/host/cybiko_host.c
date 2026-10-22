@@ -15,6 +15,8 @@
  *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
+ *   --pc-profile MS    from MS milliseconds on, sample the PC and list where
+ *                      the CPU spends its time at the end
  *                      (checked every 100 ms of emulated time)
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
@@ -56,6 +58,30 @@ static const struct { const char *name; int key; } key_names[] = {
     { "shift", CYK_SHIFT }, { "fn", CYK_FN }, { "help", CYK_HELP }, { "dot", CYK_DOT },
     { "onoff", CYK_ONOFF },
 };
+
+/* --pc-profile: where the CPU spends its time, in 16-byte blocks of RAM
+ * (400000-5fffff), the boot ROM or anywhere else. */
+static uint32_t *pc_ram, pc_rom[0x40000 / 16], pc_other, pc_total;
+static void pc_sample(uint32_t pc)
+{
+    if (!pc_ram) pc_ram = calloc(0x200000 / 16, sizeof *pc_ram);
+    pc_total++;
+    if (pc >= 0x400000 && pc < 0x600000) pc_ram[(pc - 0x400000) / 16]++;
+    else if (pc < 0x40000) pc_rom[pc / 16]++;
+    else pc_other++;
+}
+static void pc_report(void)
+{
+    fprintf(stderr, "PC profile, %u samples (%u outside RAM and ROM):\n", pc_total, pc_other);
+    for (int k = 0; k < 40; k++) {
+        uint32_t best = 0, at = 0;
+        for (uint32_t i = 0; i < 0x200000 / 16; i++) if (pc_ram && pc_ram[i] > best) { best = pc_ram[i]; at = 0x400000 + i * 16; }
+        for (uint32_t i = 0; i < 0x40000 / 16; i++) if (pc_rom[i] > best) { best = pc_rom[i]; at = i * 16; }
+        if (!best) break;
+        fprintf(stderr, "  %06x  %5.1f%%\n", (unsigned)at, 100.0 * best / pc_total);
+        if (at >= 0x400000) pc_ram[(at - 0x400000) / 16] = 0; else pc_rom[at / 16] = 0;
+    }
+}
 
 #define MAX_INSTALL 32
 static const char *installs[MAX_INSTALL];
@@ -210,6 +236,7 @@ int main(int argc, char **argv)
 {
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
     const char *shot = NULL, *frames = NULL, *dump = NULL;
+    double pc_profile_ms = -1;
     const char *pair_path = NULL;
     bool press_both = false;          /* --press keys go to the second machine too */
     uint32_t unit_id = 0;
@@ -225,6 +252,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--seconds") && v) { seconds = atof(v); i++; }
         else if (!strcmp(a, "--screenshot") && v) { shot = v; i++; }
         else if (!strcmp(a, "--frames") && v) { frames = v; i++; }
+        else if (!strcmp(a, "--pc-profile") && v) { pc_profile_ms = atof(v); i++; }
         else if (!strcmp(a, "--disk-size") && v) { disk_kb = (unsigned)atoi(v); i++; }
         else if (!strcmp(a, "--install") && v && ninstalls < MAX_INSTALL) { installs[ninstalls++] = v; i++; }
         else if (!strcmp(a, "--ls")) ls = true;
@@ -392,6 +420,15 @@ int main(int argc, char **argv)
             if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
         }
         if (mp3 && step > (int32_t)(CY_CLOCK_HZ / 200)) step = CY_CLOCK_HZ / 200;   /* keep the decoder fed */
+        if (pc_profile_ms >= 0 && m.cpu.cycles >= (uint64_t)(pc_profile_ms * (CY_CLOCK_HZ / 1000))) {
+            /* sample the PC every 997 states (a prime, to avoid beating with loops) */
+            for (int32_t d = 0; d < step; d += 997) {
+                cybiko_run(&m, step - d < 997 ? step - d : 997);
+                pc_sample(m.cpu.pc);
+            }
+            if (mp3) mp3_pump(&m, mp3, wav);
+            continue;
+        }
         if (pair_path) {
             /* 1 ms turns keep radio replies well inside CyOS's timeouts */
             for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
@@ -414,6 +451,7 @@ int main(int argc, char **argv)
         }
     }
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    if (pc_profile_ms >= 0) pc_report();
     if (wav) {
         long bytes = ftell(wav) - 44;
         wav_header(wav, (uint32_t)(bytes / 2));

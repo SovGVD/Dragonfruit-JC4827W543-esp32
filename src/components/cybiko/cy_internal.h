@@ -61,6 +61,10 @@ uint8_t cy_irq_pins(const cybiko_t *m);
 
 /* cy_periph.c: TPU, TMR, WDT, SCI and A/D converter */
 void cy_periph_reset(cybiko_t *m);
+/* Start the timers' lazy catch-up from m->synced (after a reset). */
+void cy_timers_restart(cybiko_t *m);
+/* Bring the timers up to `now`, e.g. before the clocks stop for standby. */
+void cy_timers_sync(cybiko_t *m, uint64_t now);
 void cy_periph_advance(cybiko_t *m, uint32_t states);
 uint32_t cy_periph_next_event(const cybiko_t *m);
 /* Register access for addresses the peripherals own; return false when the

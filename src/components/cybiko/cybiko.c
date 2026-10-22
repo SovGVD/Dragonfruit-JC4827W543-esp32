@@ -371,7 +371,11 @@ void cy_sync(cybiko_t *m)
     if (t <= m->synced) return;
     uint64_t d = t - m->synced;
     m->synced = t;
-    if (m->standby) return;            /* clocks stopped */
+    if (m->standby) {                  /* clocks stopped */
+        m->timers_synced = t;
+        m->timers_due = t + 1;
+        return;
+    }
     m->in_sync = true;
     while (d) {
         uint32_t step = d > 0x40000000u ? 0x40000000u : (uint32_t)d;
@@ -422,6 +426,7 @@ void cybiko_reset(cybiko_t *m)
     cy_bus_timing(m);
     h8s_reset(&m->cpu);
     m->synced = h8s_time(&m->cpu);
+    cy_timers_restart(m);
 }
 
 void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
@@ -459,6 +464,7 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
     while (done < states) {
         if (m->cpu.sleeping && (m->sbycr & 0x80) && !m->standby) {
             cy_sync(m);
+            cy_timers_sync(m, m->synced);
             m->standby = true;         /* software standby: the OS switched off */
         }
         int32_t slice = states - done;

@@ -522,7 +522,11 @@ static bool prefixed_move(h8s_cpu_t *c, int kind, uint16_t w)
 /* Execute one instruction                                             */
 /* ------------------------------------------------------------------ */
 
+#ifdef H8S_PROFILE
+__attribute__((noinline)) static void execute(h8s_cpu_t *c)
+#else
 INLINE void execute(h8s_cpu_t *c)
+#endif
 {
     c->ppc = c->pc;
     const uint16_t op = fetch(c);

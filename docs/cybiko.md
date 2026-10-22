@@ -299,10 +299,12 @@ every 5 seconds.
 - CyOS boots on the PC runner; speed and sound on the board still need
   checking. Instruction timing counts each memory access as the bus
   controller sets it up (8- or 16-bit areas, wait states, DRAM), so the CPU
-  does as much work per second as the real one. Two hot routines run as
+  does as much work per second as the real one. A few hot routines run as
   native code (cy_hle.c) with their original timing: the CyOS 1.5.08 page
   checksum, which the RAM disk check at start-up spends about half its time
-  in, and the boot ROM's software multiply.
+  in, the boot ROM's software multiply, the boot ROM's bitmap row blit and
+  the CyOS loop that sends rows to the LCD. The last two make games about
+  3 times cheaper to run.
 - Software standby (CyOS switching itself off) stops the CPU. Waking it with
   On/Off assumes the button is wired to IRQ7 (PA7), which is a guess.
 - The DMA controller and the DTC are modelled (CyOS uses both at start-up).

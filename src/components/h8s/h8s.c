@@ -109,11 +109,35 @@ INLINE void wr32(h8s_cpu_t *c, uint32_t a, uint32_t v)
     wr16(c, a + 2, (uint16_t)v);
 }
 
+#define FETCH_NONE 0xff000000u   /* no 24-bit PC is within 64 KB above it */
+
+static uint16_t fetch_slow(h8s_cpu_t *c)
+{
+    uint32_t pc = c->pc & AMASK, page = pc >> 16;
+    if (c->rpage[page]) {
+        c->fetch_page = pc & 0xff0000u;
+        c->fetch_host = c->rpage[page];
+        c->fetch_cost = c->cost16[page];
+    }
+    uint16_t v = rd16(c, pc);
+    c->pc = (pc + 2) & AMASK;
+    return v;
+}
+
+/* Code runs from directly mapped memory nearly always, so the page it is in
+ * is kept at hand. Leaving the page (by a branch or by running off its end)
+ * goes through fetch_slow, which also wraps the PC at 16 MB. */
 INLINE uint16_t fetch(h8s_cpu_t *c)
 {
-    uint16_t v = rd16(c, c->pc);
-    c->pc = (c->pc + 2) & AMASK;
-    return v;
+    uint32_t off = c->pc - c->fetch_page;
+    if (LIKELY(off < 0x10000)) {
+        NOTE_ODD(off);
+        const uint8_t *p = c->fetch_host + (off & ~1u);
+        c->icount -= c->fetch_cost;
+        c->pc += 2;
+        return (uint16_t)(p[0] << 8 | p[1]);
+    }
+    return fetch_slow(c);
 }
 
 uint8_t  h8s_read8(h8s_cpu_t *c, uint32_t a)  { return rd8(c, a); }
@@ -330,6 +354,7 @@ void h8s_init(h8s_cpu_t *c)
     memset(c, 0, sizeof *c);
     memset(c->cost8, 1, sizeof c->cost8);
     memset(c->cost16, 1, sizeof c->cost16);
+    c->fetch_page = FETCH_NONE;
 }
 
 void h8s_set_cost(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t byte_states,
@@ -340,6 +365,7 @@ void h8s_set_cost(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t byte_state
         c->cost8[page] = byte_states;
         c->cost16[page] = word_states;
     }
+    c->fetch_page = FETCH_NONE;
 }
 
 void h8s_reset(h8s_cpu_t *c)
@@ -361,6 +387,7 @@ void h8s_map(h8s_cpu_t *c, uint32_t base, uint32_t size, uint8_t *host,
         c->rpage[page] = p;
         c->wpage[page] = writable ? p : NULL;
     }
+    c->fetch_page = FETCH_NONE;
 }
 
 /* ------------------------------------------------------------------ */

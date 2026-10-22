@@ -17,6 +17,8 @@
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
  *   --pc-profile MS    from MS milliseconds on, sample the PC and list where
  *                      the CPU spends its time at the end
+ *   --blit-fuzz N      (built with -DCY_HLE_CHECK) at the end, check N random
+ *                      calls of the native ROM blit against the original
  *                      (checked every 100 ms of emulated time)
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
@@ -237,6 +239,9 @@ int main(int argc, char **argv)
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
     const char *shot = NULL, *frames = NULL, *dump = NULL;
     double pc_profile_ms = -1;
+#ifdef CY_HLE_CHECK
+    int blit_fuzz = 0;
+#endif
     const char *pair_path = NULL;
     bool press_both = false;          /* --press keys go to the second machine too */
     uint32_t unit_id = 0;
@@ -253,6 +258,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--screenshot") && v) { shot = v; i++; }
         else if (!strcmp(a, "--frames") && v) { frames = v; i++; }
         else if (!strcmp(a, "--pc-profile") && v) { pc_profile_ms = atof(v); i++; }
+#ifdef CY_HLE_CHECK
+        else if (!strcmp(a, "--blit-fuzz") && v) { blit_fuzz = atoi(v); i++; }
+#endif
         else if (!strcmp(a, "--disk-size") && v) { disk_kb = (unsigned)atoi(v); i++; }
         else if (!strcmp(a, "--install") && v && ninstalls < MAX_INSTALL) { installs[ninstalls++] = v; i++; }
         else if (!strcmp(a, "--ls")) ls = true;
@@ -452,6 +460,12 @@ int main(int argc, char **argv)
     }
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     if (pc_profile_ms >= 0) pc_report();
+#ifdef CY_HLE_CHECK
+    if (blit_fuzz) {
+        extern uint32_t cy_hle_blit_fuzz(cybiko_t *m, int n, uint32_t seed);
+        fprintf(stderr, "blit fuzz: %u of %d calls differ\n", cy_hle_blit_fuzz(&m, blit_fuzz, 1), blit_fuzz);
+    }
+#endif
     if (wav) {
         long bytes = ftell(wav) - 44;
         wav_header(wav, (uint32_t)(bytes / 2));

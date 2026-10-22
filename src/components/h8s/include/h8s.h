@@ -84,6 +84,11 @@ struct h8s_cpu {
      * default) turns it off. fine_base and fine_size must be even. */
     uint32_t fine_base, fine_size;
     uint8_t *fine_mem;
+    /* Instruction fetch cache: the 64 KB page code last ran from, its host
+     * memory and word cost. h8s_map and h8s_set_cost empty it. */
+    uint32_t fetch_page;
+    const uint8_t *fetch_host;
+    int32_t fetch_cost;
     h8s_bus_t bus;
     void *ctx;
 };

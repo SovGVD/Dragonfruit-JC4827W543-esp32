@@ -497,13 +497,19 @@ hardware:
   loader prints `Starting 0x`, the emulator finds that code in the freshly
   unpacked kernel and changes the base, size and block count, so CyOS gets a
   bigger disk in the same format. A 512 KB disk image keeps working.
-- **Native routines** (`cy_hle.c`). Two hot loops are swapped for C: the RAM
-  disk page checksum (half of all instructions until the desktop appears)
-  and the boot ROM's 32-bit multiply. The first word of each routine is
-  replaced by an opcode the H8S does not have; the core traps on it, runs
-  the C version and charges the same number of states, so emulated time is
-  unchanged. They are found by matching code, so other CyOS versions just
-  run unpatched.
+- **Native routines** (`cy_hle.c`). Four hot pieces of code are swapped for
+  C: the RAM disk page checksum (half of all instructions until the desktop
+  appears), the boot ROM's 32-bit multiply, the boot ROM's row blit (draws
+  one row of a 2-bit bitmap: copy, transparent copy through a mask table, or
+  XOR, optionally mirrored; about 60% of all instructions in a scrolling
+  game) and the CyOS loop that sends a 40-byte row to the LCD (about 20%).
+  The first word of each is replaced by an opcode the H8S does not have;
+  the core traps on it, runs the C version and charges the states the
+  original takes (exactly for the loops, within a few percent for the
+  blit), so emulated time is about unchanged. They are found by matching
+  code, so other ROM or CyOS versions just run unpatched. The PC runner
+  built with `-DCY_HLE_CHECK` runs every blit both ways and compares them;
+  `--blit-fuzz N` adds N random calls.
 - **Unit ID** from the board's MAC ([§12](#12-flash-and-the-unit-id)).
 - **Radio over ESP-NOW** ([§11](#11-radio)).
 - **The MP3 card as a folder**: the card is made up on the fly from

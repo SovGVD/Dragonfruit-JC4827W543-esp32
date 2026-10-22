@@ -266,7 +266,7 @@ typedef struct cybiko {
     uint32_t disk_dirty[CY_DISK_MAX / CY_DISK_CHUNK / 32];  /* chunks written */
     uint8_t con_match;         /* progress through "Starting 0x" on SCI1 */
     uint8_t disk_patched;      /* kernel patches applied since power-on */
-    uint32_t hle_sum_pc, hle_mul_pc;  /* routines run natively (cy_hle.c) */
+    uint32_t hle_sum_pc, hle_mul_pc, hle_blit_pc, hle_lcd_pc;  /* routines run natively (cy_hle.c) */
     /* Debug: called for every on-chip register access when set (PC runner). */
     void (*io_trace)(struct cybiko *m, uint32_t a, uint8_t v, bool write);
     void (*cart_log)(struct cybiko *m, const char *msg);

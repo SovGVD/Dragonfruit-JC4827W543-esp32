@@ -1,4 +1,19 @@
-# tools/ — on-device test automation (serial console)
+# tools/
+
+| Tool | Purpose |
+|---|---|
+| `build-jc4827w543.sh` | Builds the JC4827W543 firmware (both systems) |
+| `palm_profile.py`, `palm-workload.txt` | Profile a scripted Palm OS run by ROM function, see [Palm native ROM calls](../docs/palm-native-rom-calls.md#finding-the-next-hot-spot) |
+| `test-palm-persistence.py` | Checks Palm database installs and RAM restore with the PC build |
+| `test-ppp-stack.sh` | Tests the Palm PPP server/client in memory |
+| `cybiko_cap.py` | Unpacks Cybiko `.cap` / `.csu` packs and `.app` archives |
+| `cybiko_card.py` | Makes an SD card image for the emulated Cybiko MP3 cartridge |
+| `cybiko_mxd.py` | Converts a video to an MXD clip for the Cybiko MP3 cartridge, and back |
+| `h8s-diff/` | Compares the H8S core with the GNU H8S simulator, see its README |
+
+The rest of this page is about the Palm OS serial-console helpers.
+
+## Palm OS on-device test automation (serial console)
 
 Host-side PowerShell helpers that drive the emulator's UART debug console
 (`src/main/debug_console.c`) to test the device **without physical interaction** —
@@ -10,7 +25,7 @@ Requires firmware built with the **`fbdump`** console command (streams the
 sleep disabled** (otherwise the idle Palm auto-off light-sleeps the ESP32 and
 the console goes dead until the physical power button).
 
-## Scripts
+### Scripts
 
 | Script | Purpose |
 |---|---|
@@ -18,14 +33,14 @@ the console goes dead until the physical power button).
 | `palm-setup.ps1` | Drive the 4-step first-boot Setup (welcome, digitizer calibration, country/time, done) to the launcher. `-Reset` to reboot first, `-LaunchCalc` to open the Calculator. |
 | `calc-test.ps1` | Type a calculator op-string (`"6*3=c..."`) via the keyboard path. Default: render the display after each `=` to numbered PNGs for corruption inspection. `-Measure`: soak the op-string and report JIT perf — delta-window **native%** (the robust metric; cumulative counters reset each boot), cache health (blocks/evict/drops), and EMU MHz — to compare JIT changes before/after. |
 
-### Python helpers (cross-platform; require `pyserial`)
+#### Python helpers (cross-platform; require `pyserial`)
 
 | Script | Purpose |
 |---|---|
 | `serial_console.py` | Driver for the firmware's line-protocol debug console (`--port COM5 <cmd>`, `-i` REPL, or `--capture N` for passive logging). Attaches **without** resetting the device, so it can inspect a running or sleeping board. Commands: `regs`, `irq`, `sleep`, `fb`, `tap X Y`, `penup`, `key HEX [MOD]`, `home`, `power`, `wake`. |
 | `capture_boot.py` | Hard-resets the board (pulses RTS→EN) and streams ~N seconds of boot log to **stdout** so it can be teed to a file: `python tools/capture_boot.py COM5 18 > boot.log`. Use when the idf/miniterm monitor's un-redirectable output gets in the way. |
 
-## Typical loop (per test build)
+### Typical loop (per test build)
 
 ```powershell
 ./build.ps1

@@ -1,18 +1,41 @@
 #include "audio.h"
 #include "board.h"
 #include "esp_log.h"
+#include "nvs.h"
+
+bool audio_saved_volume(uint8_t *volume)
+{
+    nvs_handle_t h;
+    uint8_t v;
+    if (nvs_open("audio", NVS_READONLY, &h) != ESP_OK) return false;
+    bool ok = nvs_get_u8(h, "volume", &v) == ESP_OK && v <= 100;
+    nvs_close(h);
+    if (ok) *volume = v;
+    return ok;
+}
+
+void audio_save_volume(uint8_t volume)
+{
+    nvs_handle_t h;
+    if (nvs_open("audio", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "volume", volume > 100 ? 100 : volume);
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 #if BOARD_HAS_AUDIO
 
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/stream_buffer.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "audio";
 
 /* 16-bit stereo Philips I2S, as the esp32-pipboy reference drives this amp.
  * Both slots carry the same mono sample. */
-#define SAMPLE_RATE  32000
+#define SAMPLE_RATE  AUDIO_RATE
 #define CHUNK_FRAMES 256        /* 8 ms per write */
 #define DMA_DESC     4
 
@@ -22,6 +45,11 @@ static volatile uint32_t phase_inc;   /* Q32 cycles per sample; 0 = silent */
 static volatile uint32_t duty_q32;    /* fraction of each cycle spent high */
 static volatile int32_t level = 0;    /* peak-to-peak amplitude */
 static uint8_t cur_volume;
+
+/* Sampled sound: 4096 samples (128 ms) queued for the task. */
+#define PCM_SAMPLES 4096
+static StreamBufferHandle_t pcm;
+static volatile bool pcm_on;
 
 static int32_t volume_level(uint8_t volume)
 {
@@ -48,16 +76,32 @@ void audio_tone(float freq_hz, float duty)
     if (was_silent) xTaskNotifyGive(task);
 }
 
+void audio_pcm_write(const int16_t *samples, size_t n)
+{
+    if (!task || !pcm) return;
+    if (!pcm_on) {
+        pcm_on = true;
+        xTaskNotifyGive(task);
+    }
+    xStreamBufferSend(pcm, samples, n * sizeof *samples, portMAX_DELAY);
+}
+
+void audio_pcm_stop(void)
+{
+    pcm_on = false;             /* the task empties the queue */
+}
+
 static void audio_task(void *arg)
 {
     static int16_t buf[CHUNK_FRAMES * 2];
+    static int16_t samples[CHUNK_FRAMES];
     uint32_t phase = 0;
     bool enabled = false;
     size_t written;
 
     for (;;) {
         uint32_t inc = phase_inc;
-        if (!inc) {
+        if (!inc && !pcm_on) {
             if (enabled) {
                 /* Push the queued tone out with silence, then stop the clocks. */
                 for (int i = 0; i < CHUNK_FRAMES * 2; i++) buf[i] = 0;
@@ -66,6 +110,7 @@ static void audio_task(void *arg)
                 i2s_channel_disable(tx);
                 enabled = false;
             }
+            if (pcm) xStreamBufferReset(pcm);
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
@@ -75,15 +120,32 @@ static void audio_task(void *arg)
             enabled = true;
         }
 
+        /* Samples queued by audio_pcm_write; a short wait covers decoder
+         * jitter, then a gap plays as silence. */
+        size_t got = 0;
+        if (pcm_on) {
+            got = xStreamBufferReceive(pcm, samples, sizeof samples, pdMS_TO_TICKS(4)) / sizeof *samples;
+            while (got < CHUNK_FRAMES && pcm_on) {
+                size_t more = xStreamBufferReceive(pcm, samples + got, (CHUNK_FRAMES - got) * sizeof *samples,
+                                                   pdMS_TO_TICKS(4)) / sizeof *samples;
+                if (!more) break;
+                got += more;
+            }
+        }
+        for (size_t i = got; i < CHUNK_FRAMES; i++) samples[i] = 0;
+
         /* Rectangle wave with its DC removed, so duty sets loudness the way a
          * piezo behaves: 50% is loudest, narrow pulses are quiet. */
         uint32_t duty = duty_q32;
         float d = (float)duty / 4294967296.0f;
-        int16_t hi = (int16_t)(level * (1.0f - d));
-        int16_t lo = (int16_t)(-level * d);
+        int16_t hi = inc ? (int16_t)(level * (1.0f - d)) : 0;
+        int16_t lo = inc ? (int16_t)(-level * d) : 0;
+        int32_t gain = level;
         for (int i = 0; i < CHUNK_FRAMES; i++) {
-            int16_t s = phase < duty ? hi : lo;
-            buf[2 * i] = buf[2 * i + 1] = s;
+            int32_t s = (phase < duty ? hi : lo) + (samples[i] * gain >> 15);
+            if (s > 32767) s = 32767;
+            if (s < -32768) s = -32768;
+            buf[2 * i] = buf[2 * i + 1] = (int16_t)s;
             phase += inc;
         }
         i2s_channel_write(tx, buf, sizeof(buf), &written, portMAX_DELAY);
@@ -93,6 +155,7 @@ static void audio_task(void *arg)
 esp_err_t audio_init(uint8_t volume)
 {
     audio_set_volume(volume);
+    if (task) return ESP_OK;                 /* already running (boot menu) */
     if (!cur_volume) {
         ESP_LOGI(TAG, "sound disabled");
         return ESP_OK;
@@ -124,6 +187,11 @@ esp_err_t audio_init(uint8_t volume)
         return err;
     }
 
+    static StaticStreamBuffer_t pcm_struct;
+    uint8_t *pcm_store = heap_caps_malloc(PCM_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pcm_store) pcm_store = heap_caps_malloc(PCM_SAMPLES * 2 + 1, MALLOC_CAP_8BIT);
+    if (pcm_store) pcm = xStreamBufferCreateStatic(PCM_SAMPLES * 2, 2, pcm_store, &pcm_struct);
+
     /* Core 0, below input/display: a late tone chunk costs a click, not a
      * missed pen event. */
     if (xTaskCreatePinnedToCore(audio_task, "audio", 3072, NULL, 2, &task, 0) != pdPASS) {
@@ -140,5 +208,7 @@ esp_err_t audio_init(uint8_t volume)
 esp_err_t audio_init(uint8_t volume) { return ESP_OK; }
 void audio_set_volume(uint8_t volume) {}
 void audio_tone(float freq_hz, float duty) {}
+void audio_pcm_write(const int16_t *samples, size_t n) {}
+void audio_pcm_stop(void) {}
 
 #endif

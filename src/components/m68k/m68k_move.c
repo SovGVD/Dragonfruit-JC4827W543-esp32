@@ -20,8 +20,8 @@ M68K_AINLINE void do_move(m68k_cpu_t *cpu, uint16_t opcode, int size)
     int dst_reg  = (opcode >> 9) & 7;
     int dst_mode = (opcode >> 6) & 7;
 
-    ea_result_t src = m68k_resolve_ea(cpu, src_mode, src_reg, size);
-    uint32_t val = m68k_read_ea(cpu, &src, size);
+    ea_result_t src = ea_resolve(cpu, src_mode, src_reg, size);
+    uint32_t val = ea_read(cpu, &src, size);
 
     /* MOVEA: destination is An, no flag update, sign-extend word to long */
     if (dst_mode == 1) {
@@ -33,8 +33,8 @@ M68K_AINLINE void do_move(m68k_cpu_t *cpu, uint16_t opcode, int size)
         return;
     }
 
-    ea_result_t dst = m68k_resolve_ea(cpu, dst_mode, dst_reg, size);
-    m68k_write_ea(cpu, &dst, val, size);
+    ea_result_t dst = ea_resolve(cpu, dst_mode, dst_reg, size);
+    ea_write(cpu, &dst, val, size);
     m68k_set_flags_move(cpu, val, size);
 
     cpu->regs.cycles = (dst.type == EA_MEMORY) ? 8 : 4;

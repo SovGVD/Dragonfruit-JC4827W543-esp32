@@ -8,5 +8,5 @@ idf_component_register(
     SRCS ${physical_input} "input_events.c"
     INCLUDE_DIRS "include"
     REQUIRES dragonball layout config board
-    PRIV_REQUIRES m5_sd esp_driver_spi esp_driver_i2c esp_driver_gpio
+    PRIV_REQUIRES m5_sd esp_driver_spi esp_driver_i2c esp_driver_gpio nvs_flash
 )

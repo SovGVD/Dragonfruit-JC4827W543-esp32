@@ -30,6 +30,12 @@
 #include <sys/statvfs.h>
 #endif
 #endif
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 #define MAX_HANDLES 8
 #define PATH_CAP 384
@@ -68,7 +74,7 @@ typedef struct {
     char path[PATH_CAP];
 } card_handle_t;
 
-static card_handle_t handles[MAX_HANDLES];
+static EXT_RAM_BSS_ATTR card_handle_t handles[MAX_HANDLES];
 static char card_root[PATH_CAP], card_label[LABEL_CAP] = "SD Card";
 static bool configured, read_only, initialized, rejected;
 static bool db_transfer_active;

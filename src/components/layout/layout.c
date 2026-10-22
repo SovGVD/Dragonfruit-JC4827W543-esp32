@@ -3,6 +3,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "layout";
 
@@ -649,7 +655,7 @@ bool layout_load(const char *cfg_text, uint16_t panel_w, uint16_t panel_h)
     /* The parser tokenizes in place, so work on a mutable copy. One static
      * buffer (not two on the stack — this runs on the limited main task stack),
      * recopied for each of the two passes; layout_load is a one-shot boot call. */
-    static char work[LAYOUT_CFG_MAX];
+    static EXT_RAM_BSS_ATTR char work[LAYOUT_CFG_MAX];
     size_t len = strlen(cfg_text);
     if (len >= sizeof(work)) {
         ESP_LOGE(TAG, "config too large (%u bytes); using default", (unsigned)len);

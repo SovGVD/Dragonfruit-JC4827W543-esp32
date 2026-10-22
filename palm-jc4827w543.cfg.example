@@ -1,4 +1,4 @@
-# Copy to the FAT32 SD root as palm.cfg. Optional: this layout is the
+# Copy to the FAT32 SD card as /PalmOS/palm.cfg. Optional: this layout is the
 # automatic portrait default for the JC4827W543 (USB connector at bottom).
 preset = jc4827w543
 
@@ -11,29 +11,33 @@ serial.baud = 57600
 # goes to sleep (BOOT or Palm auto-off); no timed saves during active use.
 state.enabled = 1
 
-# Palm OS 4 virtual expansion card, backed by /palm-card on this SD card.
-# PRCs in /palm-card/PALM/Launcher appear under Palm's SD Card category.
+# Palm OS 4 virtual expansion card, backed by /PalmOS/palm-card on this SD card.
+# PRCs in /PalmOS/palm-card/PALM/Launcher appear under Palm's SD Card category.
 card.enabled = 1
 card.read_only = 0
 
 # Speaker volume for Palm system sounds and alarms, 0..100. 0 turns the
-# I2S amplifier off. Palm's own Sounds preferences still apply on top.
+# I2S amplifier off. Palm's own Sounds preferences still apply on top. Once
+# the volume has been changed in the boot menu, that value is used instead.
 sound.volume = 60
 
 # For individual element placement use preset=custom and palm.cfg.example.
 # Native panel coordinates, x=0..479, y=0..271; rotation 0 is upright.
 # The portrait preset renders the LCD at native 160x160 (1:1), with no enlargement.
 
-# Resistive XPT2046 calibration. Starting values; tune to your panel.
+# Resistive XPT2046 calibration. Normally done on the board instead: the boot
+# menu's CALIBRATE button (or BOOT held at power-on), saved in flash, overrides
+# the ranges below. Leave touch.x_min commented out so the calibration screen
+# opens by itself on the first start. Starting values:
 # Raw X = D0 ADC, raw Y = 90 ADC. Min/max apply AFTER swap_xy.
 # Pixel inversion is applied after mapping min..max to 0..width/height-1.
-touch.x_min = 200
-touch.x_max = 3900
-touch.y_min = 200
-touch.y_max = 3900
-touch.swap_xy = 0
-touch.invert_x = 1
-touch.invert_y = 1
+# touch.x_min = 200
+# touch.x_max = 3900
+# touch.y_min = 200
+# touch.y_max = 3900
+# touch.swap_xy = 0
+# touch.invert_x = 1
+# touch.invert_y = 1
 touch.pressure_min = 400
 # Set to 1 to log raw coordinates at most 5 times/second while drawing.
 touch.log_raw = 0

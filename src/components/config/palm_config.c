@@ -10,7 +10,7 @@
 
 static const char *TAG = "config";
 
-#define CFG_PATH M5_SD_MOUNT_POINT "/palm.cfg"
+#define CFG_PATH PALM_SD_DIR "/palm.cfg"
 
 config_load_result_t config_read_file(const char *path, char *buf, size_t cap,
                                       size_t *out_len)

@@ -13,7 +13,7 @@
 
 static const char *TAG = "rom_loader";
 
-#define ROM_PATH M5_SD_MOUNT_POINT "/palm.rom"
+#define ROM_PATH PALM_SD_DIR "/palm.rom"
 
 /* A IIIx ROM is ~2 MB; anything wildly off this is not a ROM we can run. The
  * upper bound is the bus's ROM window size. */

@@ -509,9 +509,9 @@ M68K_AINLINE void m68k_group5(m68k_cpu_t *cpu, uint16_t opcode)
         }
 
         /* Scc */
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, SIZE_BYTE);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, SIZE_BYTE);
         uint8_t val = m68k_eval_cc(cpu->regs.sr, cc) ? 0xFF : 0x00;
-        m68k_write_ea(cpu, &ea, val, SIZE_BYTE);
+        ea_write(cpu, &ea, val, SIZE_BYTE);
         cpu->regs.cycles = (ea.type == EA_DATA_REG) ? 4 : 8;
         return;
     }
@@ -529,10 +529,10 @@ M68K_AINLINE void m68k_group5(m68k_cpu_t *cpu, uint16_t opcode)
             cpu->regs.a[ea_reg] -= data;
             cpu->regs.cycles = 8;
         } else {
-            ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-            uint32_t dst = m68k_read_ea(cpu, &ea, size);
+            ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+            uint32_t dst = ea_read(cpu, &ea, size);
             uint32_t result = dst - data;
-            m68k_write_ea(cpu, &ea, result, size);
+            ea_write(cpu, &ea, result, size);
             m68k_set_flags_sub(cpu, data, dst, result, size);
             cpu->regs.cycles = (ea.type == EA_DATA_REG) ?
                 ((size == SIZE_LONG) ? 8 : 4) :
@@ -544,10 +544,10 @@ M68K_AINLINE void m68k_group5(m68k_cpu_t *cpu, uint16_t opcode)
             cpu->regs.a[ea_reg] += data;
             cpu->regs.cycles = 8;
         } else {
-            ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-            uint32_t dst = m68k_read_ea(cpu, &ea, size);
+            ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+            uint32_t dst = ea_read(cpu, &ea, size);
             uint32_t result = dst + data;
-            m68k_write_ea(cpu, &ea, result, size);
+            ea_write(cpu, &ea, result, size);
             m68k_set_flags_add(cpu, data, dst, result, size);
             cpu->regs.cycles = (ea.type == EA_DATA_REG) ?
                 ((size == SIZE_LONG) ? 8 : 4) :
@@ -673,8 +673,8 @@ M68K_AINLINE void m68k_group9(m68k_cpu_t *cpu, uint16_t opcode)
     /* SUBA: opmode 3 (word) or 7 (long) */
     if (opmode == 3 || opmode == 7) {
         int size = (opmode == 3) ? SIZE_WORD : SIZE_LONG;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         if (size == SIZE_WORD)
             src = (uint32_t)(int32_t)(int16_t)(src & 0xFFFF);
         cpu->regs.a[dreg] -= src;
@@ -734,8 +734,8 @@ M68K_AINLINE void m68k_group9(m68k_cpu_t *cpu, uint16_t opcode)
     int size;
     if (opmode < 3) {
         size = opmode;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         uint32_t dst = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst - src;
         cpu->regs.d[dreg] = (cpu->regs.d[dreg] & ~m68k_size_mask(size)) |
@@ -743,11 +743,11 @@ M68K_AINLINE void m68k_group9(m68k_cpu_t *cpu, uint16_t opcode)
         m68k_set_flags_sub(cpu, src, dst, result, size);
     } else {
         size = opmode - 4;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t dst = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t dst = ea_read(cpu, &ea, size);
         uint32_t src = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst - src;
-        m68k_write_ea(cpu, &ea, result, size);
+        ea_write(cpu, &ea, result, size);
         m68k_set_flags_sub(cpu, src, dst, result, size);
     }
 
@@ -767,8 +767,8 @@ M68K_AINLINE void m68k_group_b(m68k_cpu_t *cpu, uint16_t opcode)
     /* CMPA: opmode 3 (word) or 7 (long) */
     if (opmode == 3 || opmode == 7) {
         int size = (opmode == 3) ? SIZE_WORD : SIZE_LONG;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         if (size == SIZE_WORD)
             src = (uint32_t)(int32_t)(int16_t)(src & 0xFFFF);
         uint32_t dst = cpu->regs.a[dreg];
@@ -783,11 +783,11 @@ M68K_AINLINE void m68k_group_b(m68k_cpu_t *cpu, uint16_t opcode)
      * ea_mode == 1 case is handled by the CMPM block below. */
     if (opmode >= 4 && opmode <= 6 && ea_mode != 1) {
         int size = opmode - 4;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t dst = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t dst = ea_read(cpu, &ea, size);
         uint32_t src = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst ^ src;
-        m68k_write_ea(cpu, &ea, result, size);
+        ea_write(cpu, &ea, result, size);
         m68k_set_flags_logic(cpu, result, size);
         cpu->regs.cycles = (ea.type == EA_DATA_REG) ?
             ((size == SIZE_LONG) ? 8 : 4) :
@@ -824,8 +824,8 @@ M68K_AINLINE void m68k_group_b(m68k_cpu_t *cpu, uint16_t opcode)
     /* CMP <ea>,Dn: opmode 0/1/2 */
     if (opmode < 3) {
         int size = opmode;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         uint32_t dst = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst - src;
         m68k_set_flags_cmp(cpu, src, dst, result, size);
@@ -869,8 +869,8 @@ M68K_AINLINE void m68k_group_c(m68k_cpu_t *cpu, uint16_t opcode)
 
     /* MULU: opmode == 3 */
     if (opmode == 3) {
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, SIZE_WORD);
-        uint16_t src = (uint16_t)m68k_read_ea(cpu, &ea, SIZE_WORD);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, SIZE_WORD);
+        uint16_t src = (uint16_t)ea_read(cpu, &ea, SIZE_WORD);
         uint16_t dst = (uint16_t)(cpu->regs.d[dreg] & 0xFFFF);
         uint32_t result = (uint32_t)src * (uint32_t)dst;
         cpu->regs.d[dreg] = result;
@@ -883,8 +883,8 @@ M68K_AINLINE void m68k_group_c(m68k_cpu_t *cpu, uint16_t opcode)
 
     /* MULS: opmode == 7 */
     if (opmode == 7) {
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, SIZE_WORD);
-        int16_t src = (int16_t)m68k_read_ea(cpu, &ea, SIZE_WORD);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, SIZE_WORD);
+        int16_t src = (int16_t)ea_read(cpu, &ea, SIZE_WORD);
         int16_t dst = (int16_t)(cpu->regs.d[dreg] & 0xFFFF);
         int32_t result = (int32_t)src * (int32_t)dst;
         cpu->regs.d[dreg] = (uint32_t)result;
@@ -899,8 +899,8 @@ M68K_AINLINE void m68k_group_c(m68k_cpu_t *cpu, uint16_t opcode)
     int size;
     if (opmode < 3) {
         size = opmode;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         uint32_t dst = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = src & dst;
         cpu->regs.d[dreg] = (cpu->regs.d[dreg] & ~m68k_size_mask(size)) |
@@ -908,11 +908,11 @@ M68K_AINLINE void m68k_group_c(m68k_cpu_t *cpu, uint16_t opcode)
         m68k_set_flags_logic(cpu, result, size);
     } else {
         size = opmode - 4;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t dst = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t dst = ea_read(cpu, &ea, size);
         uint32_t src = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = src & dst;
-        m68k_write_ea(cpu, &ea, result, size);
+        ea_write(cpu, &ea, result, size);
         m68k_set_flags_logic(cpu, result, size);
     }
     cpu->regs.cycles = (size == SIZE_LONG) ? 8 : 4;
@@ -931,8 +931,8 @@ M68K_AINLINE void m68k_group_d(m68k_cpu_t *cpu, uint16_t opcode)
     /* ADDA: opmode 3 (word) or 7 (long) */
     if (opmode == 3 || opmode == 7) {
         int size = (opmode == 3) ? SIZE_WORD : SIZE_LONG;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         if (size == SIZE_WORD)
             src = (uint32_t)(int32_t)(int16_t)(src & 0xFFFF);
         cpu->regs.a[dreg] += src;
@@ -994,8 +994,8 @@ M68K_AINLINE void m68k_group_d(m68k_cpu_t *cpu, uint16_t opcode)
     int size;
     if (opmode < 3) {
         size = opmode;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t src = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t src = ea_read(cpu, &ea, size);
         uint32_t dst = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst + src;
         cpu->regs.d[dreg] = (cpu->regs.d[dreg] & ~m68k_size_mask(size)) |
@@ -1003,11 +1003,11 @@ M68K_AINLINE void m68k_group_d(m68k_cpu_t *cpu, uint16_t opcode)
         m68k_set_flags_add(cpu, src, dst, result, size);
     } else {
         size = opmode - 4;
-        ea_result_t ea = m68k_resolve_ea(cpu, ea_mode, ea_reg, size);
-        uint32_t dst = m68k_read_ea(cpu, &ea, size);
+        ea_result_t ea = ea_resolve(cpu, ea_mode, ea_reg, size);
+        uint32_t dst = ea_read(cpu, &ea, size);
         uint32_t src = cpu->regs.d[dreg] & m68k_size_mask(size);
         uint32_t result = dst + src;
-        m68k_write_ea(cpu, &ea, result, size);
+        ea_write(cpu, &ea, result, size);
         m68k_set_flags_add(cpu, src, dst, result, size);
     }
     cpu->regs.cycles = (size == SIZE_LONG) ? 8 : 4;

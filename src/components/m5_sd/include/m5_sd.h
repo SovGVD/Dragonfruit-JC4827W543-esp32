@@ -14,6 +14,12 @@
 /* FAT mount point shared by every SD user; build paths as M5_SD_MOUNT_POINT "/file". */
 #define M5_SD_MOUNT_POINT "/sdcard"
 
+/* Each emulated system keeps every file it owns in its own top-level folder:
+ * /PalmOS (palm.rom, palm.cfg, install/, backup/, palm-card/, RAM checkpoints)
+ * and /Cybiko (boot ROM, CyOS flash, saved RAM). FAT is case-insensitive. */
+#define PALM_SD_DIR   M5_SD_MOUNT_POINT "/PalmOS"
+#define CYBIKO_SD_DIR M5_SD_MOUNT_POINT "/Cybiko"
+
 /* Initialize the JC4827W543 shared SD/XPT2046 SPI2 bus. Safe to call again;
  * does not require a card or display. JC4827W543 builds only. */
 esp_err_t m5_sd_bus_init(void);

@@ -8,14 +8,22 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "xpt2046";
 static spi_device_handle_t touch;
-static resistive_calibration_t calibration;
+static resistive_calibration_t calibration, calibration_prev;
+static touch_cal_source_t calibration_source = TOUCH_CAL_DEFAULT;
 static bool log_raw, pen_down;
 static volatile bool power_pending;
 static int last_x = -1, last_y = -1;
@@ -85,7 +93,7 @@ static bool config_int(const char *text, const char *key, int low, int high, int
 static void load_calibration(void)
 {
     resistive_calibration_default(&calibration);
-    static char text[LAYOUT_CFG_MAX];
+    static EXT_RAM_BSS_ATTR char text[LAYOUT_CFG_MAX];
     size_t length;
     if (config_load_from_sd(text, sizeof(text), &length) != CONFIG_OK) return;
     resistive_calibration_t next = calibration;
@@ -104,8 +112,86 @@ static void load_calibration(void)
     if (ok && resistive_calibration_valid(&next)) {
         calibration = next;
         log_raw = log;
+        char v[32];
+        if (config_get_value(text, "touch.x_min", v, sizeof v))
+            calibration_source = TOUCH_CAL_CONFIG;
     } else {
         ESP_LOGW(TAG, "Invalid touch calibration; using defaults");
+    }
+}
+
+/* On-screen calibration result in NVS. pressure_min stays with palm.cfg. */
+typedef struct {
+    uint8_t version;
+    uint8_t swap_xy, invert_x, invert_y;
+    int16_t x_min, x_max, y_min, y_max;
+} saved_cal_t;
+#define SAVED_CAL_VERSION 1
+
+touch_cal_source_t input_touch_load_saved(void)
+{
+    nvs_handle_t h;
+    saved_cal_t s;
+    size_t len = sizeof s;
+    if (nvs_open("touch", NVS_READONLY, &h) != ESP_OK) return calibration_source;
+    esp_err_t err = nvs_get_blob(h, "cal", &s, &len);
+    nvs_close(h);
+    if (err != ESP_OK || len != sizeof s || s.version != SAVED_CAL_VERSION) return calibration_source;
+    resistive_calibration_t next = calibration;
+    next.x_min = s.x_min; next.x_max = s.x_max;
+    next.y_min = s.y_min; next.y_max = s.y_max;
+    next.swap_xy = s.swap_xy; next.invert_x = s.invert_x; next.invert_y = s.invert_y;
+    if (!resistive_calibration_valid(&next)) {
+        ESP_LOGW(TAG, "Saved touch calibration invalid; ignoring it");
+        return calibration_source;
+    }
+    calibration = next;
+    calibration_source = TOUCH_CAL_SAVED;
+    ESP_LOGI(TAG, "Saved touch calibration: x %d-%d y %d-%d swap %d invert %d,%d",
+             next.x_min, next.x_max, next.y_min, next.y_max,
+             next.swap_xy, next.invert_x, next.invert_y);
+    return calibration_source;
+}
+
+bool input_touch_raw(int *raw_x, int *raw_y)
+{
+    int pressure;
+    return sample(raw_x, raw_y, &pressure);
+}
+
+bool input_touch_calibration_try(const int raw[4][2], int x0, int y0, int x1, int y1)
+{
+    resistive_calibration_t next = calibration;
+    if (!resistive_calibration_solve(raw, x0, y0, x1, y1, BOARD_PANEL_W, BOARD_PANEL_H, &next))
+        return false;
+    calibration_prev = calibration;
+    calibration = next;
+    return true;
+}
+
+void input_touch_calibration_commit(bool keep)
+{
+    if (!keep) {
+        calibration = calibration_prev;
+        return;
+    }
+    const resistive_calibration_t *c = &calibration;
+    saved_cal_t s = {
+        SAVED_CAL_VERSION, c->swap_xy, c->invert_x, c->invert_y,
+        (int16_t)c->x_min, (int16_t)c->x_max, (int16_t)c->y_min, (int16_t)c->y_max,
+    };
+    nvs_handle_t h;
+    bool ok = nvs_open("touch", NVS_READWRITE, &h) == ESP_OK;
+    if (ok) {
+        ok = nvs_set_blob(h, "cal", &s, sizeof s) == ESP_OK && nvs_commit(h) == ESP_OK;
+        nvs_close(h);
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "Could not save touch calibration");
+    } else {
+        calibration_source = TOUCH_CAL_SAVED;
+        ESP_LOGI(TAG, "Touch calibration saved: x %d-%d y %d-%d swap %d invert %d,%d",
+                 c->x_min, c->x_max, c->y_min, c->y_max, c->swap_xy, c->invert_x, c->invert_y);
     }
 }
 
@@ -188,3 +274,15 @@ bool input_pop_power_key(void)
 
 int input_pop_br_request(void) { return INPUT_BR_NONE; }
 bool input_button_held(int which) { (void)which; return false; }
+
+bool input_touch_panel(int *x, int *y)
+{
+    int rx, ry, pressure;
+    return sample(&rx, &ry, &pressure) &&
+        resistive_touch_map(&calibration, rx, ry, BOARD_PANEL_W, BOARD_PANEL_H, x, y);
+}
+
+bool input_boot_button_held(void)
+{
+    return !gpio_get_level(BOARD_BTN_POWER);
+}

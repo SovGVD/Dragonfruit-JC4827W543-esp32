@@ -36,6 +36,7 @@
  * referenced by the inline accessors but never taken for ROM reads. --- */
 const uint8_t *g_bus_rom;
 uint32_t       g_bus_rom_end;
+uint32_t       g_bus_rom_size;
 uint8_t       *g_bus_ram;
 uint32_t       g_bus_periph_seq;
 uint8_t  bus_read8_slow (uint32_t a)              { (void)a; return 0; }
@@ -79,6 +80,7 @@ int main(int argc, char **argv)
 
     g_bus_rom     = rom;
     g_bus_rom_end = (BUS_ROM_BASE & BUS_ADDR_MASK) + (uint32_t)sz;
+    g_bus_rom_size = (uint32_t)sz;
     g_bus_ram     = calloc(BUS_RAM_SIZE, 1);   /* address only; never read in codegen */
 
     /* Compile a block at every instruction boundary in the ROM and FNV-1a the

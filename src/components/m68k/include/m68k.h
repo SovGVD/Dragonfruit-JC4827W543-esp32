@@ -13,6 +13,17 @@
 #define M68K_AINLINE static inline
 #endif
 
+/* For the CCR flag helpers, which also need an external definition (the JIT
+ * calls them through function pointers). Their prototypes below stay plain
+ * extern declarations, so C99 inline rules still emit one out-of-line copy,
+ * while always_inline makes the unity build fold the body into every
+ * interpreter call site instead of a windowed call per flag update. */
+#if defined(__GNUC__)
+#define M68K_HOT_INLINE inline __attribute__((always_inline))
+#else
+#define M68K_HOT_INLINE inline
+#endif
+
 /* Portable `restrict` (C99 keyword on GCC; MSVC spells it __restrict). */
 #if defined(_MSC_VER)
 #define M68K_RESTRICT __restrict

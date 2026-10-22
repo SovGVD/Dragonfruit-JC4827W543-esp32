@@ -12,6 +12,12 @@
 #ifndef HOST_BUILD
 #include "esp_heap_caps.h"   /* PSRAM alloc for the per-DB backup entry table */
 #endif
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 void (*g_installer_yield)(void) = NULL;
 int g_installer_last_fail_step = 0;   /* stage of the most recent failed attempt */
@@ -1451,7 +1457,7 @@ void backup_dedupe(char used[][BACKUP_NAME_MAX], int nused, char *fname)
 
 static const char *TAG = "installer";
 
-#define INSTALL_DIR      M5_SD_MOUNT_POINT "/install"
+#define INSTALL_DIR      PALM_SD_DIR "/install"
 
 static int name_cmp(const void *a, const void *b)
 {
@@ -1517,7 +1523,7 @@ int installer_scan_sd(install_set_t *set)
 
     /* names[] is static (1 KB) to keep it off the boot task's stack; safe because
      * installer_scan_sd runs exactly once, in the single-threaded boot SD window. */
-    static char names[INSTALL_MAX_FILES][INSTALL_NAME_MAX];
+    static EXT_RAM_BSS_ATTR char names[INSTALL_MAX_FILES][INSTALL_NAME_MAX];
     int nn = scan_sd_names(INSTALL_DIR, names, INSTALL_MAX_FILES, NULL);
     if (nn < 0) {
         ESP_LOGI(TAG, "no %s directory; skipping auto-install", INSTALL_DIR);
@@ -1551,7 +1557,7 @@ int installer_scan_sd(install_set_t *set)
 
 /* ===================== device-only: backup / restore ===================== */
 
-#define BACKUP_DIR       M5_SD_MOUNT_POINT "/backup"
+#define BACKUP_DIR       PALM_SD_DIR "/backup"
 
 /* Built-in organizer apps that sync via their own HotSync conduit and therefore
  * do NOT set dmHdrAttrBackup, even though their RAM databases hold the user's data.
@@ -1586,8 +1592,8 @@ backup_result_t backup_run_to_sd(m68k_cpu_t *cpu, const char *name,
     mkdir(BACKUP_DIR, 0777);   /* harmless if it already exists */
 
     /* static (not stack): the cpu task has a bounded stack and these are large. */
-    static backup_db_info_t dbs[BACKUP_MAX_DBS];
-    static char used[BACKUP_MAX_DBS][BACKUP_NAME_MAX];
+    static EXT_RAM_BSS_ATTR backup_db_info_t dbs[BACKUP_MAX_DBS];
+    static EXT_RAM_BSS_ATTR char used[BACKUP_MAX_DBS][BACKUP_NAME_MAX];
     int n = backup_enumerate(cpu, dbs, BACKUP_MAX_DBS);
     if (n < 0) { m5_sd_unmount(card); return BACKUP_ERR_NOT_READY; }
 
@@ -1652,7 +1658,7 @@ backup_result_t backup_restore_from_sd(m68k_cpu_t *cpu, const char *name,
 
     /* names[] static to keep it off the cpu task's bounded stack; safe because restore
      * runs only on the cpu task in the parked SD window (no reentrancy). */
-    static char names[INSTALL_MAX_FILES][INSTALL_NAME_MAX];
+    static EXT_RAM_BSS_ATTR char names[INSTALL_MAX_FILES][INSTALL_NAME_MAX];
     int nn = scan_sd_names(BACKUP_DIR, names, INSTALL_MAX_FILES, name);
     if (nn <= 0) {
         /* dir absent (-1) or nothing matching (0): "nothing to restore" is success with

@@ -72,22 +72,27 @@ endif()
 
 # --- Optional interactive UI (SDL3) -------------------------------------
 # OFF by default so `cmake -S src/host -B build-host` needs no network and links a
-# headless dragonfruit. With -DHOST_UI=ON, SDL3 is fetched + built from source and
-# the --ui window (host_ui.c) is compiled in.
+# headless dragonfruit. With -DHOST_UI=ON the --ui window (host_ui.c) is compiled
+# in, and the Cybiko desktop app (cybiko_sdl.c) is built. SDL3 comes from the
+# system when installed (Ubuntu: libsdl3-dev), otherwise it is fetched and
+# built from source.
 option(HOST_UI "Build the interactive SDL3 UI (fetches SDL3 from source)" OFF)
 if(HOST_UI)
-    include(FetchContent)
-    set(SDL_SHARED ON  CACHE BOOL "" FORCE)
-    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(SDL_TESTS  OFF CACHE BOOL "" FORCE)
-    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(SDL3
-        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-        GIT_TAG release-3.2.x
-        GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(SDL3)
+    find_package(SDL3 CONFIG QUIET)
+    if(NOT SDL3_FOUND)
+        include(FetchContent)
+        set(SDL_SHARED ON  CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS  OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(SDL3
+            GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+            GIT_TAG release-3.2.x
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(SDL3)
+    endif()
 
     target_compile_definitions(dragonfruit PRIVATE HOST_UI=1)
     target_link_libraries(dragonfruit PRIVATE SDL3::SDL3)
@@ -203,6 +208,49 @@ if(NOT MSVC)
 endif()
 
 enable_testing()
+add_executable(test_h8s test_h8s.c ../components/h8s/h8s.c)
+target_include_directories(test_h8s PRIVATE ../components/h8s/include)
+add_test(NAME h8s COMMAND test_h8s)
+
+set(CYBIKO_SOURCES
+    ../components/cybiko/cybiko.c
+    ../components/cybiko/cy_periph.c
+    ../components/cybiko/cy_devices.c
+    ../components/cybiko/cy_dma.c
+    ../components/cybiko/cy_disk.c
+    ../components/cybiko/cy_hle.c
+    ../components/cybiko/cy_rf.c
+    ../components/cybiko/cy_cart.c
+    ../components/h8s/h8s.c
+)
+add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})
+target_include_directories(test_cybiko PRIVATE ../components/cybiko ../components/cybiko/include ../components/h8s/include)
+add_test(NAME cybiko COMMAND test_cybiko)
+
+# Headless runner for the real Cybiko Xtreme ROM/flash dumps (see cybiko_host.c)
+add_executable(cybiko_host cybiko_host.c ../components/cy_mp3/cy_mp3.c ../components/cy_vfat/cy_vfat.c ${CYBIKO_SOURCES})
+target_include_directories(cybiko_host PRIVATE ../components/cybiko/include ../components/h8s/include ../components/cy_mp3/include ../components/cy_vfat/include)
+
+# A folder shown as a FAT16 card (the cartridge's card in Cybiko mode)
+add_executable(test_vfat test_vfat.c ../components/cy_vfat/cy_vfat.c)
+target_include_directories(test_vfat PRIVATE ../components/cy_vfat/include)
+add_test(NAME vfat COMMAND test_vfat)
+# The Cybiko desktop app (SDL3 window, keyboard, sound, MP3 cartridge)
+if(HOST_UI)
+    add_executable(cybiko cybiko_sdl.c ../components/cy_mp3/cy_mp3.c ../components/cy_vfat/cy_vfat.c ${CYBIKO_SOURCES})
+    target_include_directories(cybiko PRIVATE ../components/cybiko/include ../components/h8s/include
+                               ../components/cy_mp3/include ../components/cy_vfat/include)
+    target_link_libraries(cybiko PRIVATE SDL3::SDL3 m)
+    if(NOT MSVC)
+        target_compile_options(cybiko PRIVATE -O2 -Wall -Wextra)
+    endif()
+endif()
+if(NOT MSVC)
+    target_compile_options(test_cybiko PRIVATE -O2 -Wall -Wextra)
+    target_compile_options(cybiko_host PRIVATE -O2 -Wall -Wextra)
+    target_compile_options(test_vfat PRIVATE -O2 -Wall -Wextra -UNDEBUG)
+endif()
+
 add_test(NAME layout COMMAND test_layout)
 add_test(NAME touch_config COMMAND test_touch_config)
 add_test(NAME jit_cache COMMAND test_jit_cache)
@@ -334,3 +382,37 @@ if(UNIX)
     add_test(NAME web_proxy_http COMMAND test_web_proxy_http)
 endif()
 
+
+# --- 68k emulator benchmark (host-only) ---------------------------------
+# Runs the bundled 68000 workload (src/bench) through the same unity-built
+# interpreter as the firmware and checks its checksum. Use it as a correctness
+# net and a relative speed check for core changes.
+add_executable(bench_m68k
+    bench_m68k.c
+    ../bench/bench_core.c
+    ../components/m68k/m68k_all.c
+    ../components/bus/bus.c
+    ../components/dragonball/dragonball.c
+    ../components/dragonball/interrupt.c
+    ../components/dragonball/lcd.c
+    ../components/dragonball/timer.c
+    ../components/dragonball/gpio.c
+    ../components/dragonball/spi.c
+    ../components/dragonball/uart.c
+    ../components/dragonball/rtc.c
+    ../components/dragonball/pwm.c
+)
+target_include_directories(bench_m68k PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ../bench
+    ../components/m68k/include
+    ../components/bus/include
+    ../components/dragonball/include
+)
+target_compile_definitions(bench_m68k PRIVATE HOST_BUILD=1 BUS_RAM_SIZE=${PALM_RAM_BYTES})
+if(NOT MSVC)
+    target_compile_options(bench_m68k PRIVATE
+        -include ${CMAKE_CURRENT_SOURCE_DIR}/esp_shim.h
+        -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -O2)
+endif()
+add_test(NAME bench_m68k COMMAND bench_m68k 1)

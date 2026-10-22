@@ -12,6 +12,7 @@ uint8_t       *g_bus_ram   = NULL;
 uint8_t       *g_bus_vram  = NULL;
 const uint8_t *g_bus_rom   = NULL;
 uint32_t       g_bus_rom_end = BUS_ROM_LO;   /* BUS_ROM_LO + rom_size */
+uint32_t       g_bus_rom_size = 0;
 uint32_t       g_bus_periph_seq = 0;         /* bumped on each peripheral access */
 
 static size_t rom_size;
@@ -33,6 +34,7 @@ void bus_init(const uint8_t *rom_data, size_t rom_sz)
     g_bus_rom = rom_data;
     rom_size = rom_sz;
     g_bus_rom_end = BUS_ROM_LO + (uint32_t)rom_sz;
+    g_bus_rom_size = (uint32_t)rom_sz;
 
     g_bus_ram = heap_caps_calloc(1, BUS_RAM_SIZE, MALLOC_CAP_SPIRAM);
     if (!g_bus_ram) {

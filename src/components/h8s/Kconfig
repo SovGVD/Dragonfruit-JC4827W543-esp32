@@ -1,0 +1,12 @@
+menu "Cybiko emulator"
+    config CYBIKO_CORE_IRAM
+        bool "Run the Cybiko CPU core from internal RAM"
+        default y
+        help
+            Place the H8S interpreter and the Cybiko machine's per-instruction
+            paths (bus access, peripheral timing) in internal RAM, with real
+            jump tables for their switch statements. From flash the 32 KB
+            interpreter does not fit the 16 KB instruction cache, and ESP-IDF
+            turns every switch into a chain of compares. Costs about 48 KB of
+            internal RAM, which the Palm 68k JIT cache then does not get.
+endmenu

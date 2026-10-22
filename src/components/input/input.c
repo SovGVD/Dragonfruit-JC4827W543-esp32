@@ -5,6 +5,7 @@
 #include "layout.h"
 #include "touch_config.h"
 #include "palm_config.h"
+#include "m5_sd.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -13,6 +14,12 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "input";
 
@@ -143,9 +150,8 @@ static esp_err_t gt911_write_block(uint16_t reg, const uint8_t *buf, size_t len)
     return i2c_master_transmit(gt911_dev, w, 2 + len, 100);
 }
 
-/* digitizer.cfg lives at the SD root (i.e. M5_SD_MOUNT_POINT "/digitizer.cfg").
- * Kept as a literal so input.c need not depend on m5_sd just for the macro. */
-#define DIGITIZER_CFG_PATH "/sdcard/digitizer.cfg"
+/* digitizer.cfg lives in the Palm folder (PALM_SD_DIR "/digitizer.cfg"). */
+#define DIGITIZER_CFG_PATH PALM_SD_DIR "/digitizer.cfg"
 
 /* Logging sink for the (pure) digitizer.cfg parser — routes per-key
  * applied/skipped messages to the serial log. */
@@ -171,7 +177,7 @@ static void gt911_sync_sensitivity(void)
     gt911_sens_t cur;
     gt911_sens_from_block(block, &cur);
 
-    static char text[1024];
+    static EXT_RAM_BSS_ATTR char text[1024];
     size_t len = 0;
     config_load_result_t r = config_read_file(DIGITIZER_CFG_PATH, text, sizeof(text), &len);
 
@@ -504,3 +510,15 @@ void input_poll(void)
     tap_pulse_service();
 #endif
 }
+
+/* The GT911 path reports touches through the Palm layout only. */
+bool input_touch_panel(int *x, int *y) { (void)x; (void)y; return false; }
+touch_cal_source_t input_touch_load_saved(void) { return TOUCH_CAL_DEFAULT; }
+bool input_touch_raw(int *raw_x, int *raw_y) { (void)raw_x; (void)raw_y; return false; }
+bool input_touch_calibration_try(const int raw[4][2], int x0, int y0, int x1, int y1)
+{
+    (void)raw; (void)x0; (void)y0; (void)x1; (void)y1;
+    return false;
+}
+void input_touch_calibration_commit(bool keep) { (void)keep; }
+bool input_boot_button_held(void) { return !gpio_get_level(PIN_BTN_M); }

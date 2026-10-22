@@ -23,6 +23,11 @@
 #include "serial_bridge.h"
 #include "wifi_gateway.h"
 #include "rom_loader.h"
+#if CONFIG_BOARD_JC4827W543
+#include "boot_menu.h"
+#include "cybiko_app.h"
+#include "display_ui.h"
+#endif
 #include "layout.h"
 #include "palm_config.h"
 #include "installer.h"
@@ -31,6 +36,12 @@
 #include "m5_sd.h"
 #include "palm_card.h"
 #include "audio.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR    /* host builds */
+#endif
 
 static const char *TAG = "emu";
 
@@ -81,7 +92,7 @@ volatile bool g_wave_benchmark_request = false;
 #define PARK_ALL      (PARK_DISPLAY | PARK_INPUT)
 
 /* --- PDB/PRC auto-install (components/installer) ---------------------------
- * Files in /install on the SD are buffered into PSRAM at boot and installed by
+ * Files in /PalmOS/install on the SD are buffered into PSRAM at boot and installed by
  * the cpu task (via the shared installer_pump) once the OS is up. All of the
  * install runtime state lives in one struct (install_runtime_t, see installer.h):
  * the cpu task is the sole writer of every field except `force` (the console's
@@ -745,7 +756,7 @@ static void cpu_task(void *param)
          * driver the host harness uses): it waits for the OS to settle (boot->UI
          * framebuffer switch), functionally probes the dynamic heap, then installs
          * one buffered database per batch (a full emulation batch runs between
-         * calls so the OS commits each). Source files are left in /install;
+         * calls so the OS commits each). Source files are left in /PalmOS/install;
          * databases already in restored RAM are kept. Runs on the cpu task — the sole writer of
          * CPU state — like the pen/key injection above. */
         palm_card_pump(&cpu);
@@ -1050,6 +1061,22 @@ static void display_task(void *param)
     }
 }
 
+/* Start an I/O task, with its stack in internal RAM if there is room, else
+ * in PSRAM. With the JIT cache and Wi-Fi up, internal RAM can be too short
+ * for both stacks, which left the display task unstarted and the screen
+ * blank. Neither task writes flash (which would hide a PSRAM stack), and
+ * their SPI transfers use internal DMA buffers, so a PSRAM stack is fine. */
+static void start_io_task(TaskFunction_t fn, const char *name, uint32_t stack, UBaseType_t prio)
+{
+    if (xTaskCreatePinnedToCore(fn, name, stack, NULL, prio, NULL, 0) == pdPASS) return;
+    if (xTaskCreatePinnedToCoreWithCaps(fn, name, stack, NULL, prio, NULL, 0,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGW(TAG, "%s task: internal RAM full, stack in PSRAM", name);
+        return;
+    }
+    ESP_LOGE(TAG, "%s task: out of memory", name);
+}
+
 void app_main(void)
 {
     /* Reserve the JIT's executable cache first, while the internal D/IRAM (SRAM1)
@@ -1058,13 +1085,15 @@ void app_main(void)
      * the cpu task samples a hot PC, long after this, so the ROM need not be loaded
      * yet. The 68k->Xtensa burst JIT is interpreter-primary; set g_m68k_accel_mode
      * = 0 for the pure interpreter. */
-#if CONFIG_IDF_TARGET_ESP32
+#if CONFIG_M68K_JIT
     g_m68k_accel_mode = 1;
 #else
     g_m68k_accel_mode = 0;
 #endif
+#if !CONFIG_BOARD_JC4827W543
     if (g_m68k_accel_mode)
         m68k_jit_init();
+#endif
 
     esp_err_t err = display_init();
     bool display_ok = (err == ESP_OK);
@@ -1075,14 +1104,32 @@ void app_main(void)
         ESP_LOGW(TAG, "Display init failed: %s (continuing without display)",
                  esp_err_to_name(err));
 
-    ESP_LOGI(TAG, "=== Dragonfruit on %s (Palm IIIx emulator) ===", BOARD_NAME);
+    ESP_LOGI(TAG, "=== Dragonfruit on %s ===", BOARD_NAME);
+
+#if CONFIG_BOARD_JC4827W543
+    /* Touch first: the boot menu needs it. Its calibration (on-screen, saved
+     * in NVS, else the touch.* keys of /PalmOS/palm.cfg) serves both systems. */
+    err = input_init();
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Input init failed: %s", esp_err_to_name(err));
+    if (display_ok && boot_menu_run() == BOOT_SYSTEM_CYBIKO) {
+        cybiko_app_start();
+        return;
+    }
+    if (display_ok) display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, 0xffff);
+    /* On this board the JIT cache is reserved only once Palm OS is chosen, so
+     * a Cybiko boot keeps that internal RAM. */
+    if (g_m68k_accel_mode)
+        m68k_jit_init();
+#endif
+    ESP_LOGI(TAG, "Starting Palm IIIx emulator");
 
     ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
     ESP_LOGI(TAG, "Free PSRAM: %lu bytes",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     /* Establish the screen layout before anything is drawn or any touch is
-     * mapped. Read the optional /palm.cfg off the SD (it shares the display SPI
+     * mapped. Read the optional /PalmOS/palm.cfg off the SD (it shares the display SPI
      * bus, so this must run after display_init); fall back to the stock portrait
      * layout if the card/file is absent or the config is invalid. The layout is
      * set even when the display failed, because input.c still maps touches
@@ -1101,7 +1148,7 @@ void app_main(void)
         uint16_t pw = BOARD_PANEL_W, ph = BOARD_PANEL_H;
         if (display_ok) display_get_panel_size(&pw, &ph);
 
-        static char cfg_text[LAYOUT_CFG_MAX];
+        static EXT_RAM_BSS_ATTR char cfg_text[LAYOUT_CFG_MAX];
         size_t cfg_len = 0;
         config_load_result_t cr = config_load_from_sd(cfg_text, sizeof(cfg_text), &cfg_len);
         if (cr == CONFIG_OK)
@@ -1109,7 +1156,7 @@ void app_main(void)
         else
             layout_use_default(pw, ph);
 
-        /* Same /palm.cfg also carries the serial-bridge settings (see
+        /* Same palm.cfg also carries the serial-bridge settings (see
          * serial_bridge.h): serial.mode = auto|console|passthrough, serial.baud. */
         if (cr == CONFIG_OK) {
             char v[24];
@@ -1141,7 +1188,7 @@ void app_main(void)
         if (display_ok) display_draw_static();
     }
 
-    /* The ROM lives on the SD card (/palm.rom), not embedded in the firmware.
+    /* The ROM lives on the SD card (/PalmOS/palm.rom), not embedded in the firmware.
      * Load it into PSRAM; on any failure show why on the e-ink and halt — there
      * is nothing to emulate without a ROM. The SD shares the display's SPI bus,
      * so this runs after display_init() and unmounts before any task starts. */
@@ -1152,10 +1199,10 @@ void app_main(void)
         const char *msg;
         switch (lr) {
         case ROM_LOAD_NO_SD:
-            msg = "NO SD CARD\n\nINSERT A FAT\nSD CARD WITH\n/PALM.ROM\nAND RESET";
+            msg = "NO SD CARD\n\nINSERT A FAT\nSD CARD WITH\n/PALMOS/\nPALM.ROM\nAND RESET";
             break;
         case ROM_LOAD_NO_FILE:
-            msg = "PALM.ROM\nNOT FOUND\n\nCOPY ROM TO\n/PALM.ROM\nON SD CARD\nAND RESET";
+            msg = "PALM.ROM\nNOT FOUND\n\nCOPY ROM TO\n/PALMOS/\nPALM.ROM\nAND RESET";
             break;
         default:
             msg = "BAD PALM.ROM\n\nNOT A VALID\nIIIX ROM\n\nREPLACE AND\nRESET";
@@ -1178,7 +1225,7 @@ void app_main(void)
     ram_state_init(&ram_state, ram_state_crc(rom_data, rom_size), BUS_RAM_SIZE);
     ram_state.yield = ram_state_yield;
     ram_state.progress = ram_progress_available ? ram_progress_update : NULL;
-    snprintf(ram_state_prefix, sizeof(ram_state_prefix), "/sdcard/palm-%08lX-%uK-ram",
+    snprintf(ram_state_prefix, sizeof(ram_state_prefix), PALM_SD_DIR "/palm-%08lX-%uK-ram",
              (unsigned long)ram_state.rom_crc, BUS_RAM_SIZE / 1024);
     if (ram_state_enabled) {
         ram_progress_begin(true);
@@ -1212,6 +1259,9 @@ void app_main(void)
     g_install.phase = g_install.set.count ? INST_WAIT : INST_IDLE;
     g_installer_yield = installer_yield_cb;
 
+    /* The volume set in the boot menu, once set, wins over palm.cfg. */
+    uint8_t saved_volume;
+    if (audio_saved_volume(&saved_volume)) sound_volume = saved_volume;
     err = audio_init(sound_volume);
     if (err == ESP_OK)
         db_pwm_set_sink(audio_tone);
@@ -1226,11 +1276,11 @@ void app_main(void)
     m68k_init(&cpu);
 #if CONFIG_BOARD_JC4827W543
     if (card_enabled && m5_sd_mount(&palm_sd_card) == ESP_OK) {
-        if (palm_card_init(M5_SD_MOUNT_POINT "/palm-card", card_read_only)) {
+        if (palm_card_init(PALM_SD_DIR "/palm-card", card_read_only)) {
             palm_card_space = card_space;
             cpu.palm_trap_callback = palm_card_trap;
         } else {
-            ESP_LOGW(TAG, "Virtual Palm card unavailable; check /palm-card directory");
+            ESP_LOGW(TAG, "Virtual Palm card unavailable; check /PalmOS/palm-card directory");
             m5_sd_unmount(palm_sd_card);
             palm_sd_card = NULL;
         }
@@ -1256,9 +1306,11 @@ void app_main(void)
              (unsigned long)cpu.regs.pc,
              (unsigned long)cpu.regs.a[7]);
 
+#if !CONFIG_BOARD_JC4827W543
     err = input_init();
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Input init failed: %s", esp_err_to_name(err));
+#endif
 
     park_eg = xEventGroupCreate();
     if (!park_eg) ESP_LOGW(TAG, "park event group alloc failed; light sleep disabled");
@@ -1266,9 +1318,15 @@ void app_main(void)
     debug_console_start();
     serial_bridge_init(serial_mode, serial_baud);
 
-    xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(display_task, "display", 8192, NULL, 3, NULL, 0);
-    xTaskCreatePinnedToCore(input_task, "input", 4096, NULL, 4, NULL, 0);
+    /* Task stacks come from internal RAM; say so if it ran out rather than
+     * leaving a silent, frozen screen. */
+    ESP_LOGI(TAG, "Free internal RAM before tasks: %u bytes (largest block %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (xTaskCreatePinnedToCore(cpu_task, "cpu", 16384, NULL, 5, NULL, 1) != pdPASS)
+        ESP_LOGE(TAG, "cpu task: out of internal RAM");
+    start_io_task(display_task, "display", 8192, 3);
+    start_io_task(input_task, "input", 4096, 4);
 #if !CONFIG_BOARD_JC4827W543
     xTaskCreatePinnedToCore(battery_task, "battery", 4096, NULL, 2, NULL, 0);
 #else

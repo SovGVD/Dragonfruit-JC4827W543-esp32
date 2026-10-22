@@ -32,6 +32,7 @@
 #define RATE 32000
 #define CHUNK (CY_CLOCK_HZ / 1000)          /* run 1 ms at a go */
 #define SAVE_EVERY_MS 30000
+#define SOUND_AHEAD (RATE / 10)             /* samples kept queued for the sound card */
 
 static char dir[1024];
 static cybiko_t m;
@@ -398,6 +399,8 @@ int main(int argc, char **argv)
 
     uint64_t start = SDL_GetTicksNS(), last_save = SDL_GetTicks();
     uint64_t base_cycles = m.cpu.cycles;
+    bool sound_clock = audio != NULL;
+    uint64_t full_since = 0;
     uint32_t shown = 0;
     static uint8_t lum[CY_LCD_W * CY_LCD_H];
     bool running = true;
@@ -410,13 +413,29 @@ int main(int argc, char **argv)
                 if (k >= 0) cybiko_key(&m, k, e.type == SDL_EVENT_KEY_DOWN);
             }
         }
-        /* Run up to the wall clock, at most 100 ms at a time; if the PC
-         * falls further behind, let the emulated time slip. */
-        uint64_t want = base_cycles + (SDL_GetTicksNS() - start) * (CY_CLOCK_HZ / 1000) / 1000000;
-        if (want > m.cpu.cycles + CY_CLOCK_HZ / 10) {
-            base_cycles += want - (m.cpu.cycles + CY_CLOCK_HZ / 10);
-            want = m.cpu.cycles + CY_CLOCK_HZ / 10;
+        /* With sound, the sound card sets the pace: run until SOUND_AHEAD
+         * samples are queued, so it never runs dry (a wall-clock pace left
+         * it only a few ms ahead, and sound broke up on PulseAudio and
+         * PipeWire). Without sound, or if the card stops taking samples, run
+         * up to the wall clock. Either way at most 100 ms at a time; if the
+         * PC falls further behind, the emulated time slips. */
+        uint64_t elapsed = (SDL_GetTicksNS() - start) * (CY_CLOCK_HZ / 1000) / 1000000;
+        uint64_t want = base_cycles + elapsed;
+        if (sound_clock) {
+            int queued = SDL_GetAudioStreamQueued(audio) / 2;
+            want = m.cpu.cycles;
+            if (queued < SOUND_AHEAD) {
+                want += (uint64_t)(SOUND_AHEAD - queued) * CY_CLOCK_HZ / RATE;
+                full_since = 0;
+            } else if (!full_since) {
+                full_since = SDL_GetTicks();
+            } else if (SDL_GetTicks() - full_since > 1000) {
+                fprintf(stderr, "the sound card stopped playing; keeping time by the clock\n");
+                sound_clock = false;
+            }
         }
+        if (want > m.cpu.cycles + CY_CLOCK_HZ / 10) want = m.cpu.cycles + CY_CLOCK_HZ / 10;
+        base_cycles = want - elapsed;
         while (m.cpu.cycles < want) {
             cybiko_run(&m, CHUNK);
             make_sound(audio);

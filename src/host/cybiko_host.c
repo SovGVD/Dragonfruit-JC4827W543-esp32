@@ -421,6 +421,9 @@ int main(int argc, char **argv)
     memcpy(rom, r, CY_ROM_SIZE);
     free(r);
     uint8_t *flash = load(flash_path, CY_FLASH_SIZE, NULL, true);
+#ifdef CY_WITH_BROWSER
+    if (gate) cy_gate_set_fonts(gate, flash, CY_FLASH_SIZE);
+#endif
     uint8_t *ram = calloc(1, CY_RAM_SIZE);
     uint32_t disk_size = disk_kb ? disk_kb * 1024u : CY_RAMDISK_SIZE;
     uint8_t *disk = disk_kb ? calloc(1, disk_size) : ram;

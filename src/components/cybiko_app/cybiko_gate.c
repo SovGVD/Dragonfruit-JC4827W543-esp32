@@ -27,6 +27,7 @@ static cy_gate_t *gate;
 static QueueHandle_t to_gate, to_machine;
 static volatile bool pause_req, paused;
 static char home[256];
+static const uint8_t *fonts_from;      /* the CyOS flash image */
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -53,6 +54,7 @@ static void gate_task(void *arg)
     gate = cy_gate_create(id, &host, &net);
     if (!gate) { ESP_LOGE(TAG, "out of memory"); vTaskDelete(NULL); return; }
     if (home[0]) cy_gate_set_home(gate, home);
+    if (fonts_from) cy_gate_set_fonts(gate, fonts_from, CY_FLASH_SIZE);   /* for the Browser app's pages */
     ESP_LOGI(TAG, "gate %08lx on the radio", (unsigned long)id);
     uint32_t wait = 0;
     for (;;) {
@@ -72,8 +74,9 @@ static void gate_task(void *arg)
     }
 }
 
-void cybiko_gate_init(cybiko_t *m, const char *cfg)
+void cybiko_gate_init(cybiko_t *m, const uint8_t *flash, const char *cfg)
 {
+    fonts_from = flash;
     char value[16] = "on";
     if (cfg) config_get_value(cfg, "wap.gate", value, sizeof value);
     if (!strcmp(value, "off")) { ESP_LOGI(TAG, "no gate (wap.gate = off)"); return; }

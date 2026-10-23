@@ -566,7 +566,7 @@ void cybiko_app_start(void)
     cybiko_set_disk(machine, disk, disk_size);
     memcpy(ram, disk, CY_RAMDISK_SIZE);         /* in case the disk cannot be moved */
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
-    cybiko_gate_init(machine, have_cfg ? cfg : NULL);
+    cybiko_gate_init(machine, flash, have_cfg ? cfg : NULL);
     cybiko_cart_init(machine, have_cfg ? cfg : NULL);
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));

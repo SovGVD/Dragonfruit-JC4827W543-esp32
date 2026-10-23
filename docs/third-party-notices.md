@@ -36,11 +36,22 @@ POSSIBILITY OF SUCH DAMAGE.
 ## MAME
 
 The Cybiko Xtreme emulation (`src/components/h8s` and `src/components/cybiko`)
-is original C, but its hardware description follows [MAME](https://www.mamedev.org/):
-the H8 instruction table and on-chip peripheral models (`src/devices/cpu/h8`,
-Olivier Galibert and hap), the Cybiko driver (`src/mame/cybiko`, Tim
-Schuerewegen), the HD66421 LCD controller and PCF8593 clock (Tim Schuerewegen)
-and the Intel/AMD flash model (Aaron Giles). These MAME files are under the
+is original C, but it would not exist without [MAME](https://www.mamedev.org/)
+and the people who worked out this hardware there. Its hardware description
+follows:
+
+- the Cybiko driver (`src/mame/cybiko`), the HD66421 LCD controller and the
+  PCF8593 clock, by Tim Schuerewegen;
+- the imgtool `cybikoxt` module (`src/tools/imgtool/modules/cybikoxt.cpp`),
+  by Tim Schuerewegen: the RAM disk page layout and page checksum in
+  `cy_disk.c`;
+- the H8 instruction table and on-chip peripheral models (`src/devices/cpu/h8`),
+  by Olivier Galibert and hap; `tools/h8s-diff/patterns.h` is generated from
+  its `h8.lst`;
+- the Intel/AMD flash model, by Aaron Giles.
+
+Portions derived from MAME: Copyright (c) Tim Schuerewegen, Olivier Galibert,
+hap, Aaron Giles and the MAME contributors. These MAME files are under the
 BSD 3-Clause license:
 
 ```text

@@ -261,6 +261,14 @@ docs/               Guides and references
 `reference/` (not committed) holds third-party emulators and datasheets used
 to understand the hardware, never copied.
 
+## Credits
+
+The Cybiko Xtreme side stands on [MAME](https://www.mamedev.org/): Tim
+Schuerewegen's Cybiko driver, HD66421, PCF8593 and imgtool `cybikoxt` code, and
+Olivier Galibert's and hap's H8 core and peripherals, were the reference for
+the hardware model. No MAME code is copied; the details and the BSD-3-Clause
+notice are in [third-party notices](docs/third-party-notices.md).
+
 ## License
 
 MIT. See [LICENSE](LICENSE) and [third-party notices](docs/third-party-notices.md).

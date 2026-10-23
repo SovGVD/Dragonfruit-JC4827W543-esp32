@@ -29,9 +29,8 @@ anything you put on the SD card.
 
 The whole 480×272 screen of the JC4827W543 at its real size, one screen pixel
 per image pixel, with the portrait layouts turned upright. The emulated LCDs are
-drawn at whole-number zoom only. The
-images were made on a PC with the firmware's own drawing code and the PC builds
-of the emulators.
+drawn at whole-number zoom only. The images were made on a PC with the
+firmware's own drawing code and the PC builds of the emulators.
 
 | Palm OS 4.1 (Palm IIIc ROM) | Cybiko Xtreme, portrait |
 |:---:|:---:|

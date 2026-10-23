@@ -11,6 +11,16 @@
  *   flash   (512 KB):  flash.bin,   cyos_v1508.bin, xtreme-flash.bin
  * Either output may be NULL. Returns true when both files exist. */
 bool cybiko_app_find_files(char *rom_path, char *flash_path, size_t cap);
+/* The original flash dump (the names above without flash.bin). */
+bool cybiko_app_find_dump(char *flash_path, size_t cap);
+
+/* A CyOS update image in /Cybiko: a file named *.boot of 64-512 KB, such as
+ * the Russian ccyphRU1.5.08r.boot. It is installed into the flash on start
+ * (see cybiko_flash_stage_boot), the result is saved as flash.bin and the
+ * file is renamed to *.boot.done. */
+#define CYBIKO_UPDATE_MIN (64 * 1024)
+#define CYBIKO_UPDATE_MAX (512 * 1024)
+bool cybiko_app_find_update(char *path, size_t cap);
 
 /* Load the images, start the emulator tasks and return. display_init() and
  * input_init() must already have run. On a fatal error the reason is shown

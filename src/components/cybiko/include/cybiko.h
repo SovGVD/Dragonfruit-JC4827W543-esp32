@@ -151,6 +151,7 @@ typedef struct {
     uint8_t *mem;              /* 512 KB, big-endian 16-bit words */
     int mode;
     bool dirty;                /* contents changed since cybiko_flash_saved */
+    uint32_t writes;           /* counts the changes, to see when a reflash ends */
 } cy_flash_t;
 
 /* One DMA subchannel (or a full-address channel, kept in the B slot) while a
@@ -322,6 +323,17 @@ void cybiko_set_unit_id(cybiko_t *m, uint32_t id);
 uint32_t cybiko_unit_id(const cybiko_t *m);
 /* Undo the ID change in a copy of the flash about to be saved. */
 void cybiko_flash_original(const cybiko_t *m, uint8_t *copy);
+
+/* The per-machine record (magic, Cybiko ID, CRC) at the top of the flash. */
+#define CY_FLASH_ID_RECORD 0x7f800u
+enum { CY_BOOT_OK, CY_BOOT_BAD_IMAGE, CY_BOOT_NO_LOADER, CY_BOOT_TOO_BIG };
+/* Stage a CyOS update image (a .boot file, magic ffc0ffab, such as the
+ * Russian ccyphRU1.5.08r.boot) in a flash image before the machine boots:
+ * the flash's own loader then installs it into the flash on the next start,
+ * the way a real Xtreme does after EZ Loader sends one. The flash must hold
+ * a CyOS (its loader is used); everything between the loader and the ID
+ * record is replaced. Returns a CY_BOOT_ value. */
+int cybiko_flash_stage_boot(uint8_t *flash, const uint8_t *boot, size_t len);
 
 /* Programs made for this emulator (the Browser launcher from the
  * cybiko-browser project) call the host with an

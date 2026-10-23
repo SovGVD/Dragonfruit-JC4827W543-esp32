@@ -334,7 +334,7 @@ static void run_browser(cybiko_t *m, const uint8_t *flash, const char *keys, con
 int main(int argc, char **argv)
 {
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
-    const char *shot = NULL, *frames = NULL, *dump = NULL;
+    const char *shot = NULL, *frames = NULL, *dump = NULL, *boot_path = NULL, *save_flash = NULL;
     double pc_profile_ms = -1;
 #ifdef CY_HLE_CHECK
     int blit_fuzz = 0;
@@ -351,6 +351,8 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--rom") && v) { rom_path = v; i++; }
         else if (!strcmp(a, "--flash") && v) { flash_path = v; i++; }
         else if (!strcmp(a, "--ramdisk") && v) { ramdisk_path = v; i++; }
+        else if (!strcmp(a, "--boot") && v) { boot_path = v; i++; }
+        else if (!strcmp(a, "--save-flash") && v) { save_flash = v; i++; }
         else if (!strcmp(a, "--seconds") && v) { seconds = atof(v); i++; }
         else if (!strcmp(a, "--screenshot") && v) { shot = v; i++; }
         else if (!strcmp(a, "--frames") && v) { frames = v; i++; }
@@ -407,7 +409,8 @@ int main(int argc, char **argv)
                             "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n"
                             "       [--disk-size KB] [--install FILE]... [--ls]\n"
                             "       [--unit-id HEX] [--pair RAMDISK2] [--press-both] [--hex-port N]\n"
-                            "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n", argv[0]);
+                            "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n"
+                            "       [--boot UPDATE.boot] [--save-flash FILE]\n", argv[0]);
             return 2;
         }
     }
@@ -421,6 +424,19 @@ int main(int argc, char **argv)
     memcpy(rom, r, CY_ROM_SIZE);
     free(r);
     uint8_t *flash = load(flash_path, CY_FLASH_SIZE, NULL, true);
+    if (boot_path) {
+        size_t boot_len = 0;
+        uint8_t *boot = load(boot_path, CY_FLASH_SIZE, &boot_len, false);
+        int r = boot ? cybiko_flash_stage_boot(flash, boot, boot_len) : CY_BOOT_BAD_IMAGE;
+        free(boot);
+        if (r != CY_BOOT_OK) {
+            fprintf(stderr, "%s: %s\n", boot_path,
+                    r == CY_BOOT_TOO_BIG ? "too big for the flash" :
+                    r == CY_BOOT_NO_LOADER ? "the flash has no CyOS loader to install it" :
+                    "not a CyOS update image (magic ffc0ffab)");
+            return 1;
+        }
+    }
 #ifdef CY_WITH_BROWSER
     if (gate) cy_gate_set_fonts(gate, flash, CY_FLASH_SIZE);
 #endif
@@ -645,8 +661,15 @@ int main(int argc, char **argv)
         cy_disk_list(disk, disk_size, print_file, NULL);
     }
     if (disk_kb) fprintf(stderr, "kernel patched %u time(s) for the bigger RAM disk\n", m.disk_patched);
-    if (m.flash.dirty) {
-        fprintf(stderr, "note: the OS wrote to flash (not saved by this runner)\n");
+    if (save_flash) {
+        uint8_t *copy = malloc(CY_FLASH_SIZE);
+        memcpy(copy, flash, CY_FLASH_SIZE);
+        cybiko_flash_original(&m, copy);
+        FILE *f = fopen(save_flash, "wb");
+        if (f) { fwrite(copy, 1, CY_FLASH_SIZE, f); fclose(f); }
+        free(copy);
+    } else if (m.flash.dirty) {
+        fprintf(stderr, "note: the OS wrote to flash (not saved without --save-flash)\n");
     }
 
     double emu_s = (double)m.cpu.cycles / CY_CLOCK_HZ;

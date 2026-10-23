@@ -7,7 +7,7 @@
  *   --ramdisk FILE     load the RAM disk from FILE and save it back
  *   --disk-size KB     move the RAM disk to 800000 and make it KB kilobytes
  *                      (a multiple of 64), as the firmware does
- *   --install FILE     copy FILE onto the RAM disk before starting (repeatable)
+ *   --install FILE     copy FILE onto the RAM disk(s) before starting (repeatable)
  *   --ls               list the files on the RAM disk at the end
  *   --cart             plug in the MP3 player cartridge (--cart-log: and log it)
  *   --card IMG|DIR     ... with an SD card: a disk image (512-byte blocks) or a
@@ -32,6 +32,8 @@
  *                      on the radio for CyOS's WAP browser, fetching through
  *                      curl
  *   --gate-home URL    (after --gate) the page the WAP browser's Home opens
+ *   --gate-near a|b|c  the machine the gate is in radio range of (default a);
+ *                      the others neither hear it nor are heard by it
  *   --dump-ram FILE    write RAM at the end (the other machines' to FILE.b, FILE.c)
  *   --pair RAMDISK2    run a second machine (ID + 1) with its own RAM disk, on
  *                      the same radio; --press b:KEY@MS presses its keys
@@ -229,11 +231,13 @@ static bool chain;                  /* --chain: B hears A and C, A and C don't h
 #include "cy_gate.h"
 /* --gate: a virtual CyWIG on the radio */
 static cy_gate_t *gate;
+static int gate_near;               /* --gate-near: the machine the gate is in range of */
 
 static void gate_rf(void *user, const uint8_t *pkt, size_t len, uint8_t ch)
 {
     (void)user;
-    if (machines[0] && !cybiko_rf_receive(machines[0], pkt, len, ch)) fprintf(stderr, "gate: radio queue full\n");
+    if (machines[gate_near] && !cybiko_rf_receive(machines[gate_near], pkt, len, ch))
+        fprintf(stderr, "gate: radio queue full\n");
 }
 
 static void gate_log(void *user, const char *line)
@@ -446,7 +450,7 @@ static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
         if (to != from && machines[to] && (!chain || abs(to - from) == 1))
             cybiko_rf_receive(machines[to], pkt, len, channel);
 #ifdef CY_WITH_BROWSER
-    if (gate) cy_gate_rf_in(gate, pkt, len, channel);
+    if (gate && from == gate_near) cy_gate_rf_in(gate, pkt, len, channel);
 #endif
 }
 
@@ -550,6 +554,23 @@ static void run_browser(cybiko_t *m, const uint8_t *flash, const char *keys, con
 }
 #endif
 
+/* --install: copy the files onto a RAM disk (every machine gets them) */
+static void install_all(uint8_t *disk, uint32_t disk_size, const char *who)
+{
+    for (int i = 0; i < ninstalls; i++) {
+        size_t len;
+        uint8_t *data = load(installs[i], 8u << 20, &len, false);
+        char path[512];
+        snprintf(path, sizeof path, "%s", installs[i]);
+        const char *name = basename(path);
+        uint32_t date = (uint32_t)(time(NULL) + 2208988800LL);
+        int r = cy_disk_write(disk, disk_size, name, data, (uint32_t)len, date);
+        fprintf(stderr, "install %s%s (%zu bytes): %s\n", who, name, len,
+                r == 0 ? "ok" : r == -1 ? "no room" : "bad name");
+        free(data);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *rom_path = NULL, *flash_path = NULL, *ramdisk_path = NULL;
@@ -621,6 +642,7 @@ int main(int argc, char **argv)
             gate = cy_gate_create(0x4c80c0deu, &gh, &gate_net);
         }
         else if (!strcmp(a, "--gate-home") && v && gate) { cy_gate_set_home(gate, v); i++; }
+        else if (!strcmp(a, "--gate-near") && v && v[0] >= 'a' && v[0] < 'a' + MAX_MACHINES) { gate_near = v[0] - 'a'; i++; }
 #endif
         else if (!strcmp(a, "--press-both")) press_both = true;
         else if (!strcmp(a, "--unit-id") && v) { unit_id = (uint32_t)strtoul(v, NULL, 16); i++; }
@@ -694,18 +716,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "ramdisk: loaded %zu bytes\n", n);
         }
     }
-    for (int i = 0; i < ninstalls; i++) {
-        size_t len;
-        uint8_t *data = load(installs[i], 8u << 20, &len, false);
-        char path[512];
-        snprintf(path, sizeof path, "%s", installs[i]);
-        const char *name = basename(path);
-        uint32_t date = (uint32_t)(time(NULL) + 2208988800LL);
-        int r = cy_disk_write(disk, disk_size, name, data, (uint32_t)len, date);
-        fprintf(stderr, "install %s (%zu bytes): %s\n", name, len,
-                r == 0 ? "ok" : r == -1 ? "no room" : "bad name");
-        free(data);
-    }
+    install_all(disk, disk_size, "");
 
     static cybiko_t m, others[MAX_MACHINES - 1];
     /* cybiko_init patches the ROM in place, so the other machines take a
@@ -765,6 +776,7 @@ int main(int argc, char **argv)
         disk2[k] = calloc(1, disk_size);
         FILE *f = fopen(extra_path[k], "rb");
         if (f) { if (fread(disk2[k], 1, disk_size, f) == 0) fprintf(stderr, "%s is empty\n", extra_path[k]); fclose(f); }
+        install_all(disk2[k], disk_size, k ? "c:" : "b:");
         cy_host_t host2 = { .user = (void *)(intptr_t)(k + 1), .wall_time = wall, .rf_send = on_rf };
         cybiko_init(&others[k], &host2, rom2[k], flash2[k], calloc(1, CY_RAM_SIZE));
         cybiko_set_disk(&others[k], disk2[k], disk_size);
@@ -823,6 +835,9 @@ int main(int argc, char **argv)
                 int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
                 for (int k = 0; k <= nother; k++) cybiko_run(machines[k], n);
                 if (bot.on) bot_poll(m.cpu.cycles / (CY_CLOCK_HZ / 1000));
+#ifdef CY_WITH_BROWSER
+                if (gate) cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
+#endif
             }
         } else if (0
 #ifdef CY_WITH_BROWSER

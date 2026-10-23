@@ -486,7 +486,10 @@ Cybikos don't pass packets on for each other. In the kernel's receive loop
 (`49ac7e` on), a packet for someone else (not this Cybiko's ID or
 `ffffffff`) only refreshes the people list; nothing is retransmitted.
 Tested with three emulated Cybikos in a row (`--chain`: B hears A and C,
-A and C don't hear each other): C never saw A's chat lines or pings. The
+A and C don't hear each other), all three in Chat's General room, each
+saying a line: A showed only B's line, C showed only B's, and only B showed
+everyone's. B never sent a packet with another Cybiko's ID as the sender.
+The
 manual's "wireless local virtual network" of "up to 99 friends" is everyone
 within radio range (50 m indoors, 300 m outdoors for chat, about 20 m for
 files and games).
@@ -530,6 +533,13 @@ service; gates that ignore it work.
 
 On the Classic, the original gate was a Cybiko on a PC running VCyWIG,
 which relayed mail over UDP to Cybiko's servers (long gone).
+
+A gate is no different: only the Cybikos that hear it directly can use it.
+Tested with the same three Cybikos and a gate in range of C only
+(`--gate --gate-near c`): C's Browser loaded a page through the gate, B
+showed no gate on its desktop, and A's Browser said "No gate nearby". No
+Cybiko passes its gate on: a Cybiko that hears a gate doesn't set the gate
+flag on its own packets, and A never sent anything to the gate's ID.
 
 ### What this means for a mesh
 
@@ -590,6 +600,7 @@ Cybikos on one radio, and a radio-only chat partner:
 | --- | --- |
 | `--pair DISK2`, `--third DISK3` | a second and third Cybiko (IDs +1, +2), keys with `--press b:KEY@MS` and `c:KEY@MS` |
 | `--chain` | B hears A and C, A and C don't hear each other |
+| `--gate --gate-near a\|b\|c` | a CyWIG (built with cybiko-browser) in radio range of that machine only |
 | `--rf-log` | print every packet sent: time, machine, RF channel, header and body |
 | `--frames DIR --frame-log` | screens of all machines, with times |
 | `--dump-ram FILE` | RAM of every machine at the end (`FILE.b`, `FILE.c`) |

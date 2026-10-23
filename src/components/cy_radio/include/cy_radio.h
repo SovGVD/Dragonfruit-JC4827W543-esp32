@@ -1,7 +1,9 @@
 /* The Cybiko radio protocol (CyOS 1.5 "CyDP") in plain C, for talking to
  * Cybikos from other programs: emulated ones over ESP-NOW, or anything
  * else that carries the radio's packets. No dependencies, no allocation.
- * The protocol is described in docs/cybiko-radio-protocol.md.
+ * The protocol is described in radio-protocol.md of cybiko-docs
+ * (https://github.com/SovGVD/cybiko-docs); the ESP-NOW framing in
+ * docs/cybiko-radio-protocol.md.
  *
  * Packets are 50 (short) or 200 (long) bytes: a 16-byte header, data, then
  * Reed-Solomon parity. All multi-byte fields are big-endian. */

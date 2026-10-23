@@ -13,7 +13,8 @@
  *                   0A/0B clocking blocks; P2.2 is its chip select and P2.0
  *                   reads low while a card is in
  *
- * docs/cybiko-mp3-cartridge.md has the details. The card is the host's disk
+ * mp3-cartridge.md in cybiko-docs (https://github.com/SovGVD/cybiko-docs) has the
+ * details. The card is the host's disk
  * image (card_read/card_write); the MPEG stream goes to the host through
  * cybiko_mp3_take, which decodes it. */
 #include <stdio.h>

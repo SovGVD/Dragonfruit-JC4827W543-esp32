@@ -10,9 +10,10 @@ CyOS 1.5.08 boots to its first-run setup (welcome, nickname, contrast, clock)
 in the [PC runner](#pc-runner). No ROM is shipped here.
 
 How the machine works inside (memory map, screen, keys, radio protocol, boot,
-RAM disk format) is in [cybiko-internals.md](cybiko-internals.md); the MP3
-cartridge, `.app` archives and MXD video are in
-[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
+RAM disk format, file formats, the MP3 cartridge) is documented in
+[cybiko-docs](https://github.com/SovGVD/cybiko-docs). How the emulator
+models it is in [cybiko-internals.md](cybiko-internals.md); the emulated MP3
+cartridge in [cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
 
 ## SD card
 
@@ -63,10 +64,9 @@ Files of 64 KB or less are skipped: `avr*.boot` (7 KB) updates the Xtreme's
 AVR co-processor, which is not emulated.
 
 The Russian CyOS was tried in the [PC runner](#pc-runner): the whole first-run setup and
-the desktop are in Russian. Letters type as Cyrillic on the ЙЦУКЕН layout (the
-`G L E B` keys give `П Д У И`), the
-desktop's title bar shows `абв`, and Fn+Space switches to Latin letters and
-back. The on-screen keyboard still shows only Latin labels.
+the desktop are in Russian, and Fn+Space switches between Cyrillic and Latin
+letters (more in [cybiko-docs](https://github.com/SovGVD/cybiko-docs/blob/main/cyos.md#russian-cyos)). The
+on-screen keyboard still shows only Latin labels.
 
 ## Storage
 
@@ -114,9 +114,10 @@ out without editing the file. As on the real machine, some games (CyRace 2,
 for one) quit straight back to the desktop while the cartridge and its card
 are in: take it out to play them.
 `tools/cybiko_mxd.py` turns a video into an MXD clip, and a clip back into
-an MP4 (`cybiko_mxd.py clip.app clip.mp4`). How the cartridge
-works, with everything needed to reimplement it, is in
-[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
+an MP4 (`cybiko_mxd.py clip.app clip.mp4`). More in
+[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md); how the cartridge
+works, with everything needed to reimplement it, is in cybiko-docs'
+[mp3-cartridge.md](https://github.com/SovGVD/cybiko-docs/blob/main/mp3-cartridge.md).
 
 ## Games and apps
 
@@ -236,13 +237,11 @@ rf.id = auto     # auto (from the MAC), keep (the dump's own ID) or 8 hex digits
 The radio uses the Wi-Fi chip in station mode on a fixed channel, so it
 cannot share it with the Palm side's Wi-Fi; they never run at the same time.
 
-The co-processor protocol, from the H8S: `01 02 ch` tunes to channel `ch`,
-`01 03 xx xx` is an unknown setting, `30 f` plus 51 bytes sends a short
-packet (50 bytes and a spare byte), `cf f` plus 201 bytes sends a long one.
-Back to the H8S: `03` when a packet went out, `32` plus 50 bytes or `c8` plus
-200 bytes for a packet heard, and `13`/`11` for XOFF/XON. The packets, chat
-and gates are described in [cybiko-radio-protocol.md](cybiko-radio-protocol.md),
-with a small C library for other ESP32 projects in `src/components/cy_radio`.
+The co-processor's serial protocol is in cybiko-docs'
+[hardware.md](https://github.com/SovGVD/cybiko-docs/blob/main/hardware.md#11-radio), and the packets, chat and
+gates in [radio-protocol.md](https://github.com/SovGVD/cybiko-docs/blob/main/radio-protocol.md). How the boards
+carry them over ESP-NOW, with a small C library for other ESP32 projects in
+`src/components/cy_radio`, is in [cybiko-radio-protocol.md](cybiko-radio-protocol.md).
 
 ## Debug console
 
@@ -302,7 +301,7 @@ sets the first machine's Cybiko ID. `--third RAMDISK3` adds a third machine
 the `--gate` next to the third machine only), `--rf-log`
 prints every radio packet and `--frame-log` the frame times; `--bot NICK`
 adds a radio-only chat partner with `--bot-say` and `--bot-tell` (see
-[testing on a PC](cybiko-radio-protocol.md#13-testing-on-a-pc)). `--card FOLDER_OR_IMAGE` plugs in the
+[testing on a PC](cybiko-radio-protocol.md#4-testing-on-a-pc)). `--card FOLDER_OR_IMAGE` plugs in the
 MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records
 its sound, and `--cart-log` traces every cartridge access.
 
@@ -365,7 +364,7 @@ CPU loop was.
 
 - **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
   tested in the PC runner; the open questions are listed in
-  [cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md#6-open-questions).
+  [cybiko-docs](https://github.com/SovGVD/cybiko-docs/blob/main/mp3-cartridge.md#4-open-questions).
 - **Mesh network and internet gateway.** Cybikos formed a mesh, and one device
   connected to a PC could share internet access, including the WAP browser,
   with all the others. The radio now works over ESP-NOW; the next step is to let a

@@ -21,6 +21,30 @@ No ROMs are included. Palm OS and CyOS are copyrighted; you supply the dumps.
 
 ![A Palm IIIx running on the M5Paper, recognizing Graffiti handwriting input](docs/graffiti.jpg)
 
+**Dragonfruit is experimental.** Both emulators boot and run real software,
+but expect rough edges, missing hardware and crashes, and keep copies of
+anything you put on the SD card.
+
+## Screenshots
+
+The whole 480×272 screen of the JC4827W543 at its real size, one screen pixel
+per image pixel, with the portrait layouts turned upright. The emulated LCDs are
+drawn at whole-number zoom only. The
+images were made on a PC with the firmware's own drawing code and the PC builds
+of the emulators.
+
+| Palm OS 4.1 (Palm IIIc ROM) | Cybiko Xtreme, portrait |
+|:---:|:---:|
+| ![Palm OS 4.1 launcher on the JC4827W543, with the silkscreen and Graffiti area under the LCD](docs/images/palm-os.png) | ![CyOS main desktop on the JC4827W543 in portrait, with the on-screen keys](docs/images/cybiko-portrait.png) |
+
+The Cybiko in landscape, with the LCD at 2× zoom:
+
+![CyOS main desktop on the JC4827W543 in landscape, with the LCD at 2x and the on-screen keyboard below](docs/images/cybiko-landscape.png)
+
+The boot menu, where you pick the system:
+
+![The Dragonfruit boot menu with Palm OS and Cybiko cards, volume, orientation and calibration buttons](docs/images/boot-menu.png)
+
 ## Documentation
 
 | Guide | What's in it |

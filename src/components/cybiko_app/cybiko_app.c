@@ -68,6 +68,8 @@ static uint8_t *rom, *flash, *ram;
 static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BASE */
 static uint32_t disk_size;
 static QueueHandle_t key_queue;
+static uint64_t keys_after;           /* hold further key events until this cycle */
+#define MODIFIER_STATES (CY_CLOCK_HZ / 10) /* 100 ms of Cybiko time */
 static volatile bool pause_req, paused;
 static volatile int speed_pct = -1;         /* emulation speed over the last second */
 static volatile int busy_pct;               /* share of the last second the CPU loop ran */
@@ -137,7 +139,13 @@ static void cpu_task(void *arg)
             c0 = machine->cpu.cycles;
         }
         key_event_t ev;
-        while (xQueueReceive(key_queue, &ev, 0) == pdTRUE) cybiko_key(machine, ev.key, ev.down);
+        /* After SHIFT or FN goes down, the next key waits a while: CyOS
+         * reads a key pressed in the same scan as SHIFT without it (the
+         * on-screen keyboard sends both at once, see cybiko_ui.c). */
+        while (machine->cpu.cycles >= keys_after && xQueueReceive(key_queue, &ev, 0) == pdTRUE) {
+            cybiko_key(machine, ev.key, ev.down);
+            if (ev.down && (ev.key == CYK_SHIFT || ev.key == CYK_FN)) keys_after = machine->cpu.cycles + MODIFIER_STATES;
+        }
         cybiko_link_poll(machine);
         cybiko_gate_poll(machine);
         cybiko_cart_poll(machine);

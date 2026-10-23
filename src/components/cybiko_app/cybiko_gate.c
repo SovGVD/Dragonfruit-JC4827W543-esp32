@@ -102,6 +102,7 @@ void cybiko_gate_send(void *user, const uint8_t *pkt, size_t len, uint8_t channe
 void cybiko_gate_poll(cybiko_t *m)
 {
     if (!to_machine) return;
+    cyb_net_esp_save();     /* networks set on the gate's Wi-Fi page (needs this internal stack) */
     packet_t p;
     while (xQueuePeek(to_machine, &p, 0) == pdTRUE) {
         if (!cybiko_rf_receive(m, p.data, p.len, p.channel)) break;    /* full: next time */

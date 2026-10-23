@@ -32,8 +32,9 @@
  *                      on the radio for CyOS's WAP browser, fetching through
  *                      curl
  *   --gate-home URL    (after --gate) the page the WAP browser's Home opens
- *   --gate-near a|b|c  the machine the gate is in radio range of (default a);
- *                      the others neither hear it nor are heard by it
+ *   --gate-near MACHINES  the machines the gate is in radio range of, e.g.
+ *                      c or bc (default a); the others neither hear it nor
+ *                      are heard by it
  *   --dump-ram FILE    write RAM at the end (the other machines' to FILE.b, FILE.c)
  *   --pair RAMDISK2    run a second machine (ID + 1) with its own RAM disk, on
  *                      the same radio; --press b:KEY@MS presses its keys
@@ -231,13 +232,14 @@ static bool chain;                  /* --chain: B hears A and C, A and C don't h
 #include "cy_gate.h"
 /* --gate: a virtual CyWIG on the radio */
 static cy_gate_t *gate;
-static int gate_near;               /* --gate-near: the machine the gate is in range of */
+static unsigned gate_near = 1;      /* --gate-near: the machines the gate is in range of (bit k = machine k) */
 
 static void gate_rf(void *user, const uint8_t *pkt, size_t len, uint8_t ch)
 {
     (void)user;
-    if (machines[gate_near] && !cybiko_rf_receive(machines[gate_near], pkt, len, ch))
-        fprintf(stderr, "gate: radio queue full\n");
+    for (int k = 0; k < MAX_MACHINES; k++)
+        if ((gate_near >> k & 1) && machines[k] && !cybiko_rf_receive(machines[k], pkt, len, ch))
+            fprintf(stderr, "gate: machine %c's radio queue full\n", 'A' + k);
 }
 
 static void gate_log(void *user, const char *line)
@@ -450,7 +452,7 @@ static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
         if (to != from && machines[to] && (!chain || abs(to - from) == 1))
             cybiko_rf_receive(machines[to], pkt, len, channel);
 #ifdef CY_WITH_BROWSER
-    if (gate && from == gate_near) cy_gate_rf_in(gate, pkt, len, channel);
+    if (gate && (gate_near >> from & 1)) cy_gate_rf_in(gate, pkt, len, channel);
 #endif
 }
 
@@ -642,7 +644,12 @@ int main(int argc, char **argv)
             gate = cy_gate_create(0x4c80c0deu, &gh, &gate_net);
         }
         else if (!strcmp(a, "--gate-home") && v && gate) { cy_gate_set_home(gate, v); i++; }
-        else if (!strcmp(a, "--gate-near") && v && v[0] >= 'a' && v[0] < 'a' + MAX_MACHINES) { gate_near = v[0] - 'a'; i++; }
+        else if (!strcmp(a, "--gate-near") && v) {
+            gate_near = 0;
+            for (const char *c = v; *c; c++)
+                if (*c >= 'a' && *c < 'a' + MAX_MACHINES) gate_near |= 1u << (*c - 'a');
+            i++;
+        }
 #endif
         else if (!strcmp(a, "--press-both")) press_both = true;
         else if (!strcmp(a, "--unit-id") && v) { unit_id = (uint32_t)strtoul(v, NULL, 16); i++; }

@@ -125,7 +125,7 @@ Cybikos on one radio, and a radio-only chat partner:
 | --- | --- |
 | `--pair DISK2`, `--third DISK3` | a second and third Cybiko (IDs +1, +2), keys with `--press b:KEY@MS` and `c:KEY@MS` |
 | `--chain` | B hears A and C, A and C don't hear each other |
-| `--gate --gate-near a\|b\|c` | a CyWIG (built with cybiko-browser) in radio range of that machine only |
+| `--gate --gate-near MACHINES` | a CyWIG (built with cybiko-browser) in radio range of those machines only: `c` for a gate only C hears, `bc` for a gate running on board C in a `--chain` |
 | `--rf-log` | print every packet sent: time, machine, RF channel, header and body |
 | `--frames DIR --frame-log` | screens of all machines, with times |
 | `--dump-ram FILE` | RAM of every machine at the end (`FILE.b`, `FILE.c`) |

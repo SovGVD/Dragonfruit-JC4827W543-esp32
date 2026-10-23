@@ -314,10 +314,14 @@ From the H8S to the AVR:
 
 | Bytes | Meaning |
 |---|---|
-| `01 02 ch` | tune to channel *ch* (CyOS uses 2) |
+| `01 02 ch` | tune to RF channel *ch*, 2-9 (2 is the base channel, 4 is Chat's) |
 | `01 03 xx xx` | unknown setting (CyOS sends `00 00`) |
 | `30 f` + 51 bytes | send a short packet: 50 bytes plus a spare byte the DTC count includes; *f* is 0 or 1, meaning unknown |
 | `cf f` + 201 bytes | send a long packet: 200 bytes plus the spare byte |
+
+The packets themselves, and everything CyOS builds on them (pings,
+acknowledgements, messages, chat, gates), are in
+[cybiko-radio-protocol.md](cybiko-radio-protocol.md).
 
 From the AVR to the H8S:
 

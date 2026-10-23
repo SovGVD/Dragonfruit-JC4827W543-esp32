@@ -240,8 +240,9 @@ The co-processor protocol, from the H8S: `01 02 ch` tunes to channel `ch`,
 `01 03 xx xx` is an unknown setting, `30 f` plus 51 bytes sends a short
 packet (50 bytes and a spare byte), `cf f` plus 201 bytes sends a long one.
 Back to the H8S: `03` when a packet went out, `32` plus 50 bytes or `c8` plus
-200 bytes for a packet heard, and `13`/`11` for XOFF/XON. A packet starts with
-the 4-byte destination (`ffffffff` for everyone) and the sender's ID.
+200 bytes for a packet heard, and `13`/`11` for XOFF/XON. The packets, chat
+and gates are described in [cybiko-radio-protocol.md](cybiko-radio-protocol.md),
+with a small C library for other ESP32 projects in `src/components/cy_radio`.
 
 ## Debug console
 
@@ -296,7 +297,11 @@ install), `--disk-size KB` makes it bigger as the firmware does (the board uses 
 the end. `--pair RAMDISK2` runs a second machine with its own RAM disk and
 links the two radios (`--press b:key@ms` presses keys on the second one, and
 its screenshot is written next to the first with `.b.pgm`); `--unit-id HEX`
-sets the first machine's Cybiko ID. `--card FOLDER_OR_IMAGE` plugs in the
+sets the first machine's Cybiko ID. `--third RAMDISK3` adds a third machine
+(`c:` keys), `--chain` lets only neighbours hear each other, `--rf-log`
+prints every radio packet and `--frame-log` the frame times; `--bot NICK`
+adds a radio-only chat partner with `--bot-say` and `--bot-tell` (see
+[testing on a PC](cybiko-radio-protocol.md#13-testing-on-a-pc)). `--card FOLDER_OR_IMAGE` plugs in the
 MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records
 its sound, and `--cart-log` traces every cartridge access.
 

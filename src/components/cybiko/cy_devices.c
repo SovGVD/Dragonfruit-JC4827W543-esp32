@@ -150,6 +150,16 @@ static void rtc_store(cybiko_t *m)
 void cy_rtc_reset(cybiko_t *m)
 {
     cy_rtc_t *r = &m->rtc;
+    /* A real RTC keeps its registers on the backup battery. CyOS checks the
+     * alarm registers at boot and, finding them blank, takes the clock for
+     * dead and sets it to 1.01.2000 12:00am. Start with what CyOS writes
+     * there itself, so it believes the clock (the host's time). */
+    if (!r->data[0] && !r->data[8]) {
+        r->data[0] = 0x04;
+        r->data[8] = 0x30;
+        r->data[0xd] = 0x01;
+        r->data[0xe] = 0x01;
+    }
     r->scl = r->sda = true;
     r->active = r->send = false;
     r->inp = 0;

@@ -183,9 +183,12 @@ static void port_output(cybiko_t *m, int p)
     if (p == 1) cy_cart_p2(m, data, m->ddr[1]);
     if (p == 2) cy_cart_p3(m, data, m->ddr[2]);
     if (p == 14) {
-        /* PF1 drives the RTC clock; SDA follows MAME's wiring: the line is
-         * pulled low while PF6 outputs 1 or floats. */
-        cy_rtc_pins(m, data & 0x02, !(data & 0x40));
+        /* PF1 drives the RTC clock. SDA is open drain: CyOS keeps PF6 at 0
+         * and pulls the line low by making it an output (DDR bit 6), and
+         * lets it float high as an input. (Taken the other way round, as
+         * MAME's wiring was read before, every byte came out wrong and
+         * CyOS never got the time: 12:00am, 0.00.2000.) */
+        cy_rtc_pins(m, data & 0x02, data & 0x40);
     }
 }
 

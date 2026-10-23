@@ -196,7 +196,9 @@ static void pf_update(void)
     h8s_write8(&m.cpu, 0xffff6e, pfdr);
 }
 static void scl(int v) { pfddr |= 0x02; pfdr = (uint8_t)(v ? pfdr | 0x02 : pfdr & ~0x02); pf_update(); }
-static void sda(int v) { pfddr |= 0x40; pfdr = (uint8_t)(v ? pfdr & ~0x40 : pfdr | 0x40); pf_update(); }
+/* SDA is open drain, as CyOS drives it: PF6 stays 0, an output pulls the
+ * line low, an input lets it float high */
+static void sda(int v) { pfdr &= (uint8_t)~0x40; pfddr = (uint8_t)(v ? pfddr & ~0x40 : pfddr | 0x40); pf_update(); }
 static void i2c_start(void) { sda(1); scl(1); sda(0); scl(0); }
 static void i2c_stop(void) { sda(0); scl(1); sda(1); }
 static void i2c_write(uint8_t b)
@@ -207,14 +209,14 @@ static void i2c_write(uint8_t b)
 static uint8_t i2c_read(int last)
 {
     uint8_t b = 0;
-    pfddr &= (uint8_t)~0x40; pf_update();         /* PF6 as input */
+    sda(1);                                       /* let the RTC drive the line */
     for (int i = 0; i < 8; i++) {
         scl(1);
         b = (uint8_t)(b << 1 | ((h8s_read8(&m.cpu, 0xffff5e) >> 6) & 1));
         scl(0);
     }
     if (last) sda(1);                             /* NAK */
-    else { pfddr &= (uint8_t)~0x40; pf_update(); }  /* ACK (line low) */
+    else sda(0);                                  /* ACK (line low) */
     scl(1); scl(0);
     return b;
 }

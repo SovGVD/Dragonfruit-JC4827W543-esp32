@@ -38,3 +38,9 @@ void cybiko_app_set_portrait(bool portrait);
  * the real machine too. */
 bool cybiko_app_cart_in(void);
 void cybiko_app_set_cart_in(bool in);
+
+/* Whole frames ("vsync"), kept in NVS and switched in the boot menu: true
+ * (the default) shows the screen only once CyOS has finished drawing it,
+ * false shows it as it is drawn. */
+bool cybiko_app_vsync(void);
+void cybiko_app_set_vsync(bool on);

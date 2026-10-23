@@ -510,7 +510,10 @@ static void ui_task(void *arg)
         }
         boot_was = boot;
 
-        if (now - last_frame >= 40000) {         /* up to 25 fps */
+        if (cybiko_app_vsync_on()) {             /* whole frames, taken by the CPU task */
+            const uint8_t *frame = cybiko_app_frame();
+            if (frame) draw_lcd(frame);
+        } else if (now - last_frame >= 40000) {  /* up to 25 fps, mid-drawing too */
             uint32_t v = cybiko_lcd_render(m, lum);
             if (v != shown) {
                 draw_lcd(lum);

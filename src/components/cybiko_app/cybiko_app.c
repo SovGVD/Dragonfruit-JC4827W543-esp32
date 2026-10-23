@@ -131,6 +131,54 @@ static bool next_key(int *key, bool *down)
     return true;
 }
 
+/* "Vsync" for a screen with none (boot menu, on by default): CyOS writes
+ * the LCD controller's memory directly, so a frame taken in the middle of
+ * drawing shows half a picture. The CPU loop takes a frame itself once the
+ * screen has changed and then stayed still for VSYNC_QUIET_MS (the drawing
+ * is done), or after VSYNC_MAX_MS of steady drawing (animation and video
+ * still move), at most every VSYNC_MIN_MS. Times are emulated milliseconds.
+ * Two buffers, used in turn, so the UI task draws one while the next fills. */
+#define VSYNC_QUIET_MS 4
+#define VSYNC_MAX_MS 100
+#define VSYNC_MIN_MS 40
+static bool vsync;
+static volatile bool in_browser;            /* the browser shows whole frames itself */
+static uint8_t *frames[2];
+static volatile int frame_ready = -1;       /* buffer with a new frame, or -1 */
+static int frame_next;
+
+static void vsync_watch(void)
+{
+    static uint32_t ver, quiet, age, since_last = VSYNC_MIN_MS;
+    static bool pending;
+    since_last++;
+    if (machine->lcd.version != ver) {
+        ver = machine->lcd.version;
+        quiet = 0;
+        if (!pending) { pending = true; age = 0; }
+    } else if (pending) {
+        quiet++;
+    }
+    if (!pending) return;
+    age++;
+    if ((quiet < VSYNC_QUIET_MS && age < VSYNC_MAX_MS) || since_last < VSYNC_MIN_MS) return;
+    cybiko_lcd_render(machine, frames[frame_next]);
+    frame_ready = frame_next;
+    frame_next ^= 1;
+    pending = false;
+    since_last = 0;
+}
+
+const uint8_t *cybiko_app_frame(void)
+{
+    int b = frame_ready;
+    if (b < 0) return NULL;
+    frame_ready = -1;
+    return frames[b];
+}
+
+bool cybiko_app_vsync_on(void) { return vsync && !in_browser; }
+
 static void cpu_task(void *arg)
 {
     (void)arg;
@@ -159,10 +207,13 @@ static void cpu_task(void *arg)
 
         int64_t run_start = esp_timer_get_time();
         cybiko_run(machine, CHUNK_STATES);
+        if (vsync) vsync_watch();
         if (cybiko_browser_requested()) {
             /* CyOS waits in the launcher while the browser runs */
             cybiko_gate_pause(true);
+            in_browser = true;
             cybiko_browser_run(machine, flash, next_key);
+            in_browser = false;
             cybiko_gate_pause(false);
             t0 = esp_timer_get_time();
             c0 = machine->cpu.cycles;
@@ -429,6 +480,26 @@ void cybiko_app_set_cart_in(bool in)
     nvs_close(h);
 }
 
+bool cybiko_app_vsync(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 1;
+    if (nvs_open("cybiko", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "vsync", &v);
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
+void cybiko_app_set_vsync(bool on)
+{
+    nvs_handle_t h;
+    if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "vsync", on);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 /* ------------------------------------------------------------------ */
 /* Start                                                               */
 /* ------------------------------------------------------------------ */
@@ -612,6 +683,17 @@ void cybiko_app_start(void)
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
     cybiko_gate_init(machine, flash, have_cfg ? cfg : NULL);
     cybiko_cart_init(machine, have_cfg ? cfg : NULL);
+
+    vsync = cybiko_app_vsync();
+    if (vsync) {
+        frames[0] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
+        frames[1] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
+        if (!frames[0] || !frames[1]) {
+            ESP_LOGW(TAG, "no memory for whole frames; the screen shows the drawing as it happens");
+            vsync = false;
+        }
+    }
+    ESP_LOGI(TAG, "screen: %s", vsync ? "whole frames (vsync)" : "as drawn");
 
     key_queue = xQueueCreate(32, sizeof(key_event_t));
     cybiko_ui_start();

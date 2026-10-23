@@ -109,7 +109,7 @@ In short:
 
 `cart = auto | mp3 | off` in `cybiko.cfg` plugs the cartridge in or out
 (`auto`, the default, plugs it in when `/Cybiko/card` has files). The
-**MP3 CART: IN / OUT** button on the Cybiko card of the boot menu takes it
+**MP3: IN / OUT** button on the Cybiko card of the boot menu takes it
 out without editing the file. As on the real machine, some games (CyRace 2,
 for one) quit straight back to the desktop while the cartridge and its card
 are in: take it out to play them.
@@ -200,6 +200,18 @@ Landscape (480×272), LCD at 2×:
   `\ ~ | ^`, `` ` `` and a smiley.
 - **BOOT** is the Cybiko On/Off key. **Hold BOOT for 3 seconds** to save and
   restart to the boot menu.
+
+## Whole frames (VSYNC)
+
+The Cybiko's screen has no vsync: CyOS writes the LCD controller's memory
+directly, so a frame shown halfway through a drawing (a photo, a clip frame)
+shows half a picture. With **VSYNC: ON** (the default, the button on the
+Cybiko card of the boot menu, kept in NVS) the CPU task takes a frame only
+once the screen has changed and then stayed still for 4 ms of emulated time,
+or after 100 ms of steady drawing, at most 25 a second. **VSYNC: OFF** shows
+the screen every 40 ms as it is, mid-drawing too. The serial log says which
+at start ("screen: whole frames (vsync)" or "as drawn"). The web emulator
+does the same.
 
 ## Sound
 

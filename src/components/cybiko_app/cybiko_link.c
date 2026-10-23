@@ -59,7 +59,12 @@ static bool start_radio(int channel)
     if (err == ESP_OK) err = esp_now_init();
     if (err == ESP_OK) err = esp_now_register_recv_cb(on_recv);
     if (err == ESP_OK) {
-        esp_now_peer_info_t peer = { .channel = (uint8_t)channel, .ifidx = WIFI_IF_STA, .encrypt = false };
+        /* Channel 0: whatever channel the radio is on. Once the gate or the
+         * browser joins a Wi-Fi network, that is the network's channel, and
+         * a peer fixed to rf.channel would fail every send ("Peer channel is
+         * not equal to the home channel"). Boards then hear each other only
+         * when they are on the same channel (the same network, or none). */
+        esp_now_peer_info_t peer = { .channel = 0, .ifidx = WIFI_IF_STA, .encrypt = false };
         memcpy(peer.peer_addr, broadcast, sizeof broadcast);
         err = esp_now_add_peer(&peer);
     }
@@ -111,6 +116,8 @@ void cybiko_link_init(cybiko_t *m, const char *cfg)
 void cybiko_link_resume(void)
 {
     if (!enabled) return;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return;    /* joined: stay on the network's channel */
     esp_err_t err = esp_wifi_set_channel((uint8_t)radio_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) ESP_LOGW(TAG, "radio channel %d not restored: %s", radio_channel, esp_err_to_name(err));
 }

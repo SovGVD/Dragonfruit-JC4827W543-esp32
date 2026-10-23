@@ -275,6 +275,7 @@ void cy_flash_write16(cybiko_t *m, uint32_t off, uint16_t v)
             f->mem[off] = hi;
             f->mem[off + 1] = lo;
             f->dirty = true;
+            f->writes++;
         }
         flash_set_mode(m, FL_READ);
         return;
@@ -299,12 +300,15 @@ void cy_flash_write16(cybiko_t *m, uint32_t off, uint16_t v)
         if (wa == 0x5555 && d == 0x10) {
             memset(f->mem, 0xff, CY_FLASH_SIZE);
             f->dirty = true;
+            f->writes++;
         } else if (d == 0x30) {
             memset(f->mem + (off & ~0xfffu), 0xff, 0x1000);
             f->dirty = true;
+            f->writes++;
         } else if (d == 0x50) {
             memset(f->mem + (off & ~0xffffu), 0xff, 0x10000);
             f->dirty = true;
+            f->writes++;
         }
         flash_set_mode(m, FL_READ);
         return;
@@ -316,4 +320,36 @@ void cy_flash_write16(cybiko_t *m, uint32_t off, uint16_t v)
         if (wa == 0x5555 && d == 0xaa) flash_set_mode(m, FL_UNLOCK1);
         return;
     }
+}
+
+/* A CyOS update image (.boot, as EZ Loader sent it over USB) starts with the
+ * magic ffc0ffab and its size twice. The flash loader at 6001c8 knows this
+ * format: it unpacks the installer inside, which programs the new CyOS into
+ * the flash and restarts. So an update is staged by putting the image where
+ * the loader looks for the kernel, the first image header after the loader
+ * itself. */
+static uint32_t be32(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+int cybiko_flash_stage_boot(uint8_t *flash, const uint8_t *boot, size_t len)
+{
+    if (len < 12 || be32(boot) != 0xffc0ffabu || be32(boot + 4) != be32(boot + 8) ||
+        be32(boot + 4) + 12 != len)
+        return CY_BOOT_BAD_IMAGE;
+    if (be32(flash) != 0x1234abcdu || be32(flash + 4) != 0x6001c8u) return CY_BOOT_NO_LOADER;
+    /* The loader's code has the magics as immediates too; a real header has
+     * sizes that fit the flash. */
+    for (uint32_t off = 0x200; off < 0x10000; off += 2) {
+        uint32_t magic = be32(flash + off), packed = be32(flash + off + 4), plain = be32(flash + off + 8);
+        bool lzss = magic == 0x01c0ffabu && packed < CY_FLASH_SIZE && plain >= packed && plain < 0x200000;
+        bool update = magic == 0xffc0ffabu && packed == plain && packed < CY_FLASH_SIZE;
+        if (!lzss && !update) continue;
+        if (off + len > CY_FLASH_ID_RECORD) return CY_BOOT_TOO_BIG;
+        memcpy(flash + off, boot, len);
+        memset(flash + off + len, 0xff, CY_FLASH_ID_RECORD - off - len);
+        return CY_BOOT_OK;
+    }
+    return CY_BOOT_NO_LOADER;
 }

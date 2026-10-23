@@ -15,7 +15,11 @@
  *   mp3card.img   the card as a disk image instead, used while card/ is empty
  *   cybiko.cfg    disk.size = 1-6 (MB), sound.volume = 0-100, cart = auto|mp3|off
  *
- * A flash that CyOS reprograms (an OS update) is saved as flash.bin.
+ * A flash that CyOS reprograms (an OS update) is saved as flash.bin. A CyOS
+ * update image dropped in DIR (*.boot, such as the Russian
+ * ccyphRU1.5.08r.boot) is installed on start the way EZ Loader did it; the
+ * new flash is saved once the install is over and the file is renamed to
+ * *.boot.done.
  *
  * Built with the web browser (src/components/cy_browser, the cybiko-browser
  * submodule), the Browser launcher is put on the RAM disk and opens it;
@@ -374,13 +378,82 @@ static void save_disk(bool force)
     write_file("ramdisk.bin", disk, disk_size);
 }
 
+/* A CyOS update being installed, and the flash write count at the last
+ * save: flash.bin is written only once CyOS's installer has stopped. */
+static char update_path[1200];
+static uint32_t update_writes;
+
+static bool find_update(void)
+{
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    struct dirent *e;
+    bool found = false;
+    while (!found && (e = readdir(d)) != NULL) {
+        size_t n = strlen(e->d_name);
+        if (n < 6 || SDL_strcasecmp(e->d_name + n - 5, ".boot")) continue;
+        char p[1200];
+        path_in(p, sizeof p, e->d_name);
+        FILE *f = fopen(p, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fclose(f);
+        /* the small avr*.boot updates the AVR co-processor, not CyOS */
+        if (size < 64 * 1024 || size > 512 * 1024) continue;
+        snprintf(update_path, sizeof update_path, "%s", p);
+        found = true;
+    }
+    closedir(d);
+    return found;
+}
+
+static bool stage_update(uint8_t *flash, const char *const *dump_names)
+{
+    FILE *f = fopen(update_path, "rb");
+    if (!f) return false;
+    uint8_t *boot = malloc(512 * 1024);
+    size_t len = fread(boot, 1, 512 * 1024, f);
+    fclose(f);
+    int r = cybiko_flash_stage_boot(flash, boot, len);
+    if (r == CY_BOOT_NO_LOADER) {       /* flash.bin from an interrupted install */
+        char p[1200];
+        uint8_t *dump = load_first(dump_names, 2, CY_FLASH_SIZE, p, sizeof p);
+        if (dump) {
+            memcpy(flash, dump, CY_FLASH_SIZE);
+            free(dump);
+            r = cybiko_flash_stage_boot(flash, boot, len);
+        }
+    }
+    free(boot);
+    printf("CyOS update %s: %s\n", update_path, r == CY_BOOT_OK ? "installing" :
+           r == CY_BOOT_TOO_BIG ? "too big" : r == CY_BOOT_NO_LOADER ? "no CyOS flash to install it on" :
+           "not a CyOS update image");
+    if (r != CY_BOOT_OK) update_path[0] = 0;
+    return r == CY_BOOT_OK;
+}
+
 static void save_flash(uint8_t *flash)
 {
     if (!m.flash.dirty) return;
+    bool updated = false;
+    if (update_path[0]) {
+        updated = m.flash.writes == update_writes;
+        update_writes = m.flash.writes;
+        if (!updated) return;           /* still installing */
+    }
     uint8_t *copy = malloc(CY_FLASH_SIZE);
     memcpy(copy, flash, CY_FLASH_SIZE);
     cybiko_flash_original(&m, copy);
-    if (write_file("flash.bin", copy, CY_FLASH_SIZE)) printf("saved the reprogrammed flash as flash.bin\n");
+    if (write_file("flash.bin", copy, CY_FLASH_SIZE)) {
+        printf("saved the reprogrammed flash as flash.bin\n");
+        if (updated) {
+            char done[1210];
+            snprintf(done, sizeof done, "%s.done", update_path);
+            rename(update_path, done);
+            update_path[0] = 0;
+        }
+    }
     m.flash.dirty = false;
     free(copy);
 }
@@ -428,6 +501,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("ROM %s, flash %s\n", rom_path, flash_path);
+    if (find_update() && !stage_update(flash, flash_names + 1)) return 1;
 
     char p[1200], v[32];
     path_in(p, sizeof p, "cybiko.cfg");

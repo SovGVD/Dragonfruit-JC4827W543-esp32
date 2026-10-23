@@ -390,6 +390,24 @@ So there are three stages:
    ([§14](#14-the-ram-disk)), and opens the desktop or, on a blank RAM disk,
    the first-run setup (welcome, nickname, contrast, clock).
 
+The flash loader knows a third format, `FFC0FFAB`: a CyOS update image as
+EZ Loader sent it (the `.boot` files). The header is the magic and the size
+of the data twice, and the data is packed (it is not LZSS and not readable
+as is). The loader unpacks it in RAM into an installer (a plain image at
+4801fa). The installer prints a section table on SCI1
+(`signature=0xB1C3F0D1, target_addr=0x00600000, data_size=...`), erases and
+programs the flash from 600000, and restarts. The ID record at 7f800 is left
+alone. The emulator installs a `.boot` by putting it where the kernel's
+header was (601864 in the 1.5.08 dump) and letting this code run
+(`cybiko_flash_stage_boot`). **Verified** with the Russian
+`ccyphRU1.5.08r.boot`: about 17 s to unpack, programming done before 40 s,
+then the new CyOS boots from the new flash.
+`avr50c6f.boot` has the same format, but its installer targets address 0
+with 2 KB of data (the AVR co-processor's program) and then waits for that
+chip, which the emulator does not have. The boot ROM itself also checks for
+`FFC0FFAB` (its USB download path, not emulated). When it scans the flash
+and finds one at 600000, it refuses it ("no valid image found").
+
 The sizes in the third header look like garbage (**Guess**: a header the
 loader prints without using). The boot ROM also uses a shift-and-add 32-bit
 multiply to unscramble data, which the emulator replaces with native code

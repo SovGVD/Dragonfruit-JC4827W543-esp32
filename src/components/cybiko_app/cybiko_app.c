@@ -11,6 +11,9 @@
  *   flash.bin    written only if CyOS reprograms its flash; it is the first
  *                flash name searched, so it then replaces the original image
  *                (always with the dump's own Cybiko ID; see cybiko_link.h)
+ *   *.boot       a CyOS update image (such as the Russian ccyphRU1.5.08r.boot):
+ *                installed into the flash on start, saved as flash.bin once
+ *                the install has finished, then renamed to *.boot.done
  *   state.bin    the Cybiko clock, so the time survives restarts
  *   card/        the MP3 cartridge's SD card: .mp3 files and MXD clips
  *                dropped here are on the card (see cybiko_cart.h)
@@ -64,6 +67,10 @@ static const char *TAG = "cybiko";
 #define CHUNK_STATES (CY_CLOCK_HZ / 1000)   /* run 1 ms of Cybiko time at a go */
 
 static cybiko_t *machine;                   /* allocated only in Cybiko mode */
+/* A CyOS update being installed: its file, and the flash write count at the
+ * last save, which waits until CyOS's installer has stopped writing. */
+static char update_path[300];
+static uint32_t update_writes;
 static uint8_t *rom, *flash, *ram;
 static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BASE */
 static uint32_t disk_size;
@@ -321,7 +328,15 @@ void cybiko_app_save(bool force)
             save_disk(dirty, NULL);
         }
     }
-    if (machine->flash.dirty) {
+    bool updated = false;
+    if (machine->flash.dirty && update_path[0]) {
+        /* Hold the save while the installer is still writing: a half
+         * written flash.bin would not boot, and the update file would then
+         * have no loader to install it. */
+        updated = machine->flash.writes == update_writes;
+        update_writes = machine->flash.writes;
+    }
+    if (machine->flash.dirty && (!update_path[0] || updated)) {
         if (!flash_copy) flash_copy = heap_caps_malloc(CY_FLASH_SIZE, MALLOC_CAP_SPIRAM);
         if (flash_copy) {
             memcpy(flash_copy, flash, CY_FLASH_SIZE);
@@ -337,7 +352,13 @@ void cybiko_app_save(bool force)
     }
     if (fl) {
         ESP_LOGI(TAG, "saving reprogrammed flash");
-        write_file(FLASH_SAVE_PATH, flash_copy, CY_FLASH_SIZE);
+        if (write_file(FLASH_SAVE_PATH, flash_copy, CY_FLASH_SIZE) && updated) {
+            char done[310];
+            snprintf(done, sizeof done, "%s.done", update_path);
+            ESP_LOGI(TAG, "CyOS update installed; renaming it to %s", done);
+            rename(update_path, done);
+            update_path[0] = 0;
+        }
     }
     save_state();
 }
@@ -513,6 +534,25 @@ static bool load_disk(const char *cfg)
     return true;
 }
 
+/* Put the CyOS update in update_path into the flash image, for CyOS's own
+ * loader to install. A flash.bin left without a loader by an interrupted
+ * install is replaced by the original dump for this. */
+static bool stage_update(char *flash_path)
+{
+    FILE *f = fopen(update_path, "rb");
+    uint8_t *boot = heap_caps_malloc(CYBIKO_UPDATE_MAX, MALLOC_CAP_SPIRAM);
+    size_t len = f && boot ? fread(boot, 1, CYBIKO_UPDATE_MAX, f) : 0;
+    if (f) fclose(f);
+    int r = boot ? cybiko_flash_stage_boot(flash, boot, len) : CY_BOOT_BAD_IMAGE;
+    if (r == CY_BOOT_NO_LOADER && cybiko_app_find_dump(flash_path, 96) &&
+        load_file(flash_path, flash, CY_FLASH_SIZE, true))
+        r = cybiko_flash_stage_boot(flash, boot, len);
+    heap_caps_free(boot);
+    ESP_LOGI(TAG, "CyOS update %s: %s", update_path, r == CY_BOOT_OK ? "installing" : "rejected");
+    if (r != CY_BOOT_OK) update_path[0] = 0;
+    return r == CY_BOOT_OK;
+}
+
 void cybiko_app_start(void)
 {
     sdmmc_card_t *card;
@@ -535,6 +575,10 @@ void cybiko_app_start(void)
     ESP_LOGI(TAG, "ROM %s, flash %s", rom_path, flash_path);
     if (!load_file(rom_path, rom, CY_ROM_SIZE, true)) { fail("CYBIKO\n\nBAD ROM FILE"); return; }
     if (!load_file(flash_path, flash, CY_FLASH_SIZE, true)) { fail("CYBIKO\n\nBAD FLASH FILE"); return; }
+    if (cybiko_app_find_update(update_path, sizeof update_path) && !stage_update(flash_path)) {
+        fail("CYBIKO\n\nBAD CYOS UPDATE\n(*.BOOT FILE)");
+        return;
+    }
 
     struct { char magic[4]; uint32_t version; int64_t clock; } st;
     FILE *f = fopen(STATE_PATH, "rb");

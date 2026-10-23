@@ -33,6 +33,7 @@ ramdisk.bin   the RAM disk where CyOS keeps user files, 4 MB by default
 state.bin     the Cybiko clock, so the time survives restarts
 flash.bin     only if CyOS reprograms its flash (an OS update); being the
               first flash name, it then replaces the original image
+*.boot.done   a CyOS update file after it was installed (see below)
 cybiko.cfg    optional settings, written by you (see below)
 ```
 
@@ -42,6 +43,30 @@ been touched for 2 seconds and the emulation has been light for 5 seconds
 you hold BOOT to leave. The emulation keeps running while it is written. Only the parts
 that changed are written. To start from an empty RAM disk, delete
 `ramdisk.bin`.
+
+## Other CyOS versions (Russian CyOS)
+
+CyOS updates came as `.boot` files that EZ Loader sent to the Xtreme over
+USB, for example the Russian `ccyphRU1.5.08r.boot` (CyOS 1.5.08, 494 KB).
+Copy such a file into `/Cybiko` next to the flash dump and start Cybiko
+mode. The flash loader of the dump you already have unpacks it and
+programs it into the flash, as on the real machine. That takes about 30 s of
+Cybiko time with the CyOS logo on screen, then the new CyOS starts.
+Once the flash has stopped changing, the new flash is saved as
+`flash.bin` and the update file is renamed to `*.boot.done`, so it is only
+installed once. If the power goes off during the install, nothing is saved
+and it starts again on the next boot. To go back to the original CyOS,
+delete `flash.bin`. A new `ramdisk.bin` (delete the old one) gives the new
+CyOS's first-run setup in its own language.
+
+Files of 64 KB or less are skipped: `avr*.boot` (7 KB) updates the Xtreme's
+AVR co-processor, which is not emulated.
+
+The Russian CyOS was tried in the [PC runner](#pc-runner): the whole first-run setup and
+the desktop are in Russian. Letters type as Cyrillic on the ЙЦУКЕН layout (the
+`G L E B` keys give `П Д У И`), the
+desktop's title bar shows `абв`, and Fn+Space switches to Latin letters and
+back. The on-screen keyboard still shows only Latin labels.
 
 ## Storage
 
@@ -264,7 +289,9 @@ build-host/cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin \
 It prints the text on SCI1 to stdout and bytes on SCI0 to stderr as hex, then a summary: emulation speed and anything the model saw but
 does not cover (unmapped accesses, undefined opcodes, DMA DREQ use, watchdog
 resets). `--ramdisk FILE` loads and saves a RAM disk as on the board,
-`--disk-size KB` makes it bigger as the firmware does (the board uses 4096),
+`--boot FILE.boot` installs a CyOS update as the firmware does and
+`--save-flash FILE` writes the flash at the end (run at least 40 s for an
+install), `--disk-size KB` makes it bigger as the firmware does (the board uses 4096),
 `--install FILE` copies a file onto it first, and `--ls` lists its files at
 the end. `--pair RAMDISK2` runs a second machine with its own RAM disk and
 links the two radios (`--press b:key@ms` presses keys on the second one, and

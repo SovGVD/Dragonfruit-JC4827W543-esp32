@@ -15,6 +15,8 @@
  *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
+ *                      (the other machines' as b_frame_NNNN.pgm, c_frame_NNNN.pgm)
+ *   --frame-log        print the time each frame is written
  *   --pc-profile MS    from MS milliseconds on, sample the PC and list where
  *                      the CPU spends its time at the end
  *   --blit-fuzz N      (built with -DCY_HLE_CHECK) at the end, check N random
@@ -30,6 +32,20 @@
  *                      on the radio for CyOS's WAP browser, fetching through
  *                      curl
  *   --gate-home URL    (after --gate) the page the WAP browser's Home opens
+ *   --dump-ram FILE    write RAM at the end (the other machines' to FILE.b, FILE.c)
+ *   --pair RAMDISK2    run a second machine (ID + 1) with its own RAM disk, on
+ *                      the same radio; --press b:KEY@MS presses its keys
+ *   --third RAMDISK3   (with --pair) a third machine (ID + 2), keys c:KEY@MS
+ *   --chain            the second machine hears the first and the third, but
+ *                      those two don't hear each other (radio out of range)
+ *   --bot NICK         a radio-only chat partner built on cy_radio (no
+ *                      emulated Cybiko): pings as NICK, prints what it hears
+ *                      on the chat channel and acknowledges messages to it
+ *   --bot-say MS:TEXT  ... at MS ms says TEXT to everyone in the General room
+ *   --bot-room N       ... or in room N (cy_radio.h's CYR_ROOM_*)
+ *   --bot-tell MS:ID:TEXT ... at MS ms sends TEXT privately to Cybiko ID (hex)
+ *   --rf-log           print every radio packet sent (time, machine A or B,
+ *                      channel, then the packet without its parity)
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
  *                      a letter, f1-f7, enter, esc, space, up/down/left/right,
  *                      select, del, tab, ins, menu, shift, fn, help, dot, comma,
@@ -53,6 +69,7 @@
 #endif
 #include "cy_mp3.h"
 #include "cy_vfat.h"
+#include "cy_radio.h"
 #ifdef CY_WITH_BROWSER
 #include "cybiko_browser.h"
 #include "cyb_net_curl.h"
@@ -110,8 +127,9 @@ static bool print_file(void *user, const cy_disk_file_t *f)
     return true;
 }
 
-#define MAX_PRESSES 64
-/* who: 0 first machine, 1 second (--pair, KEY written b:KEY), 2 both */
+#define MAX_PRESSES 1024
+/* who: 0 first machine, 1 second (--pair, KEY written b:KEY), 2 third
+ * (--third, c:KEY), -1 all of them */
 static struct { int key, who; uint64_t at, until; bool down; } presses[MAX_PRESSES];
 static int npresses;
 
@@ -202,8 +220,10 @@ static void mp3_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
     }
 }
 
-/* --pair: a second machine on the same radio channel */
-static cybiko_t *machines[2];
+/* --pair and --third: more machines on the same radio channel */
+#define MAX_MACHINES 3
+static cybiko_t *machines[MAX_MACHINES];
+static bool chain;                  /* --chain: B hears A and C, A and C don't hear each other */
 
 #ifdef CY_WITH_BROWSER
 #include "cy_gate.h"
@@ -223,17 +243,216 @@ static void gate_log(void *user, const char *line)
 }
 #endif
 
+static bool rf_log;                 /* --rf-log: print every radio packet */
+
+/* --bot: a chat partner that only knows the radio protocol (cy_radio), the
+ * way another ESP32 project would talk to Cybikos. It listens on the chat
+ * channel only, like a radio tuned there. */
+#define BOT_ID 0x4c0000b0u
+#define MAX_BOT_LINES 16
+static struct {
+    bool on;
+    char nick[9];
+    int room;                        /* --bot-room: where --bot-say lines go */
+    uint32_t full_reported;
+    uint64_t next_ping_ms;
+    uint8_t version;
+    struct { uint64_t at; uint32_t to; char text[256]; bool done; } lines[MAX_BOT_LINES];
+    int nlines;
+    /* the line being sent: its packets and where we are */
+    uint8_t out[8][CYR_LONG];
+    int nout, sent, tries;
+    uint32_t out_to;
+    uint8_t number;
+    bool waiting, querying;
+    uint64_t retry_ms;
+    int copies;                      /* broadcast copies still to send */
+    cyr_rx_t rx;
+    struct { uint32_t from, p0; } seen[16];
+    int seen_next;
+    uint32_t known[16];
+    int nknown;
+} bot;
+
+static double now_s(void);
+
+static void bot_send(const uint8_t *pkt, size_t len, uint8_t channel)
+{
+    for (int k = 0; k < MAX_MACHINES; k++)
+        if (machines[k] && !cybiko_rf_receive(machines[k], pkt, len, channel)) {
+            /* the queue fills while CyOS isn't listening (booting, radio off) */
+            if (!(bot.full_reported++ & 63))
+                fprintf(stderr, "[%.3f bot] machine %c isn't taking packets (queue full): %u lost so far\n",
+                        now_s(), 'A' + k, (unsigned)bot.full_reported);
+        }
+}
+
+static void bot_line(const char *what, uint32_t from, const cyr_msg_t *m)
+{
+    int room;
+    const char *text;
+    size_t tl;
+    char id[8];
+    cyr_cyid_str(from, id);
+    if (cyr_chat_parse(m, &room, &text, &tl)) {
+        for (int i = 0; i < 16; i++)
+            if (bot.seen[i].from == from && bot.seen[i].p0 == m->p0) return;     /* a repeat */
+        bot.seen[bot.seen_next].from = from;
+        bot.seen[bot.seen_next].p0 = m->p0;
+        bot.seen_next = (bot.seen_next + 1) % 16;
+        fprintf(stderr, "[%.3f bot] %s chat line from %08x (%s), room %d%s: \"%.*s\"\n", now_s(), what,
+                (unsigned)from, id, room, m->extra & 0x80 ? ", private" : "", (int)tl, text);
+    } else {
+        fprintf(stderr, "[%.3f bot] %s message %04x from %08x (%s) to %s%s%.0x, %u bytes: not chat, not handled\n",
+                now_s(), what, m->id, (unsigned)from, id, m->name ? "process " : "port ",
+                m->name ? m->name : "", m->name ? 0 : m->port, (unsigned)m->len);
+    }
+}
+
+static void bot_rf_in(const uint8_t *pkt, size_t len, uint8_t channel)
+{
+    if (channel != CYR_RF_CHAT) return;                  /* tuned to the chat channel */
+    if (!cyr_check(pkt, len)) {
+        fprintf(stderr, "[%.3f bot] packet with a bad CRC dropped\n", now_s());
+        return;
+    }
+    const uint32_t to = cyr_to(pkt), from = cyr_from(pkt);
+    const uint8_t type = cyr_type(pkt);
+    if (type == CYR_T_PING) {
+        char nick[9];
+        int age;
+        bool female;
+        bool known = false;
+        for (int i = 0; i < bot.nknown; i++) known |= bot.known[i] == from;
+        if (!known && bot.nknown < 16) {
+            bot.known[bot.nknown++] = from;
+            if (cyr_ping_details(pkt, nick, &age, &female))
+                fprintf(stderr, "[%.3f bot] ping from %08x: %s, age %d, %s, on RF channel %u\n", now_s(),
+                        (unsigned)from, nick, age, female ? "female" : "male", pkt[8] & 0x3f);
+            else
+                fprintf(stderr, "[%.3f bot] ping from %08x without details\n", now_s(), (unsigned)from);
+        }
+        return;
+    }
+    if (to != BOT_ID && to != CYR_BROADCAST) return;      /* for someone else */
+    uint8_t ack[CYR_SHORT];
+    if (type == CYR_T_ACK) {
+        if (bot.waiting && from == bot.out_to && pkt[11] == bot.number && pkt[10] == bot.out[bot.sent][10]) {
+            const int code = pkt[CYR_HEAD] >> 4;
+            if (++bot.sent < bot.nout && code == CYR_ACK_TAKEN) {
+                bot.tries = 0;
+                bot.retry_ms = 0;                         /* next part now */
+            } else if (code == CYR_ACK_GOT || code == CYR_ACK_AGAIN) {
+                /* arrived but not handed over yet: ask until it is */
+                fprintf(stderr, "[%.3f bot] private line to %08x: answer %d, asking if it was delivered\n",
+                        now_s(), (unsigned)from, code);
+                bot.sent--;
+                bot.querying = true;
+                bot.retry_ms = 0;
+            } else {
+                fprintf(stderr, "[%.3f bot] private line to %08x: answer %d (%s)\n", now_s(), (unsigned)from, code,
+                        code == CYR_ACK_DELIVERED ? "delivered" : code == CYR_ACK_GOT ? "got it" :
+                        code == CYR_ACK_NOBODY ? "nobody took it" : "other");
+                bot.waiting = false;
+            }
+        }
+        return;
+    }
+    if (type == CYR_T_QUERY) {
+        if (to == BOT_ID) bot_send(ack, cyr_ack(ack, pkt, BOT_ID, CYR_RF_CHAT, CYR_ACK_DELIVERED), CYR_RF_CHAT);
+        return;
+    }
+    if (type != CYR_T_MSG) return;
+    uint8_t body[CYR_MSG_MAX];
+    const int n = cyr_rx_feed(&bot.rx, pkt, len, body);
+    if (to == BOT_ID && (pkt[9] & CYR_F_ACK_ME)) {
+        const bool more = pkt[10] && n == 0;
+        bot_send(ack, cyr_ack(ack, pkt, BOT_ID, CYR_RF_CHAT, more ? CYR_ACK_TAKEN : CYR_ACK_DELIVERED), CYR_RF_CHAT);
+    }
+    if (n < 0) fprintf(stderr, "[%.3f bot] part %u from %08x out of order: dropped\n", now_s(), pkt[10], (unsigned)from);
+    if (n <= 0) return;
+    cyr_msg_t m;
+    if (!cyr_msg_parse(body, (size_t)n, &m)) {
+        fprintf(stderr, "[%.3f bot] message from %08x not understood\n", now_s(), (unsigned)from);
+        return;
+    }
+    bot_line(to == BOT_ID ? "private" : "heard", from, &m);
+}
+
+static void bot_poll(uint64_t ms)
+{
+    uint8_t pkt[CYR_SHORT];
+    if (ms >= bot.next_ping_ms) {
+        /* on the base channel for everyone, and on the chat channel; byte 8
+         * says we are on the chat channel */
+        cyr_ping(pkt, BOT_ID, CYR_RF_CHAT, bot.version, bot.nick, 20, false);
+        bot_send(pkt, CYR_SHORT, CYR_RF_CHAT);
+        bot_send(pkt, CYR_SHORT, CYR_RF_BASE);
+        bot.next_ping_ms = ms + 3000;
+    }
+    if (!bot.waiting && !bot.copies) {
+        for (int i = 0; i < bot.nlines; i++) {
+            if (bot.lines[i].done || ms < bot.lines[i].at) continue;
+            bot.lines[i].done = true;
+            cyr_msg_t m;
+            const bool priv = bot.lines[i].to != CYR_BROADCAST;
+            cyr_chat(&m, bot.room, (uint32_t)ms, bot.lines[i].text, priv);
+            m.len = strlen(bot.lines[i].text) + 1;     /* not cut to Chat's 99: tests longer messages */
+            bot.out_to = bot.lines[i].to;
+            if (priv && !++bot.number) bot.number = 1;
+            bot.nout = cyr_msg_packets(&m, bot.out_to, BOT_ID, CYR_RF_CHAT, priv, priv ? bot.number : 0, bot.out, 8);
+            bot.sent = bot.tries = 0;
+            bot.querying = false;
+            bot.retry_ms = 0;
+            if (priv) bot.waiting = true;
+            else bot.copies = 3;
+            fprintf(stderr, "[%.3f bot] says \"%s\" to %08x in %d packet(s)\n", now_s(), bot.lines[i].text,
+                    (unsigned)bot.out_to, bot.nout);
+            break;
+        }
+    }
+    if (bot.copies && ms >= bot.retry_ms) {
+        /* Chat posts a line to everyone three times */
+        for (int i = 0; i < bot.nout; i++) bot_send(bot.out[i], CYR_LONG, CYR_RF_CHAT);
+        bot.copies--;
+        bot.retry_ms = ms + 150;
+    }
+    if (bot.waiting && ms >= bot.retry_ms) {
+        if (bot.tries++ == 6) {
+            fprintf(stderr, "[%.3f bot] private line to %08x: no answer\n", now_s(), (unsigned)bot.out_to);
+            bot.waiting = false;
+            return;
+        }
+        if (bot.querying) bot_send(pkt, cyr_query(pkt, bot.out[bot.sent], CYR_RF_CHAT), CYR_RF_CHAT);
+        else bot_send(bot.out[bot.sent], CYR_LONG, CYR_RF_CHAT);
+        bot.retry_ms = ms + 400;
+    }
+}
+static bool frame_log;              /* --frame-log: print when each frame is written */
+
 static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
 {
     int from = (int)(intptr_t)user;
-    cybiko_t *to = machines[!from];
-    if (to) cybiko_rf_receive(to, pkt, len, channel);
+    if (rf_log) {
+        /* the 16-byte header, the data, then the Reed-Solomon parity */
+        size_t data = len == CY_RF_SHORT ? 30 : 120;
+        fprintf(stderr, "[%.3f rf %c ch%u]", machines[from] ? (double)machines[from]->cpu.cycles / CY_CLOCK_HZ : 0.0,
+                'A' + from, channel);
+        for (size_t i = 0; i < data; i++) fprintf(stderr, "%s%02x", i == 4 || i == 8 || i == 16 ? " " : "", pkt[i]);
+        fprintf(stderr, "\n");
+    }
+    if (bot.on) bot_rf_in(pkt, len, channel);
+    for (int to = 0; to < MAX_MACHINES; to++)
+        if (to != from && machines[to] && (!chain || abs(to - from) == 1))
+            cybiko_rf_receive(machines[to], pkt, len, channel);
 #ifdef CY_WITH_BROWSER
     if (gate) cy_gate_rf_in(gate, pkt, len, channel);
 #endif
 }
 
 static int64_t wall(void *user) { (void)user; return (int64_t)time(NULL); }
+
+static double now_s(void) { return machines[0] ? (double)machines[0]->cpu.cycles / CY_CLOCK_HZ : 0.0; }
 
 static bool browse_requested;
 
@@ -339,6 +558,7 @@ int main(int argc, char **argv)
 #ifdef CY_HLE_CHECK
     int blit_fuzz = 0;
 #endif
+    const char *extra_path[MAX_MACHINES - 1] = { NULL };   /* --pair, --third */
     const char *pair_path = NULL;
     bool press_both = false;          /* --press keys go to the second machine too */
     uint32_t unit_id = 0;
@@ -371,7 +591,28 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--browse-url") && v) { browse_url = v; i++; }
         else if (!strcmp(a, "--dump-ram") && v) { dump = v; i++; }
         else if (!strcmp(a, "--hex-port") && v) { hex_port = atoi(v); i++; }
-        else if (!strcmp(a, "--pair") && v) { pair_path = v; i++; }
+        else if (!strcmp(a, "--pair") && v) { pair_path = extra_path[0] = v; i++; }
+        else if (!strcmp(a, "--third") && v) { extra_path[1] = v; i++; }
+        else if (!strcmp(a, "--chain")) chain = true;
+        else if (!strcmp(a, "--bot") && v) {
+            bot.on = true;
+            snprintf(bot.nick, sizeof bot.nick, "%s", v);
+            bot.version = (uint8_t)(time(NULL) | 1);
+            i++;
+        }
+        else if (!strcmp(a, "--bot-room") && v) { bot.room = atoi(v); i++; }
+        else if ((!strcmp(a, "--bot-say") || !strcmp(a, "--bot-tell")) && v && bot.nlines < MAX_BOT_LINES) {
+            char *end;
+            bot.lines[bot.nlines].at = strtoull(v, &end, 10);
+            bot.lines[bot.nlines].to = CYR_BROADCAST;
+            if (*end == ':' && !strcmp(a, "--bot-tell")) bot.lines[bot.nlines].to = (uint32_t)strtoul(end + 1, &end, 16);
+            if (*end != ':') { fprintf(stderr, "bad %s %s\n", a, v); return 2; }
+            snprintf(bot.lines[bot.nlines].text, sizeof bot.lines[0].text, "%s", end + 1);
+            bot.nlines++;
+            i++;
+        }
+        else if (!strcmp(a, "--rf-log")) rf_log = true;
+        else if (!strcmp(a, "--frame-log")) frame_log = true;
 #ifdef CY_WITH_BROWSER
         else if (!strcmp(a, "--gate")) {
             static cyb_net_t gate_net;
@@ -393,7 +634,7 @@ int main(int argc, char **argv)
             char name[32];
             unsigned ms, dur = 200;
             int who = 0;
-            if (!strncmp(v, "b:", 2)) { who = 1; v += 2; }
+            if (v[0] >= 'b' && v[0] <= 'c' && v[1] == ':') { who = v[0] - 'a'; v += 2; }
             if (sscanf(v, "%31[^@]@%u:%u", name, &ms, &dur) < 2 || key_by_name(name) < 0) {
                 fprintf(stderr, "bad --press %s\n", v);
                 return 2;
@@ -408,7 +649,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: %s --rom FILE --flash FILE [--ramdisk FILE] [--seconds S]\n"
                             "       [--screenshot FILE.pgm] [--frames DIR] [--press KEY@MS[:D]]...\n"
                             "       [--disk-size KB] [--install FILE]... [--ls]\n"
-                            "       [--unit-id HEX] [--pair RAMDISK2] [--press-both] [--hex-port N]\n"
+                            "       [--unit-id HEX] [--pair RAMDISK2] [--third RAMDISK3] [--chain]\n"
+                            "       [--press-both] [--bot NICK] [--bot-room N] [--bot-say MS:TEXT] [--bot-tell MS:ID:TEXT]\n"
+                            "       [--rf-log] [--frame-log] [--hex-port N]\n"
                             "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n"
                             "       [--boot UPDATE.boot] [--save-flash FILE]\n", argv[0]);
             return 2;
@@ -464,7 +707,17 @@ int main(int argc, char **argv)
         free(data);
     }
 
-    static cybiko_t m, m2;
+    static cybiko_t m, others[MAX_MACHINES - 1];
+    /* cybiko_init patches the ROM in place, so the other machines take a
+     * copy made before that (patching a patched ROM breaks it). */
+    uint8_t *rom2[MAX_MACHINES - 1] = { NULL }, *flash2[MAX_MACHINES - 1] = { NULL };
+    if (extra_path[1] && !extra_path[0]) { fprintf(stderr, "--third needs --pair\n"); return 2; }
+    for (int k = 0; k < MAX_MACHINES - 1 && extra_path[k]; k++) {
+        rom2[k] = calloc(1, CY_ROM_BUF);
+        flash2[k] = malloc(CY_FLASH_SIZE);
+        memcpy(rom2[k], rom, CY_ROM_SIZE);
+        memcpy(flash2[k], flash, CY_FLASH_SIZE);
+    }
     cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf,
                        .card_read = card_read, .card_write = card_write,
                        .app_call = on_app_call };
@@ -503,21 +756,20 @@ int main(int argc, char **argv)
     the_machine = &m;
     machines[0] = &m;
 
-    /* The second machine: same ROM and flash, its own RAM disk and ID. */
-    uint8_t *disk2 = NULL;
-    if (pair_path) {
+    /* The other machines: same ROM and flash, their own RAM disks and IDs
+     * (the first machine's ID plus 1, 2). */
+    uint8_t *disk2[MAX_MACHINES - 1] = { NULL };
+    int nother = 0;
+    for (int k = 0; k < MAX_MACHINES - 1 && extra_path[k]; k++, nother++) {
         if (!disk_kb) { fprintf(stderr, "--pair needs --disk-size\n"); return 2; }
-        uint8_t *rom2 = calloc(1, CY_ROM_BUF), *flash2 = malloc(CY_FLASH_SIZE);
-        memcpy(rom2, rom, CY_ROM_SIZE);
-        memcpy(flash2, flash, CY_FLASH_SIZE);
-        disk2 = calloc(1, disk_size);
-        FILE *f = fopen(pair_path, "rb");
-        if (f) { if (fread(disk2, 1, disk_size, f) == 0) fprintf(stderr, "second RAM disk is empty\n"); fclose(f); }
-        cy_host_t host2 = { .user = (void *)1, .wall_time = wall, .rf_send = on_rf };
-        cybiko_init(&m2, &host2, rom2, flash2, calloc(1, CY_RAM_SIZE));
-        cybiko_set_disk(&m2, disk2, disk_size);
-        cybiko_set_unit_id(&m2, (unit_id ? unit_id : 0x4c000001u) + 1);
-        machines[1] = &m2;
+        disk2[k] = calloc(1, disk_size);
+        FILE *f = fopen(extra_path[k], "rb");
+        if (f) { if (fread(disk2[k], 1, disk_size, f) == 0) fprintf(stderr, "%s is empty\n", extra_path[k]); fclose(f); }
+        cy_host_t host2 = { .user = (void *)(intptr_t)(k + 1), .wall_time = wall, .rf_send = on_rf };
+        cybiko_init(&others[k], &host2, rom2[k], flash2[k], calloc(1, CY_RAM_SIZE));
+        cybiko_set_disk(&others[k], disk2[k], disk_size);
+        cybiko_set_unit_id(&others[k], (unit_id ? unit_id : 0x4c000001u) + 1 + k);
+        machines[k + 1] = &others[k];
     }
 
     static uint8_t lum[CY_LCD_W * CY_LCD_H];
@@ -542,14 +794,14 @@ int main(int argc, char **argv)
         for (int i = 0; i < npresses; i++) {
             uint64_t now = m.cpu.cycles;
             if (!presses[i].down && now >= presses[i].at && now < presses[i].until) {
-                int who = press_both ? 2 : presses[i].who;
-                if (who != 1) cybiko_key(&m, presses[i].key, true);
-                if (who != 0 && pair_path) cybiko_key(&m2, presses[i].key, true);
+                int who = press_both ? -1 : presses[i].who;
+                for (int k = 0; k <= nother; k++)
+                    if (who < 0 || who == k) cybiko_key(machines[k], presses[i].key, true);
                 presses[i].down = true;
             } else if (presses[i].down && now >= presses[i].until) {
-                int who = press_both ? 2 : presses[i].who;
-                if (who != 1) cybiko_key(&m, presses[i].key, false);
-                if (who != 0 && pair_path) cybiko_key(&m2, presses[i].key, false);
+                int who = press_both ? -1 : presses[i].who;
+                for (int k = 0; k <= nother; k++)
+                    if (who < 0 || who == k) cybiko_key(machines[k], presses[i].key, false);
                 presses[i].down = false;
             }
             uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
@@ -565,12 +817,12 @@ int main(int argc, char **argv)
             if (mp3) mp3_pump(&m, mp3, wav);
             continue;
         }
-        if (pair_path) {
+        if (pair_path || bot.on) {
             /* 1 ms turns keep radio replies well inside CyOS's timeouts */
             for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
                 int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
-                cybiko_run(&m, n);
-                cybiko_run(&m2, n);
+                for (int k = 0; k <= nother; k++) cybiko_run(machines[k], n);
+                if (bot.on) bot_poll(m.cpu.cycles / (CY_CLOCK_HZ / 1000));
             }
         } else if (0
 #ifdef CY_WITH_BROWSER
@@ -605,6 +857,19 @@ int main(int argc, char **argv)
                 snprintf(path, sizeof path, "%s/frame_%04d.pgm", frames, frame_no++);
                 write_pgm(path, lum);
                 last_version = v;
+                if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CY_CLOCK_HZ, path);
+            }
+            for (int k = 0; k < nother; k++) {
+                static uint32_t last_version2[MAX_MACHINES - 1] = { 0xffffffff, 0xffffffff };
+                static int frame_no2[MAX_MACHINES - 1];
+                v = cybiko_lcd_render(&others[k], lum);
+                if (v != last_version2[k]) {
+                    char path[512];
+                    snprintf(path, sizeof path, "%s/%c_frame_%04d.pgm", frames, 'b' + k, frame_no2[k]++);
+                    write_pgm(path, lum);
+                    last_version2[k] = v;
+                    if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CY_CLOCK_HZ, path);
+                }
             }
         }
     }
@@ -627,22 +892,22 @@ int main(int argc, char **argv)
     if (shot) {
         cybiko_lcd_render(&m, lum);
         write_pgm(shot, lum);
-        if (pair_path) {
+        for (int k = 0; k < nother; k++) {
             char path[512];
-            snprintf(path, sizeof path, "%s.b.pgm", shot);
-            cybiko_lcd_render(&m2, lum);
+            snprintf(path, sizeof path, "%s.%c.pgm", shot, 'b' + k);
+            cybiko_lcd_render(&others[k], lum);
             write_pgm(path, lum);
         }
     }
-    if (pair_path) {
-        FILE *f = fopen(pair_path, "wb");
-        if (f) { fwrite(disk2, 1, disk_size, f); fclose(f); }
+    for (int k = 0; k < nother; k++) {
+        FILE *f = fopen(extra_path[k], "wb");
+        if (f) { fwrite(disk2[k], 1, disk_size, f); fclose(f); }
     }
     fprintf(stderr, "radio: id %08x sent %u heard %u", (unsigned)cybiko_unit_id(&m),
             (unsigned)m.rf.sent, (unsigned)m.rf.heard);
-    if (pair_path)
-        fprintf(stderr, "; second machine id %08x sent %u heard %u", (unsigned)cybiko_unit_id(&m2),
-                (unsigned)m2.rf.sent, (unsigned)m2.rf.heard);
+    for (int k = 0; k < nother; k++)
+        fprintf(stderr, "; machine %c id %08x sent %u heard %u", 'B' + k, (unsigned)cybiko_unit_id(&others[k]),
+                (unsigned)others[k].rf.sent, (unsigned)others[k].rf.heard);
     fprintf(stderr, "\n");
     if (ramdisk_path) {
         FILE *f = fopen(ramdisk_path, "wb");
@@ -654,6 +919,12 @@ int main(int argc, char **argv)
     if (dump) {
         FILE *f = fopen(dump, "wb");
         if (f) { fwrite(m.ram, 1, CY_RAM_SIZE, f); fclose(f); }
+        for (int k = 0; k < nother; k++) {
+            char path[512];
+            snprintf(path, sizeof path, "%s.%c", dump, 'b' + k);
+            f = fopen(path, "wb");
+            if (f) { fwrite(others[k].ram, 1, CY_RAM_SIZE, f); fclose(f); }
+        }
     }
     if (ls) {
         fprintf(stderr, "RAM disk (%u KB, %u bytes free):\n", (unsigned)(disk_size / 1024),
@@ -661,6 +932,10 @@ int main(int argc, char **argv)
         cy_disk_list(disk, disk_size, print_file, NULL);
     }
     if (disk_kb) fprintf(stderr, "kernel patched %u time(s) for the bigger RAM disk\n", m.disk_patched);
+    for (int k = 0; k < nother; k++)
+        fprintf(stderr, "machine %c: pc=%06x lcd_on=%d kernel patched %u time(s) illegal=%u wdt resets=%u\n",
+                'B' + k, (unsigned)others[k].cpu.pc, (others[k].lcd.reg[0] & 0x40) != 0, others[k].disk_patched,
+                (unsigned)others[k].illegal_ops, (unsigned)others[k].wdt_resets);
     if (save_flash) {
         uint8_t *copy = malloc(CY_FLASH_SIZE);
         memcpy(copy, flash, CY_FLASH_SIZE);

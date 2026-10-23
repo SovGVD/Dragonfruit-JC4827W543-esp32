@@ -1,5 +1,5 @@
 /* The Cybiko radio protocol (see cy_radio.h and
- * docs/cybiko-radio-protocol.md). */
+ * radio-protocol.md in cybiko-docs, https://github.com/SovGVD/cybiko-docs). */
 #include "cy_radio.h"
 #include <string.h>
 

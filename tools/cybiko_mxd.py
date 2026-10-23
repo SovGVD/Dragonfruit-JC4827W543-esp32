@@ -31,7 +31,8 @@ Options:
     --gamma G         brighten (<1) or darken (>1) the picture (default 1.0)
 
 Needs Python 3 and ffmpeg (with libmp3lame) on the PATH; Pillow and numpy
-are not needed. The formats are described in docs/cybiko-mp3-cartridge.md.
+are not needed. The formats are described in file-formats.md of cybiko-docs
+(https://github.com/SovGVD/cybiko-docs).
 """
 import argparse
 import os

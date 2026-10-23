@@ -50,9 +50,10 @@ The boot menu, where you pick the system:
 |---|---|
 | [JC4827W543 board guide](docs/jc4827w543.md) | Wiring, building, flashing, the boot menu, the SD card, touch calibration, Palm RAM and storage |
 | [Cybiko Xtreme](docs/cybiko.md) | Files, storage, games, controls, sound, radio, the MP3 cartridge, the desktop app |
-| [How the Cybiko works](docs/cybiko-internals.md) | Hardware reference: memory map, screen, keys, radio protocol, boot, RAM disk |
-| [Cybiko radio and chat protocol](docs/cybiko-radio-protocol.md) | Packets, pings, delivery, chat, gates; a C library for other ESP32 projects |
-| [MP3 cartridge and MXD video](docs/cybiko-mp3-cartridge.md) | The cartridge, `.app` archives and the MXD video format |
+| [How the emulator models the Cybiko](docs/cybiko-internals.md) | Which file models what, emulator choices and additions |
+| [Cybiko radio over ESP-NOW](docs/cybiko-radio-protocol.md) | Carrying Cybiko packets between boards; a C library for other ESP32 projects |
+| [MP3 cartridge in the emulator](docs/cybiko-mp3-cartridge.md) | Using the cartridge, its card folder, making MXD clips |
+| [cybiko-docs](https://github.com/SovGVD/cybiko-docs) | The Cybiko Xtreme itself: hardware, CyOS, file formats, radio and chat protocol, CyWIG, MP3 cartridge |
 | [Palm networking over Wi-Fi](docs/wifi.md) | PPP from Palm OS to Wi-Fi, the setup portal, the web proxy |
 | [Palm native ROM calls](docs/palm-native-rom-calls.md) | Hot Palm OS ROM code run as C, and the checker that verifies it |
 | [68k benchmark](src/bench/README.md) | A fixed 68000 workload for measuring the CPU core |

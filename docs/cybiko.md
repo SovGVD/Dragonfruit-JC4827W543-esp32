@@ -249,6 +249,20 @@ rf.id = auto     # auto (from the MAC), keep (the dump's own ID) or 8 hex digits
 The radio uses the Wi-Fi chip in station mode on a fixed channel, so it
 cannot share it with the Palm side's Wi-Fi; they never run at the same time.
 
+### Status LED
+
+The Xtreme's LED blinks red while the radio sends and green while it hears
+another Cybiko (from the Xtreme's quick start guide). Which pins drive it is
+not known: CyOS changes no pin while it sends, and raises P17 for the ~20 ms
+a heard packet takes to come in, which may be the green LED or a signal to
+the co-processor. So the firmware lights it from the radio packets
+themselves: red from the first byte of a packet CyOS
+sends, green while a heard packet comes in, each for 100 ms after the last
+byte. The screen shows it as a dot left of the LCD (portrait) or after the
+speed (landscape). With other Cybikos around it blinks green every few
+seconds as they ping. The real LED is also steady red on mains or USB power;
+that is not shown.
+
 The co-processor's serial protocol is in cybiko-docs'
 [hardware.md](https://github.com/SovGVD/cybiko-docs/blob/main/hardware.md#11-radio), and the packets, chat and
 gates in [radio-protocol.md](https://github.com/SovGVD/cybiko-docs/blob/main/radio-protocol.md). How the boards
@@ -310,7 +324,8 @@ links the two radios (`--press b:key@ms` presses keys on the second one, and
 its screenshot is written next to the first with `.b.pgm`); `--unit-id HEX`
 sets the first machine's Cybiko ID. `--third RAMDISK3` adds a third machine
 (`c:` keys), `--chain` lets only neighbours hear each other, `--rf-log`
-prints every radio packet and `--frame-log` the frame times; `--bot NICK`
+prints every radio packet, `--led-log` each change of the status LED and
+`--frame-log` the frame times; `--bot NICK`
 adds a radio-only chat partner with `--bot-say` and `--bot-tell` (see
 [testing on a PC](cybiko-radio-protocol.md#4-testing-on-a-pc)). `--card FOLDER_OR_IMAGE` plugs in the
 MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records

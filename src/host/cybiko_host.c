@@ -44,6 +44,8 @@
  *   --bot-say MS:TEXT  ... at MS ms says TEXT to everyone in the General room
  *   --bot-room N       ... or in room N (cy_radio.h's CYR_ROOM_*)
  *   --bot-tell MS:ID:TEXT ... at MS ms sends TEXT privately to Cybiko ID (hex)
+ *   --led-log          print each change of the status LED (red: sending,
+ *                      green: hearing)
  *   --rf-log           print every radio packet sent (time, machine A or B,
  *                      channel, then the packet without its parity)
  *   --press KEY@MS[:D] hold KEY for D ms (default 200) from MS milliseconds; KEY is
@@ -428,6 +430,16 @@ static void bot_poll(uint64_t ms)
         bot.retry_ms = ms + 400;
     }
 }
+static bool led_log;                /* --led-log: print status LED changes */
+static void led_poll(const cybiko_t *m)
+{
+    static int shown = CY_LED_OFF;
+    int led = cybiko_led(m);
+    if (!led_log || led == shown) return;
+    static const char *const names[] = { "off", "red", "green" };
+    fprintf(stderr, "[%.3f] LED %s\n", (double)m->cpu.cycles / CY_CLOCK_HZ, names[led]);
+    shown = led;
+}
 static bool frame_log;              /* --frame-log: print when each frame is written */
 
 static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
@@ -612,6 +624,7 @@ int main(int argc, char **argv)
             i++;
         }
         else if (!strcmp(a, "--rf-log")) rf_log = true;
+        else if (!strcmp(a, "--led-log")) led_log = true;
         else if (!strcmp(a, "--frame-log")) frame_log = true;
 #ifdef CY_WITH_BROWSER
         else if (!strcmp(a, "--gate")) {
@@ -823,6 +836,7 @@ int main(int argc, char **argv)
                 int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
                 for (int k = 0; k <= nother; k++) cybiko_run(machines[k], n);
                 if (bot.on) bot_poll(m.cpu.cycles / (CY_CLOCK_HZ / 1000));
+                led_poll(&m);
             }
         } else if (0
 #ifdef CY_WITH_BROWSER
@@ -839,6 +853,7 @@ int main(int argc, char **argv)
         } else {
             cybiko_run(&m, step);
         }
+        led_poll(&m);
         if (mp3) mp3_pump(&m, mp3, wav);
         if (browse_requested) {
             browse_requested = false;

@@ -6,7 +6,7 @@
  * Portrait, 272x480, every key on one page, LCD at 1x:
  *
  *        +------------------------+
- *        | Cybiko LCD 160x100 100%|
+ *        |o Cybiko LCD160x100 100%|
  *        | F1 F2 F3 F4 F5 F6 F7 INS|
  *        |    UP     | ESC  MENU  |
  *        | LEFT SEL RIGHT| TAB DEL|
@@ -20,7 +20,7 @@
  * Landscape, LCD at 2x:
  *
  *   +--------------------------+----------------+
- *   |                          | SPEED 100%     |
+ *   |                          | SPEED 100%   o |
  *   |                          | ESC   UP  MENU |
  *   |  Cybiko LCD 160x100 x2   | LEFT SEL RIGHT |
  *   |        (320x200)         | TAB  DOWN  DEL |
@@ -30,6 +30,9 @@
  *   | A  S  D  F  G  H  J  K  L  .              |
  *   | SHIFT Z X  C  V  B  N  M  FN  MORE        |
  *   +--------------------------------------------+
+ *
+ * o is the status LED (cybiko_led()): red while the radio sends, green
+ * while it hears another Cybiko.
  *
  * MORE swaps the bottom block to F1-F7, INS, ON/OFF, ( ) , ; ! and HELP. Only whole-number LCD
  * zoom is used, so every Cybiko pixel stays square. Key positions are in
@@ -131,11 +134,15 @@ typedef struct {
     int n_pages[2];
     int lcd_x, lcd_y, lcd_scale;
     int speed_x, speed_y, speed_w, speed_h;    /* the emulation speed box */
+    int led_x, led_y;                          /* the status LED, LED_SIZE square */
 } ui_layout_t;
+
+#define LED_SIZE 12
 
 static const ui_layout_t layout_landscape = {
     pad_keys, COUNT(pad_keys), { page_letters, page_more },
-    { COUNT(page_letters), COUNT(page_more) }, 0, 0, 2, PAD_X, 0, PAD_W, PAD_Y,
+    { COUNT(page_letters), COUNT(page_more) }, 0, 0, 2, PAD_X, 0, PAD_W - LED_SIZE - 4, PAD_Y,
+    PAD_X + PAD_W - LED_SIZE - 2, 1,
 };
 
 /* Portrait keys are laid out at start-up; see build_portrait(). */
@@ -143,7 +150,7 @@ static const ui_layout_t layout_landscape = {
 #define P_H BOARD_PANEL_W
 static EXT_RAM_BSS_ATTR ui_key_t portrait_keys[64];
 static ui_layout_t layout_portrait = { portrait_keys, 0, { NULL, NULL }, { 0, 0 }, 56, 10, 1,
-                                     218, 10, 54, 20 };
+                                     218, 10, 54, 20, 22, 14 };
 
 static void add_key(int x, int y, int w, int h, int key, int kind, bool alt, const char *label)
 {
@@ -352,6 +359,23 @@ static void draw_speed(int pct)
     draw_box(L->speed_x, L->speed_y, L->speed_w, L->speed_h, COL_BG, buf);
 }
 
+/* The status LED: a lit or dark dot. */
+static void draw_led(int led)
+{
+    static const uint16_t colour[] = {
+        UI_RGB(0x3a, 0x30, 0x30), UI_RGB(0xff, 0x30, 0x20), UI_RGB(0x30, 0xff, 0x40),
+    };
+    if (!box) return;
+    const int n = LED_SIZE, r2 = (n / 2) * (n / 2);
+    for (int j = 0; j < n; j++)
+        for (int i = 0; i < n; i++) {
+            int dx = 2 * i + 1 - n, dy = 2 * j + 1 - n;    /* doubled offsets from the centre */
+            int d = dx * dx + dy * dy;
+            box_put(n, i, j, d > 4 * r2 ? COL_BG : d > 4 * (r2 - n) ? COL_EDGE : colour[led]);
+        }
+    blit(L->led_x, L->led_y, n, n, box);
+}
+
 static void draw_all(void)
 {
     display_ui_fill(0, 0, BOARD_PANEL_W, BOARD_PANEL_H, COL_BG);
@@ -470,7 +494,7 @@ static void ui_task(void *arg)
     uint8_t *lum = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
     cybiko_t *m = cybiko_app_machine();
     uint32_t shown = 0xffffffff;
-    int speed_shown = -2;
+    int speed_shown = -2, led_shown = -1;
     bool was_down = false, boot_was = false, onoff_held = false;
     int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0, last_load = 0;
 
@@ -525,6 +549,11 @@ static void ui_task(void *arg)
         if (speed != speed_shown) {
             draw_speed(speed);
             speed_shown = speed;
+        }
+        int led = cybiko_led(m);
+        if (led != led_shown) {
+            draw_led(led);
+            led_shown = led;
         }
 
         /* Save the RAM disk every 30 s if it changed, while the user is idle

@@ -183,6 +183,7 @@ typedef struct {
     uint8_t id_orig[4], crc_orig[4];           /* flash bytes before cybiko_set_unit_id */
     bool id_applied;
     uint32_t sent, heard;                      /* packets, for diagnostics */
+    uint64_t led_red, led_green;               /* when the LED last blinked (states) */
 } cy_rf_t;
 
 /* The MP3 player cartridge (cy_cart.c). */
@@ -309,6 +310,12 @@ bool cybiko_serial_rx(cybiko_t *m, int port, uint8_t byte);
 /* Radio (cy_rf.c). A packet heard from another machine, as its rf_send hook
  * gave it; returns false if the queue is full or the length is wrong. */
 bool cybiko_rf_receive(cybiko_t *m, const uint8_t *pkt, size_t len, uint8_t channel);
+/* The status LED, as the Xtreme's manual describes it: blinking red while
+ * the radio sends, blinking green while it hears other Cybikos (each blink
+ * lasts CY_LED_BLINK_MS). Steady red on mains or USB power is not shown. */
+enum { CY_LED_OFF, CY_LED_RED, CY_LED_GREEN };
+#define CY_LED_BLINK_MS 100
+int cybiko_led(const cybiko_t *m);
 /* The MP3 cartridge: take up to `max` bytes of the MPEG stream CyOS sent to
  * the decoder (call it as the audio output needs data). */
 size_t cybiko_mp3_take(cybiko_t *m, uint8_t *buf, size_t max);

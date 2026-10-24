@@ -18,6 +18,13 @@
  *   c8 <200 bytes>    a long packet was heard
  *   13 / 11           XOFF / XON while CyOS is sending (not used here)
  *
+ * The status LED. The Xtreme's manual says it blinks
+ * red while sending and green while receiving. Which pins drive it is not
+ * known (CyOS changes no pin while it sends; it raises P17 while a heard
+ * packet comes in, maybe the green LED, maybe a line to the AVR), so the
+ * LED follows the packets here: a packet lights it from its first byte until
+ * CY_LED_BLINK_MS after its last.
+ *
  * Packets start with the 4-byte destination (ffffffff for everyone) and the
  * 4-byte sender ID; the rest (CyOS's own network protocol) is passed through
  * untouched, so emulating the AVR is enough for CyOS to talk to other
@@ -58,6 +65,7 @@ void cy_rf_reset(cybiko_t *m)
     r->have = r->need = 0;
     r->ack_due = false;
     r->inject_len = r->inject_pos = 0;
+    r->led_red = r->led_green = 0;
 }
 
 static void frame_done(cybiko_t *m)
@@ -68,6 +76,7 @@ static void frame_done(cybiko_t *m)
     } else {
         uint16_t len = r->cmd == 0x30 ? CY_RF_SHORT : CY_RF_LONG;
         r->sent++;
+        r->led_red = m->synced;
         /* buf[0] is the flag byte; the packet follows */
         if (m->host.rf_send) m->host.rf_send(m->host.user, r->buf + 1, len, r->channel);
         r->ack_due = true;
@@ -89,6 +98,7 @@ void cy_rf_h8_byte(cybiko_t *m, uint8_t b)
         } else if (b == 0x30 || b == 0xcf) {
             r->need = 1 + (b == 0x30 ? CY_RF_SHORT : CY_RF_LONG) + SPARE;
             r->parse = P_DATA;
+            r->led_red = m->synced;
             /* A real AVR cannot hear while it sends: drop a packet still
              * being handed to the H8S. */
             r->inject_len = r->inject_pos = 0;
@@ -156,8 +166,19 @@ void cy_rf_advance(cybiko_t *m)
            cybiko_serial_rx(m, 2, r->inject[r->inject_pos])) {
         r->inject_pos++;
         r->inject_at += AIR_BYTE;
+        r->led_green = m->synced;
     }
     if (r->inject_pos >= r->inject_len) r->inject_len = r->inject_pos = 0;
+}
+
+int cybiko_led(const cybiko_t *m)
+{
+    const cy_rf_t *r = &m->rf;
+    uint64_t t = m->synced, hold = (uint64_t)CY_CLOCK_HZ * CY_LED_BLINK_MS / 1000;
+    bool red = r->parse == P_DATA || (r->led_red && t - r->led_red < hold);
+    bool green = r->inject_len || (r->led_green && t - r->led_green < hold);
+    if (red && green) return r->led_red >= r->led_green ? CY_LED_RED : CY_LED_GREEN;
+    return red ? CY_LED_RED : green ? CY_LED_GREEN : CY_LED_OFF;
 }
 
 uint32_t cy_rf_next(const cybiko_t *m)

@@ -113,6 +113,15 @@ In short:
 out without editing the file. As on the real machine, some games (CyRace 2,
 for one) quit straight back to the desktop while the cartridge and its card
 are in: take it out to play them.
+
+What CyOS does on the card (File Manager's delete, files the player or a
+game writes, renames, new folders) is saved to `/Cybiko/card` along with
+the RAM disk, every 30 s or so and when you hold BOOT. CyOS only writes to
+the card because the emulated card's write-protect switch (port 3 bit 2)
+now reads "off"; before, every delete ended in "The file is not found".
+A file CyOS changes keeps its old contents in a hidden `.cyold*` file until
+the next start. CyOS's writes are also held in PSRAM until the next start, up to 512 KB
+in all, so copying a big file onto the card from the Cybiko fails.
 `tools/cybiko_mxd.py` turns a video into an MXD clip, and a clip back into
 an MP4 (`cybiko_mxd.py clip.app clip.mp4`). More in
 [cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md); how the cartridge

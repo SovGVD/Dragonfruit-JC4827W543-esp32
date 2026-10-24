@@ -158,6 +158,15 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
     }
 }
 
+void cybiko_cart_sync(void)
+{
+    cy_vfat_sync_t r;
+    if (!card_dir || !cy_vfat_sync(card_dir, &r)) return;
+    ESP_LOGI(TAG, "card: CyOS's changes saved to %s: %u files written, %u deleted, %u renamed, %u folders made",
+             CARD_DIR, (unsigned)r.written, (unsigned)r.removed, (unsigned)r.renamed, (unsigned)r.made);
+    if (r.failed) ESP_LOGW(TAG, "card: %u changes could not be saved to %s", (unsigned)r.failed, CARD_DIR);
+}
+
 /* The decoder takes the stream at its bit rate in emulated time, as the real
  * one does. The speaker plays in real time, so when the emulation runs slow
  * the sound has gaps; taking the data in real time instead starves CyOS's

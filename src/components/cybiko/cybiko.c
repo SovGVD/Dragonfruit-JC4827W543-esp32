@@ -156,6 +156,8 @@ static uint8_t port_input(cybiko_t *m, int p)
     }
     case 1:                   /* port 2: the cartridge */
         return cy_cart_p2_input(m);
+    case 2:                   /* port 3: bit 2 the card's write protect */
+        return cy_cart_p3_input(m);
     case 5:                   /* port 6: bit 6 the MP3 decoder's DEMAND */
         return cy_cart_p6_input(m);
     case 14:                  /* port F: bit 6 RTC SDA */

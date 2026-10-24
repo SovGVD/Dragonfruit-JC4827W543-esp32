@@ -28,10 +28,12 @@ clip formats in [file-formats.md](https://github.com/SovGVD/cybiko-docs/blob/mai
    - Names are shown in ASCII. Accents are dropped and Cyrillic is
      transliterated, because CyOS does not list files whose names contain
      other characters.
-   - What the Cybiko writes to the card is kept in memory until the next
-     start. It never changes the folder.
+   - What the Cybiko does on the card (deleting, writing or renaming files,
+     making folders) is saved to the folder each time the RAM disk is saved.
+     A changed file's old contents stay in a hidden `.cyold*` file until
+     the next start. Up to 512 KB of writes per start fit in memory.
 
-   If you prefer a real disk image, which keeps the Cybiko's writes, make one
+   If you prefer a real disk image, which the Cybiko writes directly, make one
    with `tools/cybiko_card.py FOLDER mp3card.img` and put it at
    `/Cybiko/mp3card.img`. The image is used only while `/Cybiko/card` is
    empty.

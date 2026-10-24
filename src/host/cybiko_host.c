@@ -11,7 +11,8 @@
  *   --ls               list the files on the RAM disk at the end
  *   --cart             plug in the MP3 player cartridge (--cart-log: and log it)
  *   --card IMG|DIR     ... with an SD card: a disk image (512-byte blocks) or a
- *                      folder, shown as a FAT16 card (writes stay in memory)
+ *                      folder, shown as a FAT16 card (what CyOS changes on it is
+ *                      carried over to the folder every 5 s and at the end)
  *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
@@ -173,6 +174,16 @@ static void io_trace(cybiko_t *m, uint32_t a, uint8_t v, bool w)
 /* --card IMG|DIR: the MP3 cartridge's SD card, a disk image or a folder */
 static FILE *card_file;
 static cy_vfat_t *card_dir;
+
+/* Carry what CyOS did on the card over to the folder, as the board does. */
+static void card_sync(const cybiko_t *m)
+{
+    cy_vfat_sync_t r;
+    if (!card_dir || !cy_vfat_sync(card_dir, &r) || !(r.written | r.removed | r.renamed | r.made | r.failed)) return;
+    fprintf(stderr, "[%.3f] card: %u written, %u deleted, %u renamed, %u folders made, %u failed\n",
+            (double)m->cpu.cycles / CY_CLOCK_HZ, (unsigned)r.written, (unsigned)r.removed,
+            (unsigned)r.renamed, (unsigned)r.made, (unsigned)r.failed);
+}
 static bool card_read(void *user, uint32_t block, uint8_t *buf)
 {
     (void)user;
@@ -854,6 +865,7 @@ int main(int argc, char **argv)
             cybiko_run(&m, step);
         }
         led_poll(&m);
+        if (card_dir && m.cpu.cycles / (5ull * CY_CLOCK_HZ) != (m.cpu.cycles - step) / (5ull * CY_CLOCK_HZ)) card_sync(&m);
         if (mp3) mp3_pump(&m, mp3, wav);
         if (browse_requested) {
             browse_requested = false;
@@ -888,6 +900,7 @@ int main(int argc, char **argv)
             }
         }
     }
+    card_sync(&m);
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     if (pc_profile_ms >= 0) pc_report();
 #ifdef CY_HLE_CHECK

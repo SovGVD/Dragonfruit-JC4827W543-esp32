@@ -371,6 +371,10 @@ static int map_key(SDL_Keycode k)
 
 static void save_disk(bool force)
 {
+    cy_vfat_sync_t r;
+    if (card_dir && cy_vfat_sync(card_dir, &r) && (r.written | r.removed | r.renamed | r.made | r.failed))
+        printf("card: %u written, %u deleted, %u renamed, %u folders made, %u failed\n", (unsigned)r.written,
+               (unsigned)r.removed, (unsigned)r.renamed, (unsigned)r.made, (unsigned)r.failed);
     bool dirty = force;
     for (size_t i = 0; i < sizeof m.disk_dirty / sizeof m.disk_dirty[0]; i++) dirty |= m.disk_dirty[i] != 0;
     if (!dirty) return;

@@ -2,7 +2,13 @@
  *
  *   test_vfat                  build a folder in /tmp and check the disk
  *   test_vfat DIR OUT.img      write the disk made from DIR to OUT.img
- *                              (to check it with fsck.fat or a PC) */
+ *                              (to check it with fsck.fat or a PC)
+ *   test_vfat --sync DIR A.img [B.img...]
+ *                              write the blocks where A.img (DIR's disk,
+ *                              changed by a PC's FAT driver such as mtools)
+ *                              differs from DIR's disk, carry the changes
+ *                              over to DIR with cy_vfat_sync, then the same
+ *                              with B.img and so on, without reopening */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,6 +131,44 @@ static void self_test(void)
     assert(!cy_vfat_read(d.v, cy_vfat_blocks(d.v), buf));
     cy_vfat_close(d.v);
 
+    /* cy_vfat_sync: delete HELLO.TXT (its entry marked 0xe5) and change a
+     * block of the long-named song in place; nothing else changes. */
+    d.v = cy_vfat_open(dir, 64);
+    assert(d.v);
+    cy_vfat_sync_t r;
+    assert(!cy_vfat_sync(d.v, &r));
+    uint32_t b = 0;
+    for (b = d.root0; b < d.root0 + 32; b++) {
+        blk(&d, b, buf);
+        uint8_t *hello = NULL;
+        for (int k = 0; k < 16; k++)
+            if (!memcmp(buf + 32 * k, "HELLO   TXT", 11)) hello = buf + 32 * k;
+        if (hello) { hello[0] = 0xe5; break; }
+    }
+    assert(cy_vfat_write(d.v, b, buf));
+    e = find(&d, d.root0, 32, "ALONGS~1MP3", buf, NULL);
+    uint32_t song = d.data0 + (le16(e + 26) - 2) * d.spc;
+    blk(&d, song, buf);
+    memcpy(buf + 10, "SYNC", 4);
+    assert(cy_vfat_write(d.v, song, buf));
+    assert(cy_vfat_sync(d.v, &r));
+    assert(r.removed == 1 && r.written == 1 && r.renamed == 0 && r.made == 0 && r.failed == 0);
+    assert(!cy_vfat_sync(d.v, &r));
+    cy_vfat_close(d.v);
+    struct stat st;
+    snprintf(p, sizeof p, "%s/HELLO.TXT", dir);
+    assert(stat(p, &st) != 0);
+    snprintf(p, sizeof p, "%s/A long song name.mp3", dir);
+    FILE *f = fopen(p, "rb");
+    assert(f);
+    for (long i = 0; i < 70000; i++) {
+        int ch = fgetc(f);
+        assert(ch == (i >= 10 && i < 14 ? "SYNC"[i - 10] : (int)((i * 7 + 2) & 0xff)));
+    }
+    fclose(f);
+    snprintf(p, sizeof p, "%s/Clips/movie.app", dir);
+    assert(stat(p, &st) == 0 && st.st_size == 5000);
+
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
     assert(system(cmd) == 0);
@@ -133,6 +177,31 @@ static void self_test(void)
 
 int main(int argc, char **argv)
 {
+    if (argc >= 4 && !strcmp(argv[1], "--sync")) {
+        cy_vfat_t *v = cy_vfat_open(argv[2], 1u << 20);
+        if (!v) { perror(argv[2]); return 1; }
+        uint32_t failed = 0;
+        for (int a = 3; a < argc; a++) {        /* one machine session after another */
+            FILE *f = fopen(argv[a], "rb");
+            if (!f) { perror(argv[a]); return 1; }
+            uint8_t buf[512], img[512];
+            uint32_t changed = 0;
+            for (uint32_t b = 0; b < cy_vfat_blocks(v) && fread(img, 1, sizeof img, f) == sizeof img; b++) {
+                if (!cy_vfat_read(v, b, buf)) { fprintf(stderr, "block %u failed\n", (unsigned)b); return 1; }
+                if (memcmp(buf, img, sizeof img) && cy_vfat_write(v, b, img)) changed++;
+            }
+            fclose(f);
+            cy_vfat_sync_t r;
+            bool any = cy_vfat_sync(v, &r);
+            printf("%s: %u blocks changed; sync: %u written, %u deleted, %u renamed, %u folders made, %u failed\n",
+                   argv[a], (unsigned)changed, (unsigned)r.written, (unsigned)r.removed, (unsigned)r.renamed,
+                   (unsigned)r.made, (unsigned)r.failed);
+            assert(!cy_vfat_sync(v, &r) && any == (changed > 0));     /* nothing left the second time */
+            failed += r.failed;
+        }
+        cy_vfat_close(v);
+        return failed ? 1 : 0;
+    }
     if (argc == 3) {
         cy_vfat_t *v = cy_vfat_open(argv[1], 0);
         if (!v) { perror(argv[1]); return 1; }

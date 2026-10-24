@@ -396,6 +396,7 @@ void cybiko_app_save(bool force)
             fl = true;
         }
     }
+    cybiko_cart_sync();
     cpu_pause(false);
     if (staged) {
         save_disk(dirty, staged);

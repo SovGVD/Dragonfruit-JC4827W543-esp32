@@ -16,6 +16,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #include "cy_vfat.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
@@ -36,6 +37,7 @@
 #define MAX_MB 1024
 #define BIG_CLUSTER 32768       /* the largest cluster used, for the budget */
 #define READ_AHEAD 8192         /* bytes read from a file at a time */
+#define BACKUP_PREFIX ".cyold"  /* a changed file's old contents, until close */
 
 typedef struct {
     uint32_t name;              /* string pool offsets: long name (UTF-8), */
@@ -47,11 +49,26 @@ typedef struct {
     uint8_t short_name[11];
     uint8_t lfn;                /* long name entries, 0 for a plain 8.3 name */
     uint8_t is_dir, depth;
+    uint8_t gone;               /* deleted from the folder by a sync */
+    uint8_t backup;             /* path is a hidden copy of the old contents */
 } node_t;
+
+/* What the folder holds, as of the last cy_vfat_sync: the scan's files and
+ * folders, then the ones the machine made. */
+typedef struct {
+    uint32_t parent;            /* record index, UINT32_MAX for the root */
+    uint32_t node;              /* its node, UINT32_MAX if the machine made it */
+    uint32_t name;              /* pool offset: the name in the folder */
+    uint32_t cluster, size;     /* as on the card */
+    uint8_t short_name[11];
+    uint8_t is_dir, gone, seen;
+    uint8_t as_scanned;         /* contents still those the scan found */
+} rec_t;
 
 typedef struct {
     uint32_t block;
     uint8_t *data;
+    bool synced;                /* carried over to the folder by cy_vfat_sync */
 } written_t;
 
 struct cy_vfat {
@@ -70,6 +87,8 @@ struct cy_vfat {
     uint32_t cache_off, cache_len;
     written_t *written;
     uint32_t n_written, max_written;
+    rec_t *recs;
+    uint32_t n_recs, cap_recs;
 };
 
 static void *vf_realloc(void *p, size_t n)
@@ -276,9 +295,13 @@ static bool scan(cy_vfat_t *v)
         struct dirent *de;
         while ((de = readdir(dir)) != NULL) {
             const char *nm = de->d_name;
-            if (nm[0] == '.' || !strcasecmp(nm, "System Volume Information")) continue;
             char child[PATH_MAX_LEN];
             int len = snprintf(child, sizeof child, "%s/%s", path, nm);
+            if (!strncmp(nm, BACKUP_PREFIX, strlen(BACKUP_PREFIX)) && len < (int)sizeof child) {
+                remove(child);                  /* left by a sync that did not finish */
+                continue;
+            }
+            if (nm[0] == '.' || !strcasecmp(nm, "System Volume Information")) continue;
             struct stat st;
             if (len >= (int)sizeof child || strlen(nm) > 255 || stat(child, &st) != 0) { v->skipped++; continue; }
             bool is_dir = S_ISDIR(st.st_mode);
@@ -384,9 +407,16 @@ void cy_vfat_close(cy_vfat_t *v)
 {
     if (!v) return;
     if (v->file) fclose(v->file);
+    for (uint32_t i = 0; i < v->n_nodes; i++)
+        if (v->nodes[i].backup) {
+            char path[PATH_MAX_LEN];
+            full_path(v, &v->nodes[i], path, sizeof path);
+            remove(path);
+        }
     free(v->cache);
     for (uint32_t i = 0; i < v->n_written; i++) free(v->written[i].data);
     free(v->written);
+    free(v->recs);
     free(v->ext);
     free(v->nodes);
     free(v->pool);
@@ -557,7 +587,7 @@ static void boot_blocks(const cy_vfat_t *v, uint32_t block, uint8_t *buf)
 static bool file_block(cy_vfat_t *v, const node_t *n, uint32_t offset, uint8_t *buf)
 {
     memset(buf, 0, SECTOR);
-    if (offset >= n->size) return true;
+    if (offset >= n->size || n->gone) return true;     /* a deleted file's clusters are free */
     uint32_t idx = (uint32_t)(n - v->nodes);
     if (v->file_node != idx) {
         if (v->file) fclose(v->file);
@@ -609,6 +639,7 @@ bool cy_vfat_write(cy_vfat_t *v, uint32_t block, const uint8_t *buf)
     for (uint32_t i = 0; i < v->n_written; i++)
         if (v->written[i].block == block) {
             memcpy(v->written[i].data, buf, SECTOR);
+            v->written[i].synced = false;
             return true;
         }
     if (v->n_written >= v->max_written) return false;
@@ -624,6 +655,452 @@ bool cy_vfat_write(cy_vfat_t *v, uint32_t block, const uint8_t *buf)
     memcpy(data, buf, SECTOR);
     v->written[v->n_written].block = block;
     v->written[v->n_written].data = data;
+    v->written[v->n_written].synced = false;
     v->n_written++;
+    return true;
+}
+/* ---- carrying the machine's writes over to the folder ---- */
+
+#define MAX_DIR_BLOCKS 128      /* a folder of up to 2048 entries */
+
+typedef struct {
+    char name[256];             /* long name, or the 8.3 one, as UTF-8 */
+    uint8_t short_name[11];
+    uint8_t attr;
+    uint32_t cluster, size;
+} entry_t;
+
+typedef struct {
+    cy_vfat_t *v;
+    cy_vfat_sync_t *out;
+    uint8_t buf[SECTOR];
+    uint32_t fat_blk;           /* the FAT block in fat_buf, UINT32_MAX for none */
+    uint8_t fat_buf[SECTOR];
+    uint32_t *dirty;            /* blocks written since the last sync, sorted */
+    uint32_t n_dirty;
+    bool fat_dirty, data_dirty; /* any of them in the FATs, in the data area */
+} sync_t;
+
+static bool unsynced(const sync_t *s, uint32_t block)
+{
+    uint32_t lo = 0, hi = s->n_dirty;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2;
+        if (s->dirty[mid] < block) lo = mid + 1; else hi = mid;
+    }
+    return lo < s->n_dirty && s->dirty[lo] == block;
+}
+
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void drop_file(cy_vfat_t *v)
+{
+    if (v->file) fclose(v->file);
+    v->file = NULL;
+    v->file_node = UINT32_MAX;
+    v->cache_len = 0;
+}
+
+static uint32_t fat_next(sync_t *s, uint32_t cl)
+{
+    uint32_t blk = PART_START + 1 + cl / 256;
+    if (blk != s->fat_blk) {
+        if (!cy_vfat_read(s->v, blk, s->fat_buf)) return 0xffff;
+        s->fat_blk = blk;
+    }
+    return s->fat_buf[(cl % 256) * 2] | s->fat_buf[(cl % 256) * 2 + 1] << 8;
+}
+
+static bool cluster_ok(const cy_vfat_t *v, uint32_t cl) { return cl >= 2 && cl < v->clusters + 2; }
+
+/* The blocks of a folder (the root's when cluster is 0); returns how many. */
+static uint32_t dir_blocks(sync_t *s, uint32_t cluster, uint32_t *blocks)
+{
+    cy_vfat_t *v = s->v;
+    uint32_t n = 0;
+    if (!cluster) {
+        uint32_t root0 = PART_START + 1 + 2 * v->fat_secs;
+        for (; n < ROOT_SECTORS; n++) blocks[n] = root0 + n;
+        return n;
+    }
+    for (uint32_t cl = cluster, steps = 0; cluster_ok(v, cl) && steps < MAX_DIR_BLOCKS; cl = fat_next(s, cl), steps++)
+        for (uint32_t k = 0; k < v->spc && n < MAX_DIR_BLOCKS; k++)
+            blocks[n++] = v->data_start + (cl - 2) * v->spc + k;
+    return n;
+}
+
+static void put_utf8(char *out, size_t *len, uint32_t c)
+{
+    if (*len + 4 >= 256) return;
+    if (c < 0x80) out[(*len)++] = (char)c;
+    else if (c < 0x800) { out[(*len)++] = (char)(0xc0 | c >> 6); out[(*len)++] = (char)(0x80 | (c & 0x3f)); }
+    else {
+        out[(*len)++] = (char)(0xe0 | c >> 12);
+        out[(*len)++] = (char)(0x80 | ((c >> 6) & 0x3f));
+        out[(*len)++] = (char)(0x80 | (c & 0x3f));
+    }
+    out[*len] = 0;
+}
+
+/* Read a folder's entries; returns how many, or -1 if it could not be read. */
+static int read_entries(sync_t *s, const uint32_t *blocks, uint32_t nb, entry_t **out)
+{
+    static const uint8_t at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+    entry_t *list = NULL;
+    int n = 0, cap = 0;
+    uint16_t lfn[260];
+    int lfn_parts = 0, lfn_seen = 0;
+    uint8_t lfn_csum = 0;
+    for (uint32_t b = 0; b < nb; b++) {
+        if (!cy_vfat_read(s->v, blocks[b], s->buf)) { free(list); return -1; }
+        for (int k = 0; k < 16; k++) {
+            const uint8_t *e = s->buf + k * 32;
+            if (e[0] == 0) goto done;
+            if (e[0] == 0xe5) { lfn_parts = 0; continue; }
+            if (e[11] == 0x0f) {
+                int ord = e[0] & 0x1f;
+                if (e[0] & 0x40) {
+                    lfn_parts = ord;
+                    lfn_seen = 0;
+                    lfn_csum = e[13];
+                    for (int i = 0; i < 260; i++) lfn[i] = 0xffff;
+                }
+                if (!lfn_parts || ord < 1 || ord > lfn_parts || ord > 20 || e[13] != lfn_csum) { lfn_parts = 0; continue; }
+                for (int j = 0; j < 13; j++) lfn[(ord - 1) * 13 + j] = (uint16_t)(e[at[j]] | e[at[j] + 1] << 8);
+                lfn_seen++;
+                continue;
+            }
+            if ((e[11] & 0x08) || e[0] == '.') { lfn_parts = 0; continue; }   /* label, . and .. */
+            if (n == cap) {
+                cap = cap ? cap * 2 : 32;
+                entry_t *p = realloc(list, (size_t)cap * sizeof *p);
+                if (!p) { free(list); return -1; }
+                list = p;
+            }
+            entry_t *t = &list[n++];
+            memcpy(t->short_name, e, 11);
+            t->attr = e[11];
+            t->cluster = e[26] | e[27] << 8;
+            t->size = (uint32_t)e[28] | (uint32_t)e[29] << 8 | (uint32_t)e[30] << 16 | (uint32_t)e[31] << 24;
+            size_t len = 0;
+            t->name[0] = 0;
+            if (lfn_parts && lfn_seen == lfn_parts && lfn_csum == lfn_sum(e)) {
+                for (int i = 0; i < lfn_parts * 13 && lfn[i] && lfn[i] != 0xffff; i++) put_utf8(t->name, &len, lfn[i]);
+            } else {
+                for (int i = 0; i < 8 && e[i] != ' '; i++)
+                    put_utf8(t->name, &len, (e[12] & 0x08) ? (uint32_t)tolower(e[i]) : e[i]);
+                if (e[8] != ' ') put_utf8(t->name, &len, '.');
+                for (int i = 8; i < 11 && e[i] != ' '; i++)
+                    put_utf8(t->name, &len, (e[12] & 0x10) ? (uint32_t)tolower(e[i]) : e[i]);
+                if (t->name[0] == 0x05) t->name[0] = (char)0xe5;
+            }
+            lfn_parts = 0;
+        }
+    }
+done:
+    *out = list;
+    return n;
+}
+
+static bool name_ok(const char *nm)
+{
+    return nm[0] && strcmp(nm, ".") && strcmp(nm, "..") && !strchr(nm, '/') && !strchr(nm, '\\') &&
+           strncmp(nm, BACKUP_PREFIX, strlen(BACKUP_PREFIX));
+}
+
+/* A node's backing file, below the folder: its own path, or for a changed
+ * file the hidden copy of its old contents. */
+static void set_path(cy_vfat_t *v, uint32_t idx, const char *rel)
+{
+    uint32_t at = pool_add(v, rel);
+    if (at == UINT32_MAX) return;
+    v->nodes[idx].path = at;
+    const node_t *n = &v->nodes[idx];
+    if (!n->is_dir) return;
+    for (uint32_t i = 0; i < n->count; i++) {
+        uint32_t c = n->first + i;
+        char sub[PATH_MAX_LEN];
+        if (v->nodes[c].backup) snprintf(sub, sizeof sub, "%s/" BACKUP_PREFIX "%u", rel, (unsigned)c);
+        else snprintf(sub, sizeof sub, "%s/%s", rel, v->pool + v->nodes[c].name);
+        set_path(v, c, sub);
+    }
+}
+
+static void node_gone(cy_vfat_t *v, uint32_t idx)
+{
+    node_t *n = &v->nodes[idx];
+    n->gone = 1;
+    if (n->is_dir)
+        for (uint32_t i = 0; i < n->count; i++) node_gone(v, n->first + i);
+}
+
+static void rec_gone(cy_vfat_t *v, uint32_t idx)
+{
+    rec_t *r = &v->recs[idx];
+    r->gone = 1;
+    if (r->node != UINT32_MAX) node_gone(v, r->node);
+    if (r->is_dir)
+        for (uint32_t i = 0; i < v->n_recs; i++)
+            if (v->recs[i].parent == idx && !v->recs[i].gone) rec_gone(v, i);
+}
+
+static uint32_t rec_add(cy_vfat_t *v)
+{
+    if (v->n_recs == v->cap_recs) {
+        uint32_t cap = v->cap_recs ? v->cap_recs * 2 : 256;
+        rec_t *p = vf_realloc(v->recs, cap * sizeof *p);
+        if (!p) return UINT32_MAX;
+        v->recs = p;
+        v->cap_recs = cap;
+    }
+    rec_t *r = &v->recs[v->n_recs];
+    memset(r, 0, sizeof *r);
+    r->node = UINT32_MAX;
+    return v->n_recs++;
+}
+
+/* Delete a file or a folder with everything in it. */
+static bool remove_tree(const char *path, int depth)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return true;
+    if (S_ISDIR(st.st_mode) && depth < MAX_DEPTH + 2) {
+        DIR *d = opendir(path);
+        if (d) {
+            struct dirent *de;
+            while ((de = readdir(d)) != NULL) {
+                if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+                char sub[PATH_MAX_LEN];
+                if (snprintf(sub, sizeof sub, "%s/%s", path, de->d_name) < (int)sizeof sub) remove_tree(sub, depth + 1);
+            }
+            closedir(d);
+        }
+        return rmdir(path) == 0;
+    }
+    return remove(path) == 0;
+}
+
+/* Is the file on the card different from what the folder holds: another
+ * size or first cluster, blocks written since the last sync, or (for a file
+ * still as scanned) a chain that left the scanned clusters? */
+static bool file_changed(sync_t *s, const entry_t *e, const rec_t *r)
+{
+    cy_vfat_t *v = s->v;
+    if (!r || e->size != r->size || e->cluster != r->cluster) return true;
+    if (!s->data_dirty && (!s->fat_dirty || !r->as_scanned)) return false;
+    const node_t *n = r->as_scanned ? &v->nodes[r->node] : NULL;
+    uint32_t want = (e->size + v->spc * SECTOR - 1) / (v->spc * SECTOR), k = 0;
+    for (uint32_t cl = e->cluster; cluster_ok(v, cl) && k < want; cl = fat_next(s, cl), k++) {
+        if (n && cl != n->cluster + k) return true;
+        for (uint32_t b = 0; b < v->spc; b++)
+            if (unsynced(s, v->data_start + (cl - 2) * v->spc + b)) return true;
+    }
+    return false;
+}
+
+static bool write_file(sync_t *s, const entry_t *e, const char *path)
+{
+    cy_vfat_t *v = s->v;
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    uint32_t left = e->size, steps = 0;
+    bool ok = true;
+    for (uint32_t cl = e->cluster; left && ok; cl = fat_next(s, cl)) {
+        if (!cluster_ok(v, cl) || steps++ > v->clusters) { ok = false; break; }
+        for (uint32_t b = 0; b < v->spc && left && ok; b++) {
+            ok = cy_vfat_read(v, v->data_start + (cl - 2) * v->spc + b, s->buf);
+            uint32_t n = left < SECTOR ? left : SECTOR;
+            ok = ok && fwrite(s->buf, 1, n, f) == n;
+            left -= n;
+        }
+    }
+    if (fclose(f) != 0) ok = false;
+    if (!ok) remove(path);
+    return ok;
+}
+
+/* One folder: `cluster` its first cluster (0 for the root), `path` where it
+ * is in the folder, `dir` its record. Entries are matched to the records
+ * of the last sync (at first, the scan) by 8.3 name and first cluster, or
+ * by the cluster alone for a rename. Records not on the card any more are
+ * deleted first, so a file the machine replaced (deleted, then written
+ * again under the same name) ends up written. */
+static void sync_dir(sync_t *s, uint32_t cluster, const char *path, uint32_t dir, int depth)
+{
+    cy_vfat_t *v = s->v;
+    uint32_t blocks[MAX_DIR_BLOCKS];
+    uint32_t nb = dir_blocks(s, cluster, blocks);
+    bool dirty = false;
+    for (uint32_t i = 0; i < nb && !dirty; i++) dirty = unsynced(s, blocks[i]);
+    entry_t *list = NULL;
+    int n = read_entries(s, blocks, nb, &list);
+    uint32_t *match = n > 0 ? malloc((size_t)n * sizeof *match) : NULL;
+    if (n < 0 || (n > 0 && !match)) { free(list); s->out->failed++; return; }
+    for (uint32_t k = 0; k < v->n_recs; k++)
+        if (v->recs[k].parent == dir) v->recs[k].seen = 0;
+
+    /* 1: match the entries to the records */
+    for (int i = 0; i < n; i++) {
+        const entry_t *e = &list[i];
+        bool is_dir = e->attr & 0x10;
+        match[i] = UINT32_MAX;
+        for (int pass = 0; pass < 2 && match[i] == UINT32_MAX; pass++)
+            for (uint32_t k = 1; k < v->n_recs && match[i] == UINT32_MAX; k++) {
+                const rec_t *r = &v->recs[k];
+                if (r->parent != dir || r->gone || r->seen || r->is_dir != is_dir) continue;
+                if (pass == 0 ? !memcmp(r->short_name, e->short_name, 11) &&
+                                    (r->cluster == e->cluster || (!r->cluster && !is_dir))
+                              : e->cluster && r->cluster == e->cluster)
+                    match[i] = k;
+            }
+        if (match[i] != UINT32_MAX) v->recs[match[i]].seen = 1;
+    }
+
+    /* 2: delete what the machine deleted */
+    for (uint32_t k = 1; dirty && k < v->n_recs; k++) {
+        rec_t *r = &v->recs[k];
+        if (r->parent != dir || r->gone || r->seen) continue;
+        char real[PATH_MAX_LEN];
+        snprintf(real, sizeof real, "%s/%s", path, v->pool + r->name);
+        drop_file(v);
+        if (remove_tree(real, 0)) s->out->removed++; else s->out->failed++;
+        rec_gone(v, k);
+    }
+
+    /* 3: renames, new and changed files, folders */
+    for (int i = 0; i < n; i++) {
+        entry_t *e = &list[i];
+        bool is_dir = e->attr & 0x10;
+        uint32_t ri = match[i];
+        if (ri != UINT32_MAX && !memcmp(v->recs[ri].short_name, e->short_name, 11)) {
+            /* the same name: keep the folder's (the card may show it folded) */
+            snprintf(e->name, sizeof e->name, "%s", v->pool + v->recs[ri].name);
+        } else if (!name_ok(e->name)) {
+            s->out->failed++;
+            continue;
+        }
+        char real[PATH_MAX_LEN];
+        if (snprintf(real, sizeof real, "%s/%s", path, e->name) >= (int)sizeof real) { s->out->failed++; continue; }
+        if (ri != UINT32_MAX && memcmp(v->recs[ri].short_name, e->short_name, 11)) {
+            /* renamed: the 8.3 name changed, the cluster did not */
+            rec_t *r = &v->recs[ri];
+            char old[PATH_MAX_LEN];
+            snprintf(old, sizeof old, "%s/%s", path, v->pool + r->name);
+            drop_file(v);
+            if (strcmp(old, real) && rename(old, real) != 0) { s->out->failed++; continue; }
+            s->out->renamed++;
+            uint32_t at = pool_add(v, e->name);
+            if (at != UINT32_MAX) r->name = at;
+            memcpy(r->short_name, e->short_name, 11);
+            if (r->node != UINT32_MAX && !v->nodes[r->node].backup) {
+                node_t *nd = &v->nodes[r->node];
+                if (at != UINT32_MAX) nd->name = at;
+                char rel[PATH_MAX_LEN];
+                snprintf(rel, sizeof rel, "%s/%s", v->pool + v->nodes[nd->parent].path, e->name);
+                set_path(v, r->node, rel);
+            }
+        }
+        if (ri == UINT32_MAX) {
+            ri = rec_add(v);
+            if (ri == UINT32_MAX) { s->out->failed++; continue; }
+            rec_t *r = &v->recs[ri];
+            r->parent = dir;
+            r->is_dir = is_dir;
+            r->seen = 1;
+            memcpy(r->short_name, e->short_name, 11);
+            r->cluster = is_dir ? e->cluster : UINT32_MAX;      /* a new file is always written */
+            r->name = pool_add(v, e->name);
+            if (r->name == UINT32_MAX) { r->gone = 1; s->out->failed++; continue; }
+            if (is_dir) {
+                if (mkdir(real, 0777) == 0) s->out->made++;
+                else {
+                    struct stat st;
+                    if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) { s->out->failed++; continue; }
+                }
+            }
+        }
+        rec_t *r = &v->recs[ri];
+        if (is_dir) {
+            r->cluster = e->cluster;
+            if (depth + 1 < MAX_DEPTH && cluster_ok(v, e->cluster)) sync_dir(s, e->cluster, real, ri, depth + 1);
+            continue;
+        }
+        if (!file_changed(s, e, r)) continue;
+        node_t *nd = r->node != UINT32_MAX ? &v->nodes[r->node] : NULL;
+        if (nd && !nd->backup && !nd->gone && nd->size) {
+            /* keep the old contents readable (blocks the machine did not
+             * rewrite still come from them) under a hidden name */
+            char bak[PATH_MAX_LEN], rel[PATH_MAX_LEN];
+            snprintf(rel, sizeof rel, "%s/" BACKUP_PREFIX "%u", v->pool + v->nodes[nd->parent].path, (unsigned)r->node);
+            if (snprintf(bak, sizeof bak, "%s%s", v->root, rel) >= (int)sizeof bak) { s->out->failed++; continue; }
+            drop_file(v);
+            if (rename(real, bak) != 0) { s->out->failed++; continue; }
+            nd->backup = 1;
+            set_path(v, r->node, rel);
+        }
+        if (write_file(s, e, real)) {
+            s->out->written++;
+            r->cluster = e->cluster;
+            r->size = e->size;
+            r->as_scanned = 0;
+        } else {
+            s->out->failed++;
+        }
+    }
+    free(match);
+    free(list);
+}
+
+bool cy_vfat_sync(cy_vfat_t *v, cy_vfat_sync_t *out)
+{
+    cy_vfat_sync_t dummy;
+    if (!out) out = &dummy;
+    memset(out, 0, sizeof *out);
+    bool any = false;
+    for (uint32_t i = 0; i < v->n_written && !any; i++) any = !v->written[i].synced;
+    if (!any) return false;
+    if (!v->n_recs) {
+        /* the first sync: the folder is as scanned */
+        for (uint32_t i = 0; i < v->n_nodes; i++) {
+            uint32_t k = rec_add(v);
+            if (k == UINT32_MAX) { v->n_recs = 0; out->failed++; return true; }
+            const node_t *nd = &v->nodes[i];
+            rec_t *r = &v->recs[k];
+            r->parent = i ? nd->parent : UINT32_MAX;
+            r->node = i;
+            r->name = nd->name;
+            memcpy(r->short_name, nd->short_name, 11);
+            r->cluster = nd->cluster;
+            r->size = nd->size;
+            r->is_dir = nd->is_dir;
+            r->as_scanned = 1;
+        }
+    }
+    sync_t *s = malloc(sizeof *s);
+    if (!s) { out->failed++; return true; }
+    s->v = v;
+    s->out = out;
+    s->fat_blk = UINT32_MAX;
+    s->dirty = malloc(v->n_written * sizeof *s->dirty);
+    s->n_dirty = 0;
+    s->fat_dirty = s->data_dirty = false;
+    if (!s->dirty) { free(s); out->failed++; return true; }
+    for (uint32_t i = 0; i < v->n_written; i++) {
+        uint32_t b = v->written[i].block;
+        if (v->written[i].synced) continue;
+        s->dirty[s->n_dirty++] = b;
+        if (b > PART_START && b <= PART_START + 2 * v->fat_secs) s->fat_dirty = true;
+        if (b >= v->data_start) s->data_dirty = true;
+    }
+    qsort(s->dirty, s->n_dirty, sizeof *s->dirty, cmp_u32);
+    drop_file(v);
+    sync_dir(s, 0, v->root, 0, 0);
+    free(s->dirty);
+    free(s);
+    for (uint32_t i = 0; i < v->n_written; i++) v->written[i].synced = true;
     return true;
 }

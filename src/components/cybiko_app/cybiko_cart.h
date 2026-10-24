@@ -3,8 +3,9 @@
 
 /* The MP3 player cartridge (CY45P01). Its SD card is the folder
  * /Cybiko/card: drop .mp3 files and MXD clips (.app) in it, up to 1 GB in
- * all. CyOS sees the folder as a FAT16 card; what CyOS writes to the card
- * is kept in memory until the next start and never changes the folder.
+ * all. CyOS sees the folder as a FAT16 card; what CyOS does on the card
+ * (deleting, writing, renaming files, making folders) is carried over to
+ * the folder when the RAM disk is saved (cybiko_cart_sync).
  * With the folder empty, the FAT disk image /Cybiko/mp3card.img is used
  * instead (tools/cybiko_card.py makes one), and writes do reach it.
  * The music CyOS plays through the cartridge comes out of the speaker.
@@ -20,3 +21,6 @@
 void cybiko_cart_init(cybiko_t *m, const char *cfg);
 /* CPU task: pass the music CyOS sent to the decoder. */
 void cybiko_cart_poll(cybiko_t *m);
+/* Carry CyOS's changes on the card over to the card folder. Call with the
+ * CPU task paused. */
+void cybiko_cart_sync(void);

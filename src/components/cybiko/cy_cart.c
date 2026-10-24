@@ -156,6 +156,17 @@ void cy_cart_p2(cybiko_t *m, uint8_t level, uint8_t ddr)
     i2c_pins(m, level & SCL, sda);
 }
 
+/* Port 3 bit 2 is the card slot's write-protect switch, 1 = protected.
+ * sdflash.dl samples it ten times when the card goes in and takes the card
+ * as read-only if most samples are 1; CyOS then refuses to delete or write
+ * (FDRemove fails with error 6, File Manager's "The file is not found").
+ * An emulated card is always writable. */
+uint8_t cy_cart_p3_input(const cybiko_t *m)
+{
+    const cy_cart_t *c = &m->cart;
+    return c->present && c->card_blocks ? (uint8_t)~0x04 : 0xff;
+}
+
 void cy_cart_p3(cybiko_t *m, uint8_t level, uint8_t ddr)
 {
     cy_cart_t *c = &m->cart;

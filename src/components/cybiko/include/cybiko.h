@@ -214,6 +214,19 @@ typedef struct {
     uint16_t mp3_head, mp3_count;
 } cy_cart_t;
 
+/* The USBN9604 USB device controller (cy_usb.c). FIFO 0 is endpoint 0's
+ * (8 bytes each way), FIFOs 1-3 the 64-byte ones. */
+typedef struct {
+    uint8_t addr;                      /* register picked through 200003 */
+    uint8_t r[64];
+    uint8_t maev, fnh_latch;
+    uint16_t frame;
+    uint8_t tx[4][64], tx_len[4], txs[4];
+    uint8_t rx[4][64], rx_len[4], rx_pos[4], rxs[4];
+    bool vbus;                         /* a host's cable is in */
+    uint32_t overflows;                /* bytes written to a full FIFO */
+} cy_usb_t;
+
 typedef struct cybiko {
     h8s_cpu_t cpu;
     cy_host_t host;
@@ -246,6 +259,7 @@ typedef struct cybiko {
     cy_sci_t sci[3];
     cy_rf_t rf;
     cy_cart_t cart;
+    cy_usb_t usb;
     uint8_t scmr[3];
     uint8_t adcsr, adcr;
     uint16_t addr[4];
@@ -405,3 +419,18 @@ bool cy_disk_delete(uint8_t *disk, uint32_t size, const char *name);
 
 /* True once the OS has put the CPU into software standby (switched off). */
 static inline bool cybiko_is_off(const cybiko_t *m) { return m->standby; }
+
+/* USB, the host's side: one transaction per call, to the device at USB
+ * address addr. They answer what the chip would: ACK, NAK, STALL, or
+ * nothing (TIMEOUT: detached, not addressed, no such endpoint). toggle is
+ * the DATA0/1 bit of the packet. cybiko_usb_vbus plugs the cable in;
+ * CyOS then puts its pull-up on (cybiko_usb_attached) and waits for a bus
+ * reset. */
+enum { CY_USB_ACK, CY_USB_NAK, CY_USB_STALL, CY_USB_TIMEOUT };
+void cybiko_usb_vbus(cybiko_t *m, bool on);
+bool cybiko_usb_attached(const cybiko_t *m);
+void cybiko_usb_bus_reset(cybiko_t *m);
+void cybiko_usb_frame(cybiko_t *m);            /* a start of frame, every 1 ms */
+int cybiko_usb_setup(cybiko_t *m, int addr, const uint8_t setup[8]);
+int cybiko_usb_out(cybiko_t *m, int addr, int ep, const uint8_t *data, int len, int toggle);
+int cybiko_usb_in(cybiko_t *m, int addr, int ep, uint8_t *data, int max, int *len, int *toggle);

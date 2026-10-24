@@ -34,7 +34,7 @@ static uint8_t irq_pins(const cybiko_t *m)
     /* The On/Off button is on PA7, which doubles as IRQ7 on the H8S/2323;
      * pressing it is what can wake the CPU from software standby. */
     bool onoff = (m->keys[CYK_ONOFF >> 4] >> (CYK_ONOFF & 15)) & 1;
-    return (onoff ? 0x80 : 0x00) | cy_cart_irq_pins(m);
+    return (onoff ? 0x80 : 0x00) | cy_cart_irq_pins(m) | cy_usb_irq_pins(m);
 }
 
 static void irq_check_levels(cybiko_t *m)
@@ -317,6 +317,7 @@ static uint16_t bus_read16(void *ctx, uint32_t a)
     if (a >= FLASH_BASE && a < 0x800000u) return cy_flash_read16(m, (a - FLASH_BASE) & (CY_FLASH_SIZE - 1));
     if (a >= 0xe00000u && a < 0xf00000u) return keyboard_read(m, a);
     if (a == 0x100000u) return (uint16_t)(cy_lcd_read(&m->lcd, 0) << 8 | cy_lcd_read(&m->lcd, 1));
+    if (a >= 0x200000u && a < 0x200004u) return (uint16_t)(cy_usb_bus_read(m, a) << 8 | cy_usb_bus_read(m, a + 1));
     if (a < 0x40000u) return (uint16_t)(m->rom[a & 0x7fff] << 8 | m->rom[(a & 0x7fff) + 1]);
     m->unmapped_reads++;
     return 0;
@@ -327,6 +328,7 @@ static uint8_t bus_read8(void *ctx, uint32_t a)
     cybiko_t *m = ctx;
     if (a >= 0xfffe80u) return io_read(m, a);
     if (a == 0x100000u || a == 0x100001u) return cy_lcd_read(&m->lcd, (int)(a & 1));
+    if (a >= 0x200000u && a < 0x200004u) return cy_usb_bus_read(m, a);
     uint16_t w = bus_read16(ctx, a & ~1u);
     return (uint8_t)(a & 1 ? w : w >> 8);
 }
@@ -353,7 +355,11 @@ static void bus_write16(void *ctx, uint32_t a, uint16_t v)
         cy_lcd_write(&m->lcd, 1, (uint8_t)v);
         return;
     }
-    if (a >= 0x200000u && a < 0x200004u) return;        /* USB controller */
+    if (a >= 0x200000u && a < 0x200004u) {              /* USB controller, 8 bits wide */
+        cy_usb_bus_write(m, a, (uint8_t)(v >> 8));
+        cy_usb_bus_write(m, a + 1, (uint8_t)v);
+        return;
+    }
     if (a < 0x40000u) return;                            /* ROM */
     m->unmapped_writes++;
 }
@@ -369,7 +375,7 @@ static void bus_write8(void *ctx, uint32_t a, uint8_t v)
         cy_flash_write16(m, (a - FLASH_BASE) & (CY_FLASH_SIZE - 1) & ~1u, v);
         return;
     }
-    if (a >= 0x200000u && a < 0x200004u) return;
+    if (a >= 0x200000u && a < 0x200004u) { cy_usb_bus_write(m, a, v); return; }
     if (a - CY_DISK_BASE < m->disk_size) { cy_disk_write8(m, a - CY_DISK_BASE, v); return; }
     if (a < 0x40000u) return;
     m->unmapped_writes++;
@@ -449,6 +455,7 @@ void cybiko_reset(cybiko_t *m)
     cy_flash_reset(m);
     cy_rf_reset(m);
     cy_cart_reset(m);
+    cy_usb_reset(m);
 
     m->cpu.fine_base = IRAM_BASE;
     m->cpu.fine_size = sizeof m->iram;

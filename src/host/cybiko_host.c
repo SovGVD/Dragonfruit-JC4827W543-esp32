@@ -76,6 +76,9 @@
 #ifdef CY_WITH_BROWSER
 #include "cybiko_browser.h"
 #include "cyb_net_curl.h"
+#include <pthread.h>
+#include "cy_usb_emuhost.h"
+#include "cymcp.h"
 #endif
 
 static const struct { const char *name; int key; } key_names[] = {
@@ -479,6 +482,167 @@ static double now_s(void) { return machines[0] ? (double)machines[0]->cpu.cycles
 
 static bool browse_requested;
 
+static const char *usb_script;
+
+#ifdef CY_WITH_BROWSER
+/* --usb SCRIPT: a PC on the USB port, in its own thread. The script is
+ * steps separated by ';':
+ *   enum               plug the cable in and enumerate
+ *   wait MS            let MS ms of emulated time pass
+ *   out EP HEX         bulk OUT of the bytes to endpoint EP
+ *   in EP [MS]         bulk IN from endpoint EP, printed
+ *   text EP STRING     bulk OUT of STRING plus CR
+ *   mcp EP TYPE PIPE SEQ HEX   bulk OUT of one MCP frame (hex numbers)
+ *   mcptext EP PIPE SEQ STRING MCP data frame of STRING and its NUL
+ *   cmd TEXT           console command line over MCP (pipe 1), then print
+ *                      what comes back on the console (pipe 2) for 2 s
+ *   listen PIPE        also print what comes back on MCP pipe PIPE (a
+ *                      program started with $pipe=N answers on pipe 2N)
+ *   read MS            print what comes back for MS ms
+ * IN data that holds MCP frames is decoded as well.
+ */
+static cy_usbhc_t *usbhc;
+static pthread_t usb_thread;
+
+static void usb_print_in(const uint8_t *b, int n, int ep)
+{
+    fprintf(stderr, "[usb %7.3f] IN %d, %d bytes:", (double)cy_usbhc_ms(usbhc) / 1000, ep, n);
+    for (int i = 0; i < n; i++) fprintf(stderr, " %02x", b[i]);
+    fprintf(stderr, "  |");
+    for (int i = 0; i < n; i++) fputc(b[i] >= 32 && b[i] < 127 ? b[i] : '.', stderr);
+    fprintf(stderr, "|\n");
+    cymcp_rx_t rx;
+    cymcp_frame_t f;
+    cymcp_rx_init(&rx);
+    for (int i = 0; i < n; i++) {
+        int r = cymcp_feed(&rx, b[i], &f);
+        if (r < 0) fprintf(stderr, "    MCP frame dropped: %s\n", rx.err);
+        if (r <= 0) continue;
+        fprintf(stderr, "    MCP type %02x pipe %d seq %02x len %d:", f.type, f.pipe, f.seq, f.len);
+        for (int k = 0; k < f.len; k++) fprintf(stderr, " %02x", f.body[k]);
+        fprintf(stderr, "  |");
+        for (int k = 0; k < f.len; k++) fputc(f.body[k] >= 32 && f.body[k] < 127 ? f.body[k] : '.', stderr);
+        fprintf(stderr, "|\n");
+    }
+}
+
+static int usb_hex(const char *h, uint8_t *b, int max)
+{
+    int n = 0;
+    while (h && *h && n < max) {
+        while (*h == ' ') h++;
+        unsigned v;
+        if (sscanf(h, "%2x", &v) != 1) break;
+        b[n++] = (uint8_t)v;
+        h += 2;
+    }
+    return n;
+}
+
+static cymcp_link_t *usb_mcp;
+static uint8_t usb_listening[256];
+
+static void usb_mcp_read(unsigned ms)
+{
+    uint64_t until = cy_usbhc_ms(usbhc) + ms;
+    while (cy_usbhc_ms(usbhc) < until) {
+        if (cymcp_poll(usb_mcp, 50) < 0) return;
+        for (int p = 0; p < 256; p++) {
+            char b[1024];
+            int n;
+            while (usb_listening[p] && (n = cymcp_read(usb_mcp, p, b, sizeof b - 1, 0)) > 0) {
+                b[n] = 0;
+                fprintf(stderr, "[usb %7.3f] pipe %d: %s\n", (double)cy_usbhc_ms(usbhc) / 1000, p, b);
+            }
+        }
+    }
+}
+
+static void *usb_client(void *arg)
+{
+    (void)arg;
+    cyusb_dev_t *d = cy_usbhc_dev(usbhc);
+    char *script = strdup(usb_script), *save = NULL;
+    for (char *st = strtok_r(script, ";", &save); st; st = strtok_r(NULL, ";", &save)) {
+        while (*st == ' ') st++;
+        int ep = 0, ms = 0, to = 0;
+        if (!strncmp(st, "enum", 4)) {
+            if (cy_usbhc_enumerate(usbhc, 20000) < 0) break;
+        } else if (sscanf(st, "wait %d", &ms) == 1) {
+            cy_usbhc_wait_ms(usbhc, (unsigned)ms);
+        } else if (sscanf(st, "out %d", &ep) == 1) {
+            uint8_t b[4096];
+            int n = usb_hex(strchr(st + 4, ' '), b, sizeof b);
+            int r = d->bulk(d, (uint8_t)ep, b, n, 2000, &to);
+            fprintf(stderr, "[usb %7.3f] OUT %d: %d of %d bytes%s\n", (double)cy_usbhc_ms(usbhc) / 1000, ep, r, n, to ? " (timed out)" : "");
+        } else if (!strncmp(st, "mcp ", 4) || !strncmp(st, "mcptext ", 8)) {
+            unsigned type = CYMCP_DATA, pipe = 0, seq = 0;
+            int pos = 0;
+            uint8_t body[CYMCP_MAX], fr[CYMCP_FRAME];
+            int n = 0;
+            if (st[3] == ' ') {
+                if (sscanf(st, "mcp %d %x %x %x%n", &ep, &type, &pipe, &seq, &pos) < 4) { fprintf(stderr, "--usb: bad step '%s'\n", st); continue; }
+                n = usb_hex(st + pos, body, sizeof body);
+            } else {
+                if (sscanf(st, "mcptext %d %x %x%n", &ep, &pipe, &seq, &pos) < 3) { fprintf(stderr, "--usb: bad step '%s'\n", st); continue; }
+                n = snprintf((char *)body, sizeof body, "%s", st[pos] ? st + pos + 1 : "") + 1;
+            }
+            int len = cymcp_build(fr, (int)type, (int)pipe, (int)seq, body, n);
+            if (len < 0) { fprintf(stderr, "--usb: MCP body too long in '%s'\n", st); continue; }
+            int r = d->bulk(d, (uint8_t)ep, fr, len, 2000, &to);
+            fprintf(stderr, "[usb %7.3f] OUT %d MCP type %02x pipe %u seq %02x, %d body bytes: %d of %d sent%s\n",
+                    (double)cy_usbhc_ms(usbhc) / 1000, ep, type, pipe, seq, n, r, len, to ? " (timed out)" : "");
+        } else if (!strncmp(st, "cmd ", 4) || sscanf(st, "listen %d", &ep) == 1 || sscanf(st, "read %d", &ms) == 1) {
+            if (!usb_mcp) {
+                usb_mcp = cymcp_open(d);
+                usb_listening[CYMCP_CONSOLE_OUT] = 1;
+                cymcp_listen(usb_mcp, CYMCP_CONSOLE_OUT, 1);
+            }
+            if (st[0] == 'l') { usb_listening[ep & 0xff] = 1; cymcp_listen(usb_mcp, ep & 0xff, 1); }
+            else if (st[0] == 'c') {
+                char line[512];
+                /* the console takes a line up to its NUL */
+                int n = snprintf(line, sizeof line, "%s", st + 4) + 1;
+                int r = cymcp_write(usb_mcp, CYMCP_CONSOLE_IN, line, n, 5000);
+                fprintf(stderr, "[usb %7.3f] console <- '%s': %d\n", (double)cy_usbhc_ms(usbhc) / 1000, st + 4, r);
+                ms = 2000;
+            }
+            if (ms) usb_mcp_read((unsigned)ms);
+        } else if (sscanf(st, "text %d", &ep) == 1) {
+            const char *t = strchr(st + 5, ' ');
+            char b[512];
+            int n = snprintf(b, sizeof b, "%s\r", t ? t + 1 : "");
+            int r = d->bulk(d, (uint8_t)ep, (uint8_t *)b, n, 2000, &to);
+            fprintf(stderr, "[usb %7.3f] OUT %d text: %d of %d bytes%s\n", (double)cy_usbhc_ms(usbhc) / 1000, ep, r, n, to ? " (timed out)" : "");
+        } else if (sscanf(st, "in %d %d", &ep, &ms) >= 1) {
+            uint8_t b[4096];
+            int r = d->bulk(d, (uint8_t)(ep | 0x80), b, sizeof b, ms ? (unsigned)ms : 500, &to);
+            if (r > 0) usb_print_in(b, r, ep);
+            else fprintf(stderr, "[usb %7.3f] IN %d: %d%s\n", (double)cy_usbhc_ms(usbhc) / 1000, ep, r, to ? " (nothing)" : "");
+        } else {
+            fprintf(stderr, "--usb: unknown step '%s'\n", st);
+        }
+    }
+    free(script);
+    if (usb_mcp) {
+        const cymcp_stats_t *k = cymcp_stats(usb_mcp);
+        fprintf(stderr, "[usb] MCP: %u frames in, %u out, %u/%u data bytes in/out, %u resent, %u repeats, %u bad, %u unexpected\n",
+                (unsigned)k->frames_in, (unsigned)k->frames_out, (unsigned)k->data_in, (unsigned)k->data_out,
+                (unsigned)k->resent, (unsigned)k->dup, (unsigned)k->bad, (unsigned)k->unexpected);
+        cymcp_close(usb_mcp);
+        usb_mcp = NULL;
+    }
+    fprintf(stderr, "[usb %7.3f] script done\n", (double)cy_usbhc_ms(usbhc) / 1000);
+    cy_usbhc_park(usbhc, true);
+    return NULL;
+}
+#else
+typedef struct cy_usbhc cy_usbhc_t;
+static cy_usbhc_t *usbhc;
+static void cy_usbhc_tick(cy_usbhc_t *h) { (void)h; }
+#endif
+
+
 static uint32_t on_app_call(void *user, uint32_t fn, uint32_t arg)
 {
     (void)user;
@@ -613,6 +777,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--browse") && v) { browse_keys = v; i++; }
         else if (!strcmp(a, "--browse-url") && v) { browse_url = v; i++; }
         else if (!strcmp(a, "--dump-ram") && v) { dump = v; i++; }
+        else if (!strcmp(a, "--usb") && v) { usb_script = v; i++; }
         else if (!strcmp(a, "--hex-port") && v) { hex_port = atoi(v); i++; }
         else if (!strcmp(a, "--pair") && v) { pair_path = extra_path[0] = v; i++; }
         else if (!strcmp(a, "--third") && v) { extra_path[1] = v; i++; }
@@ -677,7 +842,7 @@ int main(int argc, char **argv)
                             "       [--press-both] [--bot NICK] [--bot-room N] [--bot-say MS:TEXT] [--bot-tell MS:ID:TEXT]\n"
                             "       [--rf-log] [--frame-log] [--hex-port N]\n"
                             "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n"
-                            "       [--boot UPDATE.boot] [--save-flash FILE]\n", argv[0]);
+                            "       [--boot UPDATE.boot] [--save-flash FILE] [--usb SCRIPT]\n", argv[0]);
             return 2;
         }
     }
@@ -809,6 +974,14 @@ int main(int argc, char **argv)
     uint64_t profile_at = pf ? (uint64_t)atoll(pf) * (CY_CLOCK_HZ / 1000) : 0;
     bool profiling = false;
 #endif
+    if (usb_script) {
+#ifdef CY_WITH_BROWSER
+        usbhc = cy_usbhc_new(&m, getenv("CY_USB_VERBOSE") != NULL);
+        pthread_create(&usb_thread, NULL, usb_client, NULL);
+#else
+        fprintf(stderr, "--usb: built without src/components/cy_browser\n");
+#endif
+    }
     while (m.cpu.cycles < total) {
 #ifdef CY_CALLGRIND
         if (!profiling && m.cpu.cycles >= profile_at) { profiling = true; CALLGRIND_TOGGLE_COLLECT; }
@@ -847,20 +1020,25 @@ int main(int argc, char **argv)
                 int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
                 for (int k = 0; k <= nother; k++) cybiko_run(machines[k], n);
                 if (bot.on) bot_poll(m.cpu.cycles / (CY_CLOCK_HZ / 1000));
+#ifdef CY_WITH_BROWSER
+                if (gate) cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
+#endif
+                if (usbhc) cy_usbhc_tick(usbhc);
                 led_poll(&m);
             }
-        } else if (0
+        } else if (usbhc
 #ifdef CY_WITH_BROWSER
                    || gate
 #endif
                    ) {
-#ifdef CY_WITH_BROWSER
             for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
                 int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
                 cybiko_run(&m, n);
-                cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
-            }
+#ifdef CY_WITH_BROWSER
+                if (gate) cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
 #endif
+                if (usbhc) cy_usbhc_tick(usbhc);
+            }
         } else {
             cybiko_run(&m, step);
         }
@@ -900,6 +1078,12 @@ int main(int argc, char **argv)
             }
         }
     }
+#ifdef CY_WITH_BROWSER
+    if (usbhc) {
+        cy_usbhc_stop(usbhc);
+        pthread_join(usb_thread, NULL);
+    }
+#endif
     card_sync(&m);
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     if (pc_profile_ms >= 0) pc_report();

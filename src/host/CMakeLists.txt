@@ -221,6 +221,7 @@ set(CYBIKO_SOURCES
     ../components/cybiko/cy_hle.c
     ../components/cybiko/cy_rf.c
     ../components/cybiko/cy_cart.c
+    ../components/cybiko/cy_usb.c
     ../components/h8s/h8s.c
 )
 add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})
@@ -254,6 +255,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../components/cy_browser/CMakeLists.txt AN
     target_compile_definitions(cybiko_host PRIVATE CY_WITH_BROWSER)
     target_include_directories(cybiko_host PRIVATE ../components/cybiko_app/include)
     target_link_libraries(cybiko_host PRIVATE cy_browser_curl)
+    # a PC on the emulated USB port (--usb), with the browser's USB code
+    target_sources(cybiko_host PRIVATE cy_usb_emuhost.c ../components/cy_browser/usb/cymcp.c ../components/cy_browser/usb/cymcp_link.c)
+    target_include_directories(cybiko_host PRIVATE ../components/cy_browser/usb)
+    find_package(Threads REQUIRED)
+    target_link_libraries(cybiko_host PRIVATE Threads::Threads)
     if(HOST_UI)
         target_compile_definitions(cybiko PRIVATE CY_WITH_BROWSER)
         target_include_directories(cybiko PRIVATE ../components/cybiko_app/include)

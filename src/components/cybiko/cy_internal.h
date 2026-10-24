@@ -70,6 +70,12 @@ uint8_t cy_cart_p3_input(const cybiko_t *m);
 void cy_irq_pins_changed(cybiko_t *m, uint8_t old_in);
 uint8_t cy_irq_pins(const cybiko_t *m);
 
+/* cy_usb.c: the USBN9604 at 200000-200003, its interrupt on IRQ1 */
+void cy_usb_reset(cybiko_t *m);
+uint8_t cy_usb_bus_read(cybiko_t *m, uint32_t a);
+void cy_usb_bus_write(cybiko_t *m, uint32_t a, uint8_t v);
+uint8_t cy_usb_irq_pins(const cybiko_t *m);
+
 /* cy_periph.c: TPU, TMR, WDT, SCI and A/D converter */
 void cy_periph_reset(cybiko_t *m);
 /* Start the timers' lazy catch-up from m->synced (after a reset). */

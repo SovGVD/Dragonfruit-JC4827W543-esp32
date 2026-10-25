@@ -561,6 +561,8 @@ static volatile bool usb_unplug;      /* set by the server's thread, done by the
 /* --usb SCRIPT: a PC on the USB port, in its own thread. The script is
  * steps separated by ';':
  *   enum               plug the cable in and enumerate
+ *   reenum [MS]        wait (up to MS ms, default 30000) for the Xtreme to
+ *                      drop off the bus and enumerate it again
  *   wait MS            let MS ms of emulated time pass
  *   out EP HEX         bulk OUT of the bytes to endpoint EP
  *   in EP [MS]         bulk IN from endpoint EP, printed
@@ -641,6 +643,14 @@ static void *usb_client(void *arg)
         int ep = 0, ms = 0, to = 0;
         if (!strncmp(st, "enum", 4)) {
             if (cy_usbhc_enumerate(usbhc, 20000) < 0) break;
+        } else if (!strncmp(st, "reenum", 6)) {
+            ms = 30000;
+            sscanf(st, "reenum %d", &ms);
+            uint64_t until = cy_usbhc_ms(usbhc) + (unsigned)ms;
+            while (!cy_usbhc_detached(usbhc) && cy_usbhc_ms(usbhc) < until) cy_usbhc_wait_ms(usbhc, 10);
+            if (!cy_usbhc_detached(usbhc)) { fprintf(stderr, "[usb %7.3f] the Xtreme stayed on the bus\n", (double)cy_usbhc_ms(usbhc) / 1000); break; }
+            if (usb_mcp) { cymcp_close(usb_mcp); usb_mcp = NULL; }
+            if (cy_usbhc_enumerate(usbhc, 20000) < 0) break;
         } else if (sscanf(st, "wait %d", &ms) == 1) {
             cy_usbhc_wait_ms(usbhc, (unsigned)ms);
         } else if (sscanf(st, "out %d", &ep) == 1) {
@@ -713,7 +723,10 @@ static void *usb_client(void *arg)
 /* --usb-server PORT: the USB port for a PC tool over TCP, as
  * cybiko-browser's usb/cyusb_tcp.h describes. One client at a time; the
  * cable is plugged in (and the Xtreme enumerated) when it connects and
- * pulled when it goes. The emulator then runs at real time. */
+ * pulled when it goes. When the Xtreme drops off the bus by itself (USB
+ * Gate does, to come back under its own USB ID) the client is let go, the
+ * way a PC loses the device, and enumerates it again when it comes back.
+ * The emulator then runs at real time. */
 static int usb_io(int fd, void *p, int n, bool out)
 {
     char *c = p;
@@ -726,16 +739,18 @@ static int usb_io(int fd, void *p, int n, bool out)
     return 0;
 }
 
-static void usb_serve(int fd)
+/* true: the Xtreme left the bus (the cable stays in) */
+static bool usb_serve(int fd)
 {
     cyusb_dev_t *d = cy_usbhc_dev(usbhc);
     static uint8_t data[65536];
     cy_usbhc_park(usbhc, false);
     int e = cy_usbhc_enumerate(usbhc, 20000);
     cy_usbhc_park(usbhc, true);
-    if (e < 0) { fprintf(stderr, "[usb] the Xtreme did not enumerate\n"); return; }
+    if (e < 0) { fprintf(stderr, "[usb] the Xtreme did not enumerate\n"); return false; }
     for (;;) {
         uint8_t op;
+        if (cy_usbhc_detached(usbhc)) return true;
         if (usb_io(fd, &op, 1, false) < 0) break;
         if (op == 'C') {
             uint8_t h[12];
@@ -768,6 +783,7 @@ static void usb_serve(int fd)
             break;
         }
     }
+    return false;
 }
 
 static int usb_listen = -1, usb_client_fd = -1;   /* shut down at the end to stop the server */
@@ -793,9 +809,13 @@ static void *usb_server(void *arg)
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         usb_client_fd = fd;
         fprintf(stderr, "[usb %7.3f] a PC is on the cable\n", (double)cy_usbhc_ms(usbhc) / 1000);
-        usb_serve(fd);
+        bool left = usb_serve(fd);
         usb_client_fd = -1;
         close(fd);
+        if (left) {
+            fprintf(stderr, "[usb %7.3f] the Xtreme left the bus: the PC lets it go\n", (double)cy_usbhc_ms(usbhc) / 1000);
+            continue;
+        }
         usb_unplug = true;
         fprintf(stderr, "[usb %7.3f] the PC went\n", (double)cy_usbhc_ms(usbhc) / 1000);
     }

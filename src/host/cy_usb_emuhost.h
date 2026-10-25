@@ -14,6 +14,8 @@ void cy_usbhc_stop(cy_usbhc_t *h);
  * frame. */
 void cy_usbhc_park(cy_usbhc_t *h, bool parked);
 int cy_usbhc_enumerate(cy_usbhc_t *h, unsigned timeout_ms);
+/* The device dropped off the bus since the last enumeration. */
+bool cy_usbhc_detached(cy_usbhc_t *h);
 cyusb_dev_t *cy_usbhc_dev(cy_usbhc_t *h);
 void cy_usbhc_wait_ms(cy_usbhc_t *h, unsigned ms);
 uint64_t cy_usbhc_ms(cy_usbhc_t *h);

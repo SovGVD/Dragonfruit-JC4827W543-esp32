@@ -2,7 +2,10 @@
  * Xtreme's USB link (cybiko-browser's usb/cyusb.h) runs in its own thread
  * and makes blocking transfers; the emulator's thread runs one
  * transaction of it at each 1 ms frame (cy_usbhc_tick). Like a PC, it
- * enumerates the device first (cy_usbhc_enumerate). */
+ * enumerates the device first (cy_usbhc_enumerate), and like Windows it
+ * also asks for Microsoft OS descriptors and logs them. When the device
+ * drops off the bus (its pull-up off, MCNTRL.NAT) that is noted
+ * (cy_usbhc_detached) and the client enumerates it again. */
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -17,6 +20,7 @@ struct cy_usbhc {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     bool pending, done, stopped, parked;
+    bool was_attached, detached;
     int kind, ep, len, max, toggle;
     uint8_t data[64];
     int res, rlen, rtoggle;
@@ -55,6 +59,12 @@ void cy_usbhc_tick(cy_usbhc_t *h)
     while (!h->pending && !h->parked && !h->stopped) pthread_cond_wait(&h->cv, &h->mu);
     h->ms++;
     cybiko_usb_frame(h->m);
+    bool att = cybiko_usb_attached(h->m);
+    if (h->was_attached && !att) {
+        h->detached = true;
+        logf_(h, "the device left the bus");
+    }
+    h->was_attached = att;
     if (h->pending) {
         h->rlen = 0;
         h->rtoggle = 0;
@@ -81,6 +91,14 @@ void cy_usbhc_stop(cy_usbhc_t *h)
 }
 
 uint64_t cy_usbhc_ms(cy_usbhc_t *h) { return h->ms; }
+
+bool cy_usbhc_detached(cy_usbhc_t *h)
+{
+    pthread_mutex_lock(&h->mu);
+    bool d = h->detached;
+    pthread_mutex_unlock(&h->mu);
+    return d;
+}
 
 void cy_usbhc_park(cy_usbhc_t *h, bool parked)
 {
@@ -263,10 +281,71 @@ static void hexline(cy_usbhc_t *h, const char *what, const uint8_t *p, int n)
     logf_(h, "%s", buf);
 }
 
+static void utf16(const uint8_t *p, int bytes, char *out, int max)
+{
+    int o = 0;
+    for (int j = 0; j + 1 < bytes && o < max - 1 && (p[j] || p[j + 1]); j += 2)
+        out[o++] = p[j] >= 32 && p[j] < 127 && !p[j + 1] ? (char)p[j] : '.';
+    out[o] = 0;
+}
+
+/* What Windows asks a new device for before it picks a driver: a USB 2.0
+ * device's other-speed descriptor (a full speed one stalls it), then, only
+ * from a USB 2.0 device, string descriptor ee ("MSFT100" and a vendor
+ * request code), and with that request the compatible ID (wIndex 4) and
+ * the extended properties (wIndex 5). Logged the way they came. */
+static void ms_os_descriptors(cy_usbhc_t *h, cyusb_dev_t *d, unsigned bcd_usb)
+{
+    uint8_t b[256];
+    char a[128];
+    if (bcd_usb < 0x0200) {
+        logf_(h, "Microsoft OS descriptor: not asked for (USB %x.%02x; Windows asks USB 2.0 devices only)", bcd_usb >> 8, bcd_usb & 0xff);
+        return;
+    }
+    int n = d->control(d, 0x80, 6, 0x0600, 0, b, 10, 300);
+    logf_(h, "device qualifier: %s", n == CYUSB_ESTALL ? "stalled (full speed only)" : n < 0 ? "failed" : "answered (a high speed device?)");
+    n = d->control(d, 0x80, 6, 0x03ee, 0, b, 0x12, 300);
+    if (n < 18 || b[1] != 3 || memcmp(b + 2, "M\0S\0F\0T\0" "1\0" "0\0" "0\0", 14)) {
+        if (n < 0) logf_(h, "Microsoft OS descriptor: none (string ee failed)");
+        else hexline(h, "Microsoft OS descriptor: none; string ee", b, n);
+        return;
+    }
+    uint8_t code = b[16];
+    logf_(h, "Microsoft OS descriptor: MSFT100, vendor request %02x", code);
+    n = d->control(d, 0xc0, code, 0, 4, b, 16, 300);
+    int total = n >= 4 ? (int)(b[0] | b[1] << 8) : 0;
+    if (total > (int)sizeof b) total = sizeof b;
+    if (total >= 16) n = d->control(d, 0xc0, code, 0, 4, b, (uint16_t)total, 300);
+    if (n < 16 || total != n || b[6] != 4) hexline(h, "compatible ID descriptor: bad", b, n > 0 ? n : 0);
+    else
+        for (int i = 0, k = b[8]; i < k && 16 + 24 * i + 24 <= n; i++) {
+            const uint8_t *f = b + 16 + 24 * i;
+            logf_(h, "compatible ID: interface %d \"%.8s\" sub \"%.8s\"", f[0], (const char *)f + 2, (const char *)f + 10);
+        }
+    n = d->control(d, 0xc1, code, 0, 5, b, 10, 300);
+    total = n >= 4 ? (int)(b[0] | b[1] << 8) : 0;
+    if (total > (int)sizeof b) total = sizeof b;
+    if (total >= 10) n = d->control(d, 0xc1, code, 0, 5, b, (uint16_t)total, 300);
+    if (n < 10 || total != n || b[6] != 5) { hexline(h, "extended properties: none or bad", b, n > 0 ? n : 0); return; }
+    for (int i = 0, o = 10, k = b[8]; i < k && o + 14 <= n; i++) {
+        int size = b[o] | b[o + 1] << 8, type = b[o + 4], nl = b[o + 8] | b[o + 9] << 8;
+        if (size < 14 + nl || o + size > n) { logf_(h, "extended property %d: bad size", i); return; }
+        char name[64];
+        utf16(b + o + 10, nl, name, sizeof name);
+        int dl = b[o + 10 + nl] | b[o + 11 + nl] << 8;
+        utf16(b + o + 14 + nl, dl, a, sizeof a);
+        logf_(h, "extended property: %s (type %d) = %s", name, type, a);
+        o += size;
+    }
+}
+
 int cy_usbhc_enumerate(cy_usbhc_t *h, unsigned timeout_ms)
 {
     cyusb_dev_t *d = cy_usbhc_dev(h);
     uint64_t until = h->ms + timeout_ms;
+    pthread_mutex_lock(&h->mu);
+    h->detached = false;
+    pthread_mutex_unlock(&h->mu);
     cybiko_usb_vbus(h->m, true);
     while (!cybiko_usb_attached(h->m)) {
         if (h->ms >= until) { logf_(h, "the device never attached (no pull-up)"); return -1; }
@@ -283,6 +362,8 @@ int cy_usbhc_enumerate(cy_usbhc_t *h, unsigned timeout_ms)
     int n = d->control(d, 0x80, 6, 0x0100, 0, desc, 18, 1000);
     if (n < 0) { logf_(h, "GET_DESCRIPTOR(device) failed"); return -1; }
     hexline(h, "device descriptor", desc, n);
+    uint8_t dev_desc[18] = { 0 };
+    memcpy(dev_desc, desc, n < 18 ? (size_t)n : 18);
     if (d->control(d, 0x00, 5, 7, 0, NULL, 0, 1000) < 0) { logf_(h, "SET_ADDRESS failed"); return -1; }
     h->addr = 7;
     cy_usbhc_wait_ms(h, 5);
@@ -301,6 +382,7 @@ int cy_usbhc_enumerate(cy_usbhc_t *h, unsigned timeout_ms)
             logf_(h, "string %d: \"%s\"", i, a);
         }
     }
+    ms_os_descriptors(h, d, (unsigned)(dev_desc[2] | dev_desc[3] << 8));
     if (d->control(d, 0x00, 9, 1, 0, NULL, 0, 1000) < 0) { logf_(h, "SET_CONFIGURATION failed"); return -1; }
     logf_(h, "configured");
     return 0;

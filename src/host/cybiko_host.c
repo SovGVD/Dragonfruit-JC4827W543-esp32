@@ -767,11 +767,13 @@ static void usb_serve(int fd)
     }
 }
 
+static int usb_listen = -1, usb_client_fd = -1;   /* shut down at the end to stop the server */
+
 static void *usb_server(void *arg)
 {
     (void)arg;
     cy_usbhc_park(usbhc, true);
-    int ls = socket(AF_INET, SOCK_STREAM, 0), one = 1;
+    int ls = usb_listen = socket(AF_INET, SOCK_STREAM, 0), one = 1;
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in sa = { 0 };
     sa.sin_family = AF_INET;
@@ -786,8 +788,10 @@ static void *usb_server(void *arg)
         int fd = accept(ls, NULL, NULL);
         if (fd < 0) break;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        usb_client_fd = fd;
         fprintf(stderr, "[usb %7.3f] a PC is on the cable\n", (double)cy_usbhc_ms(usbhc) / 1000);
         usb_serve(fd);
+        usb_client_fd = -1;
         close(fd);
         usb_unplug = true;
         fprintf(stderr, "[usb %7.3f] the PC went\n", (double)cy_usbhc_ms(usbhc) / 1000);
@@ -1260,6 +1264,8 @@ int main(int argc, char **argv)
 #ifdef CY_WITH_BROWSER
     if (usbhc) {
         cy_usbhc_stop(usbhc);
+        if (usb_listen >= 0) shutdown(usb_listen, SHUT_RDWR);   /* out of accept() */
+        if (usb_client_fd >= 0) shutdown(usb_client_fd, SHUT_RDWR);
         pthread_join(usb_thread, NULL);
     }
 #endif

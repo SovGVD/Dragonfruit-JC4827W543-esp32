@@ -56,7 +56,7 @@ enum { CYR_ROOM_GENERAL = 0, CYR_ROOM_ROMANCE = 1, CYR_ROOM_COMPUTING = 2,
        CYR_ROOM_SPORTS = 3, CYR_ROOM_GAMES = 4, CYR_ROOM_MUSIC = 5 };
 
 #define CYR_CHAT_MAX 99                /* characters in a chat line */
-#define CYR_MSG_MAX 1024               /* biggest message cyr_rx_t puts together */
+#define CYR_MSG_MAX 1280               /* biggest message cyr_rx_t puts together (a gate part: 1024 bytes of data and the header) */
 
 /* ---- packets ---- */
 

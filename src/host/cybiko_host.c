@@ -298,6 +298,7 @@ static struct {
     uint8_t out_ch;                  /* the channel of what is being sent */
     bool gate_wanted;                /* --bot-get: listen on the base channel too */
     uint32_t gate;                   /* a CyWIG heard (flag 04), 0 if none */
+    uint8_t gate_ch;                 /* its working channel (byte 8): where to send to it */
     /* a WAP page coming in */
     uint16_t wap_no;
     char wap[8192];
@@ -374,9 +375,11 @@ static void bot_rf_in(const uint8_t *pkt, size_t len, uint8_t channel)
     }
     const uint32_t to = cyr_to(pkt), from = cyr_from(pkt);
     const uint8_t type = cyr_type(pkt);
-    if ((pkt[9] & CYR_F_GATE) && bot.gate != from) {
-        fprintf(stderr, "[%.3f bot] %08x is a gate (flag 04 on RF channel %u)\n", now_s(), (unsigned)from, channel);
+    if ((pkt[9] & CYR_F_GATE) && (bot.gate != from || bot.gate_ch != (pkt[8] & 0x0f))) {
+        fprintf(stderr, "[%.3f bot] %08x is a gate (flag 04 on RF channel %u, works on %u)\n", now_s(), (unsigned)from,
+                channel, pkt[8] & 0x0f);
         bot.gate = from;
+        bot.gate_ch = pkt[8] & 0x0f;
     }
     if (type == CYR_T_PING) {
         char nick[9];
@@ -466,8 +469,8 @@ static void bot_poll(uint64_t ms)
                 m.len = strlen(bot.lines[i].text) + 1;
                 bot.out_to = bot.gate;
                 if (!++bot.number) bot.number = 1;
-                bot.out_ch = CYR_RF_BASE;
-                bot.nout = cyr_msg_packets(&m, bot.out_to, BOT_ID, CYR_RF_BASE, true, bot.number, bot.out, 8);
+                bot.out_ch = bot.gate_ch;        /* a message goes on the receiver's channel */
+                bot.nout = cyr_msg_packets(&m, bot.out_to, BOT_ID, CYR_RF_CHAT, true, bot.number, bot.out, 8);
                 bot.sent = bot.tries = 0;
                 bot.querying = false;
                 bot.retry_ms = 0;

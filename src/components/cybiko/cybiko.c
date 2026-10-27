@@ -301,10 +301,20 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
 /* Slow-path bus                                                       */
 /* ------------------------------------------------------------------ */
 
+/* The rows are selected by address lines, which take a while to settle on a
+ * real Cybiko: a read only sees the keys when the bus has held the row's
+ * address since the read before. CyOS reads each row with a DMA burst of 12
+ * reads of the same address (so all but the first see the keys); a lone CPU
+ * read never does, because instruction fetches from other addresses come in
+ * between, and reads no key (on the real machine: no key or noise). See
+ * cybiko-docs' hardware.md, "Reading the matrix on a real Cybiko". */
 static uint16_t keyboard_read(cybiko_t *m, uint32_t a)
 {
     uint32_t sel = (a - 0xe00000u) >> 1;
     uint16_t v = 0xffff;
+    bool held = m->dxc && m->key_held == a;
+    m->key_held = m->dxc ? a : 0;
+    if (!held) return 0xffff;
     for (int row = 0; row < 15; row++)
         if (!(sel >> row & 1)) v &= (uint16_t)~m->keys[row];
     return v;

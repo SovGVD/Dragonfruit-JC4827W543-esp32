@@ -43,12 +43,16 @@ models (Tim Schuerewegen, Olivier Galibert). The code is in
 Where the hardware is not known, or a host stands in for it:
 
 - **USB controller** (200000-200003): writes are ignored, reads give 0.
-- **Key matrix**: every read of e00000 + 2 × *sel* gets the keys at once,
-  a single CPU read included. A real Cybiko is stricter. There the address
-  has to stay on the bus for a while, so a lone CPU read sees noise or no
-  key. CyOS reads each row with a 12-read DMA burst, which works on both.
-  An application that reads the matrix itself can work in the emulator
-  and still see no key on a real Cybiko (cybiko-doom did); see cybiko-docs'
+- **Key matrix**: as on a real Cybiko, a row's keys show only when the bus
+  has held the row's address since the read before. The model counts a DMA
+  or DTC read of the same address as the previous one as held. A CPU read
+  never counts, because instruction fetches come in between. CyOS reads
+  each row with a 12-read DMA burst, so its reads see the keys from the
+  second read on. A lone CPU read of the matrix sees no key, as on the real
+  machine (the first cybiko-doom did that; the real machine gave no key or
+  noise, the model always gives no key). Whether a CPU loop running from
+  on-chip RAM would see the keys on the real machine is not known; the
+  model says no. See cybiko-docs'
   [hardware.md](https://github.com/SovGVD/cybiko-docs/blob/main/hardware.md#reading-the-matrix-on-a-real-cybiko).
 - **DRAM timing**: fast page mode costs 2 states within a row and 4 on a
   row change; the emulator counts 3 on average.

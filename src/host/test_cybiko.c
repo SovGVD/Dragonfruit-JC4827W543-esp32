@@ -105,11 +105,21 @@ static void test_keyboard(void)
     uint32_t row3 = 0xe00000u + 2u * (0x7fffu & ~(1u << 3));
     CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
     cybiko_key(&m, CYK_A, true);
+    /* a lone CPU read sees no key, as on a real Cybiko */
+    CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
+    CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
+    /* a DMA burst does from its second read of the same address on */
+    m.dxc = true;
+    CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
+    CHECK(h8s_read16(&m.cpu, row3) == (uint16_t)~0x0004);
     CHECK(h8s_read16(&m.cpu, row3) == (uint16_t)~0x0004);
     CHECK(h8s_read16(&m.cpu, 0xe00000u + 2u * (0x7fffu & ~(1u << 4))) == 0xffff);
+    CHECK(h8s_read16(&m.cpu, 0xe00000u + 2u * (0x7fffu & ~(1u << 4))) == 0xffff);
+    CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
     CHECK(h8s_read8(&m.cpu, row3 + 1) == 0xfb);
     cybiko_key(&m, CYK_A, false);
     CHECK(h8s_read16(&m.cpu, row3) == 0xffff);
+    m.dxc = false;
     /* On/Off also shows on PA7 (0 = pressed) */
     CHECK((h8s_read8(&m.cpu, 0xffff59) & 0xc0) == 0xc0);
     cybiko_key(&m, CYK_ONOFF, true);

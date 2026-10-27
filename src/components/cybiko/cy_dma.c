@@ -72,6 +72,7 @@ static void start(cybiko_t *m, int id)
     uint16_t b = dmabcr(m), cr = dmacr(m, c);
     uint32_t base = ch_base(c);
     memset(d, 0, sizeof *d);
+    m->key_held = 0;            /* the CPU had the bus since any earlier burst */
     d->fae = b >> (14 + c) & 1;
     d->tend = d->fae ? (b >> (2 * c) & 3) != 0 : (b >> id & 1);
     d->eat = d->fae ? (b >> (8 + 2 * c) & 3) != 0 : (b >> (8 + id) & 1);

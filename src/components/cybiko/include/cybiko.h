@@ -224,6 +224,7 @@ typedef struct cybiko {
     cy_lcd_t lcd;
     cy_rtc_t rtc;
     uint16_t keys[16];         /* pressed bits per keyboard row */
+    uint32_t key_held;         /* matrix address the DMAC/DTC read last (0: none) */
 
     /* interrupt controller */
     uint32_t pend[3];          /* latched internal interrupt requests by vector */

@@ -337,8 +337,11 @@ prints every radio packet, `--led-log` each change of the status LED and
 `--frame-log` the frame times; `--bot NICK`
 adds a radio-only chat partner with `--bot-say` and `--bot-tell` (see
 [testing on a PC](cybiko-radio-protocol.md#4-testing-on-a-pc)). `--card FOLDER_OR_IMAGE` plugs in the
-MP3 cartridge with that card (`--cart` without a card), `--wav FILE` records
-its sound, and `--cart-log` traces every cartridge access.
+MP3 cartridge with that card (`--cart` without a card), and `--cart-log` traces every cartridge access.
+`--wav FILE` records the sound: the speaker's tones (as the pulse waves the
+board plays) mixed with the cartridge's output, if it is plugged in, so a
+game's sound effects can be checked without a board. `--speaker-log` prints
+each change of the speaker's tone with its time.
 
 ## Speed on the board
 

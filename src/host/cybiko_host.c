@@ -13,7 +13,9 @@
  *   --card IMG|DIR     ... with an SD card: a disk image (512-byte blocks) or a
  *                      folder, shown as a FAT16 card (what CyOS changes on it is
  *                      carried over to the folder every 5 s and at the end)
- *   --wav FILE         write what the cartridge plays as a 32 kHz mono WAV file
+ *   --wav FILE         write what the speaker and the cartridge play as a 32 kHz
+ *                      mono WAV file
+ *   --speaker-log      print each change of the speaker's tone
  *   --screenshot FILE  write the final screen as a PGM image
  *   --frames DIR       write DIR/frame_NNNN.pgm whenever the screen changes
  *                      (the other machines' as b_frame_NNNN.pgm, c_frame_NNNN.pgm)
@@ -218,17 +220,64 @@ static void wav_header(FILE *f, uint32_t samples)
     fwrite("data", 1, 4, f); put_le(f, samples * 2, 4);
 }
 
-static void mp3_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
+/* The speaker's tone changes, kept with their times until they are put
+ * in the WAV file. */
+static bool speaker_log;
+static struct { uint64_t at; float freq, duty; } spk_ev[256];
+static int spk_nev;
+static float spk_freq, spk_duty, spk_phase;
+
+static void on_speaker(void *user, float freq, float duty)
+{
+    (void)user;
+    uint64_t at = the_machine->cpu.cycles;
+    if (speaker_log)
+        fprintf(stderr, "[%9.4f] speaker %.0f Hz, duty %.0f%%\n", (double)at / CY_CLOCK_HZ, freq, duty * 100);
+    if (spk_nev == (int)(sizeof spk_ev / sizeof spk_ev[0])) spk_nev--;     /* keep the latest */
+    spk_ev[spk_nev].at = at;
+    spk_ev[spk_nev].freq = freq;
+    spk_ev[spk_nev++].duty = duty;
+}
+
+/* Add the speaker's pulse wave to k samples from sample number first. */
+static void speaker_mix(int16_t *pcm, size_t k, uint64_t first)
+{
+    int e = 0;
+    for (size_t i = 0; i < k; i++) {
+        uint64_t at = (first + i) * CY_CLOCK_HZ / WAV_RATE;
+        while (e < spk_nev && spk_ev[e].at <= at) {
+            spk_freq = spk_ev[e].freq;
+            spk_duty = spk_ev[e++].duty;
+        }
+        if (spk_freq <= 0) continue;
+        spk_phase += spk_freq / WAV_RATE;
+        spk_phase -= (float)(int)spk_phase;
+        int v = pcm[i] + (spk_phase < spk_duty ? 6000 : -6000);
+        pcm[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    }
+    memmove(spk_ev, spk_ev + e, (size_t)(spk_nev - e) * sizeof spk_ev[0]);
+    spk_nev -= e;
+}
+
+/* Put the samples up to now in the WAV file: the cartridge's decoder (if it
+ * is plugged in), run in step with emulated time, and the speaker. */
+static void audio_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
 {
     uint64_t due = m->cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
     static uint8_t in[4096];
     static int16_t pcm[1024];
     while (wav_samples < due) {
-        size_t n = cybiko_mp3_take(m, in, cy_mp3_space(d));
-        cy_mp3_feed(d, in, n);
         size_t k = due - wav_samples < 1024 ? (size_t)(due - wav_samples) : 1024;
-        cy_mp3_render(d, pcm, k, WAV_RATE);
-        if (wav) fwrite(pcm, 2, k, wav);
+        if (d) {
+            size_t n = cybiko_mp3_take(m, in, cy_mp3_space(d));
+            cy_mp3_feed(d, in, n);
+            cy_mp3_render(d, pcm, k, WAV_RATE);
+        } else
+            memset(pcm, 0, k * 2);
+        if (wav) {
+            speaker_mix(pcm, k, wav_samples);
+            fwrite(pcm, 2, k, wav);
+        }
         wav_samples += k;
     }
 }
@@ -637,6 +686,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--rf-log")) rf_log = true;
         else if (!strcmp(a, "--led-log")) led_log = true;
         else if (!strcmp(a, "--frame-log")) frame_log = true;
+        else if (!strcmp(a, "--speaker-log")) speaker_log = true;
 #ifdef CY_WITH_BROWSER
         else if (!strcmp(a, "--gate")) {
             static cyb_net_t gate_net;
@@ -677,6 +727,7 @@ int main(int argc, char **argv)
                             "       [--press-both] [--bot NICK] [--bot-room N] [--bot-say MS:TEXT] [--bot-tell MS:ID:TEXT]\n"
                             "       [--rf-log] [--frame-log] [--hex-port N]\n"
                             "       [--trace-io LO-HI] [--dump-ram FILE] [--cart] [--cart-log] [--card IMG] [--wav FILE]\n"
+                            "       [--speaker-log]\n"
                             "       [--boot UPDATE.boot] [--save-flash FILE]\n", argv[0]);
             return 2;
         }
@@ -745,6 +796,8 @@ int main(int argc, char **argv)
     cy_host_t host = { .user = (void *)0, .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf,
                        .card_read = card_read, .card_write = card_write,
                        .app_call = on_app_call };
+    if (wav_path || speaker_log) host.speaker = on_speaker;
+    the_machine = &m;
     cybiko_init(&m, &host, rom, flash, ram);
     if (disk_kb) cybiko_set_disk(&m, disk, disk_size);
     if (unit_id) cybiko_set_unit_id(&m, unit_id);
@@ -770,8 +823,8 @@ int main(int argc, char **argv)
     if (cart) {
         mp3 = malloc(cy_mp3_size());
         cy_mp3_init(mp3);
-        wav_samples = m.cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
     }
+    wav_samples = m.cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
     if (wav_path) {
         wav = fopen(wav_path, "wb");
         if (!wav) { perror(wav_path); return 1; }
@@ -831,14 +884,14 @@ int main(int argc, char **argv)
             uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
             if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
         }
-        if (mp3 && step > (int32_t)(CY_CLOCK_HZ / 200)) step = CY_CLOCK_HZ / 200;   /* keep the decoder fed */
+        if ((mp3 || wav) && step > (int32_t)(CY_CLOCK_HZ / 200)) step = CY_CLOCK_HZ / 200;   /* keep the decoder fed */
         if (pc_profile_ms >= 0 && m.cpu.cycles >= (uint64_t)(pc_profile_ms * (CY_CLOCK_HZ / 1000))) {
             /* sample the PC every 997 states (a prime, to avoid beating with loops) */
             for (int32_t d = 0; d < step; d += 997) {
                 cybiko_run(&m, step - d < 997 ? step - d : 997);
                 pc_sample(m.cpu.pc);
             }
-            if (mp3) mp3_pump(&m, mp3, wav);
+            if (mp3 || wav) audio_pump(&m, mp3, wav);
             continue;
         }
         if (pair_path || bot.on) {
@@ -866,7 +919,7 @@ int main(int argc, char **argv)
         }
         led_poll(&m);
         if (card_dir && m.cpu.cycles / (5ull * CY_CLOCK_HZ) != (m.cpu.cycles - step) / (5ull * CY_CLOCK_HZ)) card_sync(&m);
-        if (mp3) mp3_pump(&m, mp3, wav);
+        if (mp3 || wav) audio_pump(&m, mp3, wav);
         if (browse_requested) {
             browse_requested = false;
 #ifdef CY_WITH_BROWSER

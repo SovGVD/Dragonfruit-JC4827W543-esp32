@@ -501,6 +501,26 @@ void cybiko_app_set_vsync(bool on)
     nvs_close(h);
 }
 
+bool cybiko_app_gray(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("cybiko", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "gray", &v);
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
+void cybiko_app_set_gray(bool gray)
+{
+    nvs_handle_t h;
+    if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "gray", gray);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 /* ------------------------------------------------------------------ */
 /* Start                                                               */
 /* ------------------------------------------------------------------ */

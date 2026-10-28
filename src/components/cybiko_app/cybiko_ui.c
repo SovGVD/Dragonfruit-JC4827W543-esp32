@@ -60,6 +60,8 @@
 #define EXT_RAM_BSS_ATTR    /* host builds */
 #endif
 
+static const char *TAG = "cybiko_ui";
+
 #define PAD_X 320
 #define PAD_W 160
 #define KB_Y 200
@@ -382,12 +384,16 @@ static void draw_all(void)
     draw_keys();
 }
 
-/* LCD luminance to a greenish STN palette, big-endian RGB565. */
+/* LCD luminance to big-endian RGB565: the greenish STN tint of the real
+ * screen, or plain greys from black to white (cybiko_app_gray()). */
 static uint8_t lut[256][2];
 
-static void build_lut(void)
+static void build_lut(bool gray)
 {
-    const int ink[3] = { 0x18, 0x20, 0x28 }, paper[3] = { 0xb4, 0xc4, 0xa4 };
+    static const int lcd_ink[3] = { 0x18, 0x20, 0x28 }, lcd_paper[3] = { 0xb4, 0xc4, 0xa4 };
+    static const int gray_ink[3] = { 0x00, 0x00, 0x00 }, gray_paper[3] = { 0xff, 0xff, 0xff };
+    const int *ink = gray ? gray_ink : lcd_ink, *paper = gray ? gray_paper : lcd_paper;
+    ESP_LOGI(TAG, "screen palette: %s", gray ? "gray" : "LCD");
     for (int v = 0; v < 256; v++) {
         int r = ink[0] + (paper[0] - ink[0]) * v / 255;
         int g = ink[1] + (paper[1] - ink[1]) * v / 255;
@@ -498,7 +504,7 @@ static void ui_task(void *arg)
     bool was_down = false, boot_was = false, onoff_held = false;
     int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0, last_load = 0;
 
-    build_lut();
+    build_lut(cybiko_app_gray());
     portrait = cybiko_app_portrait();
     if (portrait) build_portrait();
     L = portrait ? &layout_portrait : &layout_landscape;

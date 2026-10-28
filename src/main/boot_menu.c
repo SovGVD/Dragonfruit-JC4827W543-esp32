@@ -10,10 +10,11 @@
  * A row of settings under the title: the Cybiko screen orientation
  * (portrait by default, or landscape), the speaker volume both systems start
  * with (kept in NVS, played as a short beep when changed) and CALIBRATE.
- * The Cybiko card has two buttons of its own: one takes the MP3 cartridge
- * out or puts it back (some games will not start with it in), the other
- * turns whole frames ("vsync": the screen is shown only once CyOS has
- * finished drawing it) on or off.
+ * The Cybiko card has three buttons of its own: one takes the MP3 cartridge
+ * out or puts it back (some games will not start with it in), one turns
+ * whole frames ("vsync": the screen is shown only once CyOS has finished
+ * drawing it) on or off, and one picks the screen's colours: the green
+ * tint of the real LCD or plain greys.
  *
  * The CALIBRATE button opens the touch calibration. It also opens by itself
  * when no calibration has been made yet (none saved, none in palm.cfg), and
@@ -77,17 +78,25 @@ static card_t cards[BOOT_SYSTEM_COUNT] = {
 #define VOL_W 36
 #define VOL_STEP 10
 #define VOLUME_DEFAULT 60
-/* The MP3 cartridge and VSYNC buttons, side by side near the bottom of the
- * Cybiko card: the cartridge left of the centre, VSYNC right of it. */
-#define CART_W 96
-#define CART_H 24
-#define CART_DY 120
-#define CART_GAP 6
-#define VSYNC_W 96
+/* The Cybiko card's buttons, side by side near its bottom, centred: the MP3
+ * cartridge, VSYNC and the screen palette. */
+enum { CY_BTN_CART, CY_BTN_VSYNC, CY_BTN_PALETTE, CY_BTN_COUNT };
+#define CY_BTN_W 64
+#define CY_BTN_H 24
+#define CY_BTN_DY 120
+#define CY_BTN_GAP 3
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
     display_ui_text(cx - display_ui_text_width(s, scale) / 2, y, s, scale, fg, bg);
+}
+
+/* Left edge of the Cybiko card's button `b`. */
+static int cy_button_x(int b)
+{
+    const card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
+    const int row = CY_BTN_COUNT * CY_BTN_W + (CY_BTN_COUNT - 1) * CY_BTN_GAP;
+    return c->x + (c->w - row) / 2 + b * (CY_BTN_W + CY_BTN_GAP);
 }
 
 static void draw_card(int i, bool selected)
@@ -105,13 +114,16 @@ static void draw_card(int i, bool selected)
     text_centered(cx, c->y + 98, c->ready ? "READY" : c->missing, 2,
                   c->ready ? COLOR_OK : COLOR_BAD, c->color);
     if (i == BOOT_SYSTEM_CYBIKO) {
-        int x0 = cx - CART_GAP / 2 - CART_W, x1 = cx + CART_GAP / 2;
-        display_ui_fill(x0, c->y + CART_DY, CART_W, CART_H, COLOR_BUTTON);
-        text_centered(x0 + CART_W / 2, c->y + CART_DY + 8, cybiko_app_cart_in() ? "MP3: IN" : "MP3: OUT",
-                      1, COLOR_TITLE, COLOR_BUTTON);
-        display_ui_fill(x1, c->y + CART_DY, VSYNC_W, CART_H, COLOR_BUTTON);
-        text_centered(x1 + VSYNC_W / 2, c->y + CART_DY + 8, cybiko_app_vsync() ? "VSYNC: ON" : "VSYNC: OFF",
-                      1, COLOR_TITLE, COLOR_BUTTON);
+        const char *label[CY_BTN_COUNT] = {
+            [CY_BTN_CART] = cybiko_app_cart_in() ? "MP3: IN" : "MP3: OUT",
+            [CY_BTN_VSYNC] = cybiko_app_vsync() ? "VSYNC: ON" : "VSYNC: OFF",
+            [CY_BTN_PALETTE] = cybiko_app_gray() ? "LCD: GRAY" : "LCD: GREEN",
+        };
+        for (int b = 0; b < CY_BTN_COUNT; b++) {
+            int x0 = cy_button_x(b);
+            display_ui_fill(x0, c->y + CY_BTN_DY, CY_BTN_W, CY_BTN_H, COLOR_BUTTON);
+            text_centered(x0 + CY_BTN_W / 2, c->y + CY_BTN_DY + 8, label[b], 1, COLOR_TITLE, COLOR_BUTTON);
+        }
     }
 }
 
@@ -219,18 +231,14 @@ static bool orientation_at(int x, int y)
     return x >= ORI_X && x < ORI_X + ORI_W && y >= ORI_Y && y < ORI_Y + ORI_H;
 }
 
-static bool cart_at(int x, int y)
+/* The Cybiko card's button under (x, y), or -1. */
+static int cy_button_at(int x, int y)
 {
-    const card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
-    int x0 = c->x + c->w / 2 - CART_GAP / 2 - CART_W, y0 = c->y + CART_DY;
-    return x >= x0 && x < x0 + CART_W && y >= y0 && y < y0 + CART_H;
-}
-
-static bool vsync_at(int x, int y)
-{
-    const card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
-    int x0 = c->x + c->w / 2 + CART_GAP / 2, y0 = c->y + CART_DY;
-    return x >= x0 && x < x0 + VSYNC_W && y >= y0 && y < y0 + CART_H;
+    int y0 = cards[BOOT_SYSTEM_CYBIKO].y + CY_BTN_DY;
+    if (y < y0 || y >= y0 + CY_BTN_H) return -1;
+    for (int b = 0; b < CY_BTN_COUNT; b++)
+        if (x >= cy_button_x(b) && x < cy_button_x(b) + CY_BTN_W) return b;
+    return -1;
 }
 
 static int card_at(int x, int y)
@@ -296,8 +304,8 @@ boot_system_t boot_menu_run(void)
     TickType_t start = xTaskGetTickCount(), pressed_at = 0;
     bool touching = false, was_pressed = input_boot_button_held(), held_fired = false;
     int touched = -1;
-    bool cal_touched = false, ori_touched = false, cart_touched = false, vsync_touched = false;
-    int vol_touched = 0;
+    bool cal_touched = false, ori_touched = false;
+    int vol_touched = 0, cy_touched = -1;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         TickType_t now = xTaskGetTickCount();
@@ -312,8 +320,7 @@ boot_system_t boot_menu_run(void)
                 cal_touched = calibrate_at(x, y);
                 ori_touched = orientation_at(x, y);
                 vol_touched = volume_button_at(x, y);
-                cart_touched = cart_at(x, y);
-                vsync_touched = vsync_at(x, y);
+                cy_touched = cy_button_at(x, y);
             }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
@@ -323,12 +330,10 @@ boot_system_t boot_menu_run(void)
         } else if (touching && vol_touched) {
             change_volume(vol_touched);
             draw_footer(0);
-        } else if (touching && cart_touched) {
-            cybiko_app_set_cart_in(!cybiko_app_cart_in());
-            draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
-            draw_footer(0);
-        } else if (touching && vsync_touched) {
-            cybiko_app_set_vsync(!cybiko_app_vsync());
+        } else if (touching && cy_touched >= 0) {
+            if (cy_touched == CY_BTN_CART) cybiko_app_set_cart_in(!cybiko_app_cart_in());
+            else if (cy_touched == CY_BTN_VSYNC) cybiko_app_set_vsync(!cybiko_app_vsync());
+            else cybiko_app_set_gray(!cybiko_app_gray());
             draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
             draw_footer(0);
         } else if (touching && ori_touched) {

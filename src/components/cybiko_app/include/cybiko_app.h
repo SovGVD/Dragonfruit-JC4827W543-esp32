@@ -44,3 +44,9 @@ void cybiko_app_set_cart_in(bool in);
  * false shows it as it is drawn. */
 bool cybiko_app_vsync(void);
 void cybiko_app_set_vsync(bool on);
+
+/* The screen's colours, kept in NVS and switched in the boot menu: false
+ * (the default) is the grey-green tint of the real LCD, true plain greys
+ * from black to white. */
+bool cybiko_app_gray(void);
+void cybiko_app_set_gray(bool gray);

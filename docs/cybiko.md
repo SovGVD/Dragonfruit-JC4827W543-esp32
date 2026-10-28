@@ -222,6 +222,16 @@ the screen every 40 ms as it is, mid-drawing too. The serial log says which
 at start ("screen: whole frames (vsync)" or "as drawn"). The web emulator
 does the same.
 
+## Screen colours (LCD: GREEN / LCD: GRAY)
+
+The third button on the Cybiko card of the boot menu picks the screen's
+colours, kept in NVS. **LCD: GREEN** (the default) tints the four shades like
+the real grey-green STN screen, black ink on a pale green. **LCD: GRAY**
+shows them as plain greys from black to white, the way PC screenshots of
+Cybiko games usually look. The serial log says which at start
+("screen palette: LCD" or "gray"). The desktop app takes `--gray` for the
+same, and the web emulator has it in its settings.
+
 ## Sound
 
 The Cybiko beeper plays through the board's speaker with the same `audio`
@@ -296,7 +306,7 @@ On Ubuntu (26.04 has SDL3 packaged):
 sudo apt install build-essential cmake libsdl3-dev
 cmake -S src/host -B build-host -DHOST_UI=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-host --target cybiko -j
-build-host/cybiko ~/Cybiko            # the folder with the dumps; --zoom N for the window size
+build-host/cybiko ~/Cybiko            # the folder with the dumps; --zoom N for the window size, --gray for plain greys
 ```
 
 Without `libsdl3-dev` CMake downloads SDL3 and builds it, which needs the

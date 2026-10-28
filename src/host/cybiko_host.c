@@ -3,6 +3,16 @@
  *
  *   cybiko_host --rom cyrom150.bin --flash cyos_v1508.bin [options]
  *
+ * or a Cybiko Classic, taken when the flash is a DataFlash image (540672 or
+ * 1081344 bytes) or with --classic:
+ *
+ *   cybiko_host --rom cyrom112.bin --flash flash_v1246.bin [options]
+ *
+ * The Classic has no RAM disk (its files are in the flash: --save-flash
+ * keeps them), no cartridge and its own keys (--press takes the same names,
+ * plus 0-9, bksp, grave, minus, equals, quote, slash, backslash, lbracket,
+ * rbracket; rROW.BIT is its matrix). Its CyOS prints on SCI2.
+ *
  *   --seconds S        emulated seconds to run (default 20)
  *   --ramdisk FILE     load the RAM disk from FILE and save it back
  *   --disk-size KB     move the RAM disk to 800000 and make it KB kilobytes
@@ -97,6 +107,30 @@ static const struct { const char *name; int key; } key_names[] = {
     { "onoff", CYK_ONOFF },
 };
 
+static const struct { const char *name; int key; } classic_key_names[] = {
+    { "a", CYC_A }, { "b", CYC_B }, { "c", CYC_C }, { "d", CYC_D }, { "e", CYC_E },
+    { "f", CYC_F }, { "g", CYC_G }, { "h", CYC_H }, { "i", CYC_I }, { "j", CYC_J },
+    { "k", CYC_K }, { "l", CYC_L }, { "m", CYC_M }, { "n", CYC_N }, { "o", CYC_O },
+    { "p", CYC_P }, { "q", CYC_Q }, { "r", CYC_R }, { "s", CYC_S }, { "t", CYC_T },
+    { "u", CYC_U }, { "v", CYC_V }, { "w", CYC_W }, { "x", CYC_X }, { "y", CYC_Y },
+    { "z", CYC_Z }, { "0", CYC_0 }, { "1", CYC_1 }, { "2", CYC_2 }, { "3", CYC_3 },
+    { "4", CYC_4 }, { "5", CYC_5 }, { "6", CYC_6 }, { "7", CYC_7 }, { "8", CYC_8 },
+    { "9", CYC_9 }, { "f1", CYC_F1 }, { "f2", CYC_F2 }, { "f3", CYC_F3 },
+    { "f4", CYC_F4 }, { "f5", CYC_F5 }, { "f6", CYC_F6 }, { "f7", CYC_F7 },
+    { "enter", CYC_ENTER }, { "esc", CYC_ESC }, { "space", CYC_SPACE },
+    { "up", CYC_UP }, { "down", CYC_DOWN }, { "left", CYC_LEFT }, { "right", CYC_RIGHT },
+    { "select", CYC_SELECT }, { "del", CYC_DEL }, { "bksp", CYC_BKSP }, { "tab", CYC_TAB },
+    { "ins", CYC_INS }, { "as", CYC_INS }, { "comma", CYC_COMMA }, { "semi", CYC_SEMI },
+    { "dot", CYC_DOT }, { "grave", CYC_GRAVE }, { "minus", CYC_MINUS }, { "equals", CYC_EQUALS },
+    { "quote", CYC_QUOTE }, { "slash", CYC_SLASH }, { "backslash", CYC_BACKSLASH },
+    { "lbracket", CYC_LBRACKET }, { "rbracket", CYC_RBRACKET },
+    { "shift", CYC_SHIFT }, { "fn", CYC_FN }, { "help", CYC_HELP }, { "onoff", CYC_ONOFF },
+};
+
+/* The machine's clock: CY_CLOCK_HZ, or CY_CLASSIC_CLOCK_HZ for a Classic. */
+static uint32_t CLK = CY_CLOCK_HZ;
+static bool classic;
+
 /* --pc-profile: where the CPU spends its time, in 16-byte blocks of RAM
  * (400000-5fffff), the boot ROM or anywhere else. */
 static uint32_t *pc_ram, pc_rom[0x40000 / 16], pc_other, pc_total;
@@ -135,7 +169,8 @@ static bool print_file(void *user, const cy_disk_file_t *f)
 #define MAX_PRESSES 1024
 /* who: 0 first machine, 1 second (--pair, KEY written b:KEY), 2 third
  * (--third, c:KEY), -1 all of them */
-static struct { int key, who; uint64_t at, until; bool down; } presses[MAX_PRESSES];
+static struct { int key, who; uint64_t at, until; bool down; char name[32]; unsigned ms, dur; } presses[MAX_PRESSES];
+static bool press_both;          /* --press keys go to every machine */
 static int npresses;
 
 static int hex_port = -1;           /* --hex-port N: show that port's bytes as hex */
@@ -145,11 +180,11 @@ static void on_tx(void *user, int port, uint8_t b)
 {
     (void)user;
     if (port == hex_port) {
-        fprintf(stderr, "[%.3f sci%d %02x]\n", (double)the_machine->cpu.cycles / CY_CLOCK_HZ, port, b);
+        fprintf(stderr, "[%.3f sci%d %02x]\n", (double)the_machine->cpu.cycles / CLK, port, b);
         return;
     }
-    if (port == 1) { putchar(b); fflush(stdout); }
-    else if (port == 0) fprintf(stderr, "[sci%d %02x]", port, b);
+    if (port == (classic ? 2 : 1)) { putchar(b); fflush(stdout); }
+    else if (port == 0 && !classic) fprintf(stderr, "[sci%d %02x]", port, b);
 }
 
 /* --trace-io LO-HI: count register accesses in [LO, HI] by PC, address and
@@ -183,7 +218,7 @@ static void card_sync(const cybiko_t *m)
     cy_vfat_sync_t r;
     if (!card_dir || !cy_vfat_sync(card_dir, &r) || !(r.written | r.removed | r.renamed | r.made | r.failed)) return;
     fprintf(stderr, "[%.3f] card: %u written, %u deleted, %u renamed, %u folders made, %u failed\n",
-            (double)m->cpu.cycles / CY_CLOCK_HZ, (unsigned)r.written, (unsigned)r.removed,
+            (double)m->cpu.cycles / CLK, (unsigned)r.written, (unsigned)r.removed,
             (unsigned)r.renamed, (unsigned)r.made, (unsigned)r.failed);
 }
 static bool card_read(void *user, uint32_t block, uint8_t *buf)
@@ -202,7 +237,7 @@ static bool card_write(void *user, uint32_t block, const uint8_t *buf)
 /* --cart-log: what the cartridge model sees */
 static void on_cart_log(cybiko_t *m, const char *msg)
 {
-    fprintf(stderr, "[%9.4f] cart: %s\n", (double)m->cpu.cycles / CY_CLOCK_HZ, msg);
+    fprintf(stderr, "[%9.4f] cart: %s\n", (double)m->cpu.cycles / CLK, msg);
 }
 
 /* The cartridge's decoder, run in step with emulated time. */
@@ -232,7 +267,7 @@ static void on_speaker(void *user, float freq, float duty)
     (void)user;
     uint64_t at = the_machine->cpu.cycles;
     if (speaker_log)
-        fprintf(stderr, "[%9.4f] speaker %.0f Hz, duty %.0f%%\n", (double)at / CY_CLOCK_HZ, freq, duty * 100);
+        fprintf(stderr, "[%9.4f] speaker %.0f Hz, duty %.0f%%\n", (double)at / CLK, freq, duty * 100);
     if (spk_nev == (int)(sizeof spk_ev / sizeof spk_ev[0])) spk_nev--;     /* keep the latest */
     spk_ev[spk_nev].at = at;
     spk_ev[spk_nev].freq = freq;
@@ -244,7 +279,7 @@ static void speaker_mix(int16_t *pcm, size_t k, uint64_t first)
 {
     int e = 0;
     for (size_t i = 0; i < k; i++) {
-        uint64_t at = (first + i) * CY_CLOCK_HZ / WAV_RATE;
+        uint64_t at = (first + i) * CLK / WAV_RATE;
         while (e < spk_nev && spk_ev[e].at <= at) {
             spk_freq = spk_ev[e].freq;
             spk_duty = spk_ev[e++].duty;
@@ -263,7 +298,7 @@ static void speaker_mix(int16_t *pcm, size_t k, uint64_t first)
  * is plugged in), run in step with emulated time, and the speaker. */
 static void audio_pump(cybiko_t *m, cy_mp3_t *d, FILE *wav)
 {
-    uint64_t due = m->cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
+    uint64_t due = m->cpu.cycles * WAV_RATE / CLK;
     static uint8_t in[4096];
     static int16_t pcm[1024];
     while (wav_samples < due) {
@@ -301,7 +336,7 @@ static void gate_rf(void *user, const uint8_t *pkt, size_t len, uint8_t ch)
 static void gate_log(void *user, const char *line)
 {
     (void)user;
-    fprintf(stderr, "[%.3f gate] %s\n", machines[0] ? (double)machines[0]->cpu.cycles / CY_CLOCK_HZ : 0.0, line);
+    fprintf(stderr, "[%.3f gate] %s\n", machines[0] ? (double)machines[0]->cpu.cycles / CLK : 0.0, line);
 }
 #endif
 
@@ -497,7 +532,7 @@ static void led_poll(const cybiko_t *m)
     int led = cybiko_led(m);
     if (!led_log || led == shown) return;
     static const char *const names[] = { "off", "red", "green" };
-    fprintf(stderr, "[%.3f] LED %s\n", (double)m->cpu.cycles / CY_CLOCK_HZ, names[led]);
+    fprintf(stderr, "[%.3f] LED %s\n", (double)m->cpu.cycles / CLK, names[led]);
     shown = led;
 }
 static bool frame_log;              /* --frame-log: print when each frame is written */
@@ -508,7 +543,7 @@ static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
     if (rf_log) {
         /* the 16-byte header, the data, then the Reed-Solomon parity */
         size_t data = len == CY_RF_SHORT ? 30 : 120;
-        fprintf(stderr, "[%.3f rf %c ch%u]", machines[from] ? (double)machines[from]->cpu.cycles / CY_CLOCK_HZ : 0.0,
+        fprintf(stderr, "[%.3f rf %c ch%u]", machines[from] ? (double)machines[from]->cpu.cycles / CLK : 0.0,
                 'A' + from, channel);
         for (size_t i = 0; i < data; i++) fprintf(stderr, "%s%02x", i == 4 || i == 8 || i == 16 ? " " : "", pkt[i]);
         fprintf(stderr, "\n");
@@ -524,14 +559,14 @@ static void on_rf(void *user, const uint8_t *pkt, size_t len, uint8_t channel)
 
 static int64_t wall(void *user) { (void)user; return (int64_t)time(NULL); }
 
-static double now_s(void) { return machines[0] ? (double)machines[0]->cpu.cycles / CY_CLOCK_HZ : 0.0; }
+static double now_s(void) { return machines[0] ? (double)machines[0]->cpu.cycles / CLK : 0.0; }
 
 static bool browse_requested;
 
 static uint32_t on_app_call(void *user, uint32_t fn, uint32_t arg)
 {
     (void)user;
-    fprintf(stderr, "[%.3f] app call %u (%u)\n", (double)the_machine->cpu.cycles / CY_CLOCK_HZ, (unsigned)fn, (unsigned)arg);
+    fprintf(stderr, "[%.3f] app call %u (%u)\n", (double)the_machine->cpu.cycles / CLK, (unsigned)fn, (unsigned)arg);
     if (fn == CY_APP_BROWSER) browse_requested = true;
     return fn == CY_APP_VERSION ? CY_APP_API : fn == CY_APP_BROWSER;
 }
@@ -562,8 +597,13 @@ static void write_pgm(const char *path, const uint8_t *lum)
 
 static int key_by_name(const char *s)
 {
-    for (size_t i = 0; i < sizeof key_names / sizeof key_names[0]; i++)
-        if (!strcasecmp(s, key_names[i].name)) return key_names[i].key;
+    if (classic) {
+        for (size_t i = 0; i < sizeof classic_key_names / sizeof classic_key_names[0]; i++)
+            if (!strcasecmp(s, classic_key_names[i].name)) return classic_key_names[i].key;
+    } else {
+        for (size_t i = 0; i < sizeof key_names / sizeof key_names[0]; i++)
+            if (!strcasecmp(s, key_names[i].name)) return key_names[i].key;
+    }
     unsigned row, bit;          /* rROW.BIT: any matrix position */
     char end;
     if (sscanf(s, "r%u.%u%c", &row, &bit, &end) == 2 && row < 16 && bit < 16) return (int)CY_KEY(row, bit);
@@ -618,9 +658,159 @@ static void run_browser(cybiko_t *m, const uint8_t *flash, const char *keys, con
     free(list);
     memcpy(m->lcd.ram, saved, sizeof saved);
     m->lcd.version++;
-    fprintf(stderr, "[%.3f] browser closed\n", (double)m->cpu.cycles / CY_CLOCK_HZ);
+    fprintf(stderr, "[%.3f] browser closed\n", (double)m->cpu.cycles / CLK);
 }
 #endif
+
+/* A Classic flash image, 512 KB (AT45DB041) or 1 MB, in a 1 MB buffer
+ * whose free half is formatted as empty CyOS blocks. */
+static uint8_t *load_classic_flash(const char *path)
+{
+    size_t flen = 0;
+    uint8_t *flash = calloc(1, CY_AT45_SIZE);
+    uint8_t *f0 = load(path, CY_AT45_SIZE, &flen, false);
+    memcpy(flash, f0, flen);
+    free(f0);
+    if (flen != CY_AT45_DB041_SIZE && flen != CY_AT45_SIZE) {
+        fprintf(stderr, "%s: %zu bytes, not a Classic flash image (%u or %u)\n", path, flen,
+                (unsigned)CY_AT45_DB041_SIZE, (unsigned)CY_AT45_SIZE);
+        exit(1);
+    }
+    if (flen < CY_AT45_SIZE) cybiko_at45_format_free(flash, (uint32_t)(flen / CY_AT45_PAGE));
+    return flash;
+}
+
+/* The Cybiko Classic: its DataFlash image in and (with --save-flash) out;
+ * --pair and --third add machines with their own flash images, on the radio
+ * with the first one. */
+static int run_classic(const char *rom_path, const char *flash_path, const char *save_flash,
+                       const char *shot, const char *frames, const char *dump, double seconds,
+                       uint32_t unit_id, const char *const *extra_path)
+{
+    static uint8_t rom[CY_ROM_BUF];
+    uint8_t *r = load(rom_path, CY_ROM_SIZE, NULL, true);
+    memcpy(rom, r, CY_ROM_SIZE);
+    free(r);
+    uint8_t *flash = load_classic_flash(flash_path);
+    static cybiko_t m, others[MAX_MACHINES - 1];
+    cy_host_t host = { .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf };
+    if (speaker_log) host.speaker = on_speaker;
+    the_machine = machines[0] = &m;
+    cybiko_init_classic(&m, &host, rom, flash, calloc(1, CY_CLASSIC_RAM_SIZE));
+    if (trace_hi) m.io_trace = io_trace;
+    int nother = 0;
+    for (int k = 0; k < MAX_MACHINES - 1 && extra_path[k]; k++, nother++) {
+        cy_host_t host2 = { .user = (void *)(intptr_t)(k + 1), .wall_time = wall, .rf_send = on_rf };
+        static uint8_t rom2[MAX_MACHINES - 1][CY_ROM_BUF];
+        memcpy(rom2[k], rom, CY_ROM_SIZE);
+        cybiko_init_classic(&others[k], &host2, rom2[k], load_classic_flash(extra_path[k]),
+                            calloc(1, CY_CLASSIC_RAM_SIZE));
+        /* copies of one dump share its ID, and CyOS ignores its own ID */
+        cybiko_set_unit_id(&others[k], (unit_id ? unit_id : 0x4c000001u) + 1 + k);
+        machines[k + 1] = &others[k];
+    }
+    if (unit_id || nother) cybiko_set_unit_id(&m, unit_id ? unit_id : 0x4c000001u);
+
+    static uint8_t lum[CY_LCD_W * CY_LCD_H];
+    uint32_t last_version = 0xffffffff;
+    int frame_no = 0, frame_no2[MAX_MACHINES - 1] = { 0 };
+    uint32_t last_version2[MAX_MACHINES - 1] = { 0xffffffff, 0xffffffff };
+    const int32_t chunk = (int32_t)(CLK / 10);
+    uint64_t total = (uint64_t)(seconds * CLK);
+    clock_t t0 = clock();
+    while (m.cpu.cycles < total) {
+        int32_t step = chunk;
+        for (int i = 0; i < npresses; i++) {
+            uint64_t now = m.cpu.cycles;
+            int who = press_both ? -1 : presses[i].who;
+            if (!presses[i].down && now >= presses[i].at && now < presses[i].until) {
+                for (int k = 0; k <= nother; k++)
+                    if (who < 0 || who == k) cybiko_key(machines[k], presses[i].key, true);
+                presses[i].down = true;
+            } else if (presses[i].down && now >= presses[i].until) {
+                for (int k = 0; k <= nother; k++)
+                    if (who < 0 || who == k) cybiko_key(machines[k], presses[i].key, false);
+                presses[i].down = false;
+            }
+            uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
+            if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
+        }
+        /* machines on the radio run in 1 ms steps, so packets cross in time */
+        if (nother && step > (int32_t)(CLK / 1000)) step = (int32_t)(CLK / 1000);
+        cybiko_run(&m, step);
+        for (int k = 0; k < nother; k++) cybiko_run(&others[k], step);
+        led_poll(&m);
+        if (frames && m.cpu.cycles / chunk != (m.cpu.cycles - step) / chunk) {
+            uint32_t v = cybiko_lcd_render(&m, lum);
+            if (v != last_version) {
+                char path[512];
+                snprintf(path, sizeof path, "%s/frame_%04d.pgm", frames, frame_no++);
+                write_pgm(path, lum);
+                last_version = v;
+                if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CLK, path);
+            }
+            for (int k = 0; k < nother; k++) {
+                v = cybiko_lcd_render(&others[k], lum);
+                if (v == last_version2[k]) continue;
+                char path[512];
+                snprintf(path, sizeof path, "%s/%c_frame_%04d.pgm", frames, 'b' + k, frame_no2[k]++);
+                write_pgm(path, lum);
+                last_version2[k] = v;
+            }
+        }
+    }
+    double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    if (shot) {
+        cybiko_lcd_render(&m, lum);
+        write_pgm(shot, lum);
+        for (int k = 0; k < nother; k++) {
+            char path[512];
+            snprintf(path, sizeof path, "%s.%c.pgm", shot, 'b' + k);
+            cybiko_lcd_render(&others[k], lum);
+            write_pgm(path, lum);
+        }
+    }
+    for (int i = 0; i < ntraces; i++)
+        fprintf(stderr, "io %06x %s %06x x%u first %02x last %02x\n", traces[i].pc,
+                traces[i].w ? "W" : "R", traces[i].a, traces[i].n, traces[i].first, traces[i].last);
+    if (dump) {
+        FILE *f = fopen(dump, "wb");
+        if (f) { fwrite(m.ram, 1, CY_CLASSIC_RAM_SIZE, f); fclose(f); }
+    }
+    uint32_t dirty[CY_AT45_PAGES / 32];
+    int changed = cybiko_at45_take_dirty(&m, dirty);
+    if (save_flash) {
+        FILE *f = fopen(save_flash, "wb");
+        if (f) { fwrite(flash, 1, CY_AT45_SIZE, f); fclose(f); }
+    }
+    if (changed) fprintf(stderr, "flash: %d page(s) changed%s\n", changed, save_flash ? "" : " (not saved without --save-flash)");
+    if (m.at45.unknown)
+        fprintf(stderr, "flash: %u command(s) the model does not have, the last %02x\n",
+                (unsigned)m.at45.unknown, m.at45.last_unknown);
+    for (const char *e = getenv("CY_PEEK"); e && *e;) {    /* debug: CY_PEEK=addr,addr,... */
+        char *end;
+        uint32_t a = (uint32_t)strtoul(e, &end, 16);
+        fprintf(stderr, "peek %06x: %08x\n", (unsigned)a, (unsigned)h8s_read32(&m.cpu, a));
+        e = *end ? end + 1 : end;
+    }
+    double emu_s = (double)m.cpu.cycles / CLK;
+    fprintf(stderr,
+            "\n--- Cybiko Classic: %.2f s emulated in %.2f s host (%.0f%% of real time, %.1f MHz)\n"
+            "pc=%06x sleeping=%d off=%d lcd_on=%d frames=%d\n"
+            "unmapped reads=%u writes=%u illegal=%u wdt resets=%u\n",
+            emu_s, host_s, host_s > 0 ? 100.0 * emu_s / host_s : 0.0,
+            host_s > 0 ? m.cpu.cycles / host_s / 1e6 : 0.0,
+            (unsigned)m.cpu.pc, m.cpu.sleeping, m.standby, (m.lcd.reg[0] & 0x40) != 0, frame_no,
+            (unsigned)m.unmapped_reads, (unsigned)m.unmapped_writes, (unsigned)m.illegal_ops,
+            (unsigned)m.wdt_resets);
+    fprintf(stderr, "radio: id %08x sent %u heard %u", (unsigned)cybiko_unit_id(&m),
+            (unsigned)m.rf.sent, (unsigned)m.rf.heard);
+    for (int k = 0; k < nother; k++)
+        fprintf(stderr, "; machine %c id %08x sent %u heard %u", 'B' + k, (unsigned)cybiko_unit_id(&others[k]),
+                (unsigned)others[k].rf.sent, (unsigned)others[k].rf.heard);
+    fprintf(stderr, "\n");
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -632,7 +822,7 @@ int main(int argc, char **argv)
 #endif
     const char *extra_path[MAX_MACHINES - 1] = { NULL };   /* --pair, --third */
     const char *pair_path = NULL;
-    bool press_both = false;          /* --press keys go to the second machine too */
+
     uint32_t unit_id = 0;
     double seconds = 20;
     unsigned disk_kb = 0;
@@ -697,6 +887,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--gate-home") && v && gate) { cy_gate_set_home(gate, v); i++; }
 #endif
         else if (!strcmp(a, "--press-both")) press_both = true;
+        else if (!strcmp(a, "--classic")) classic = true;
         else if (!strcmp(a, "--unit-id") && v) { unit_id = (uint32_t)strtoul(v, NULL, 16); i++; }
         else if (!strcmp(a, "--trace-io") && v) {
             trace_lo = (uint32_t)strtoul(v, NULL, 16);
@@ -709,14 +900,15 @@ int main(int argc, char **argv)
             unsigned ms, dur = 200;
             int who = 0;
             if (v[0] >= 'b' && v[0] <= 'c' && v[1] == ':') { who = v[0] - 'a'; v += 2; }
-            if (sscanf(v, "%31[^@]@%u:%u", name, &ms, &dur) < 2 || key_by_name(name) < 0) {
+            if (sscanf(v, "%31[^@]@%u:%u", name, &ms, &dur) < 2) {
                 fprintf(stderr, "bad --press %s\n", v);
                 return 2;
             }
-            presses[npresses].key = key_by_name(name);
+            /* the key and the times are worked out once the machine is known */
+            snprintf(presses[npresses].name, sizeof presses[npresses].name, "%s", name);
             presses[npresses].who = who;
-            presses[npresses].at = (uint64_t)ms * (CY_CLOCK_HZ / 1000);
-            presses[npresses].until = presses[npresses].at + (uint64_t)dur * (CY_CLOCK_HZ / 1000);
+            presses[npresses].ms = ms;
+            presses[npresses].dur = dur;
             npresses++;
             i++;
         } else {
@@ -736,6 +928,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "--rom and --flash are required\n");
         return 2;
     }
+    struct stat flash_st;
+    if (stat(flash_path, &flash_st) == 0 &&
+        (flash_st.st_size == CY_AT45_DB041_SIZE || flash_st.st_size == CY_AT45_SIZE))
+        classic = true;
+    if (classic) CLK = CY_CLASSIC_CLOCK_HZ;
+    for (int i = 0; i < npresses; i++) {
+        presses[i].key = key_by_name(presses[i].name);
+        if (presses[i].key < 0) { fprintf(stderr, "bad --press key %s\n", presses[i].name); return 2; }
+        presses[i].at = (uint64_t)presses[i].ms * (CLK / 1000);
+        presses[i].until = presses[i].at + (uint64_t)presses[i].dur * (CLK / 1000);
+    }
+    if (classic) return run_classic(rom_path, flash_path, save_flash, shot, frames, dump, seconds, unit_id, extra_path);
 
     uint8_t *rom = calloc(1, CY_ROM_BUF);
     uint8_t *r = load(rom_path, CY_ROM_SIZE, NULL, true);
@@ -824,7 +1028,7 @@ int main(int argc, char **argv)
         mp3 = malloc(cy_mp3_size());
         cy_mp3_init(mp3);
     }
-    wav_samples = m.cpu.cycles * WAV_RATE / CY_CLOCK_HZ;
+    wav_samples = m.cpu.cycles * WAV_RATE / CLK;
     if (wav_path) {
         wav = fopen(wav_path, "wb");
         if (!wav) { perror(wav_path); return 1; }
@@ -852,14 +1056,14 @@ int main(int argc, char **argv)
     static uint8_t lum[CY_LCD_W * CY_LCD_H];
     uint32_t last_version = 0xffffffff;
     int frame_no = 0;
-    const int32_t chunk = CY_CLOCK_HZ / 10;      /* 100 ms */
-    uint64_t total = (uint64_t)(seconds * CY_CLOCK_HZ);
+    const int32_t chunk = CLK / 10;      /* 100 ms */
+    uint64_t total = (uint64_t)(seconds * CLK);
     clock_t t0 = clock();
 #ifdef CY_CALLGRIND
     /* Profiling builds: collect only from CY_PROFILE_FROM_MS on
      * (run valgrind with --collect-atstart=no). */
     const char *pf = getenv("CY_PROFILE_FROM_MS");
-    uint64_t profile_at = pf ? (uint64_t)atoll(pf) * (CY_CLOCK_HZ / 1000) : 0;
+    uint64_t profile_at = pf ? (uint64_t)atoll(pf) * (CLK / 1000) : 0;
     bool profiling = false;
 #endif
     while (m.cpu.cycles < total) {
@@ -884,8 +1088,8 @@ int main(int argc, char **argv)
             uint64_t next = !presses[i].down ? presses[i].at : presses[i].until;
             if (next > now && next - now < (uint64_t)step) step = (int32_t)(next - now);
         }
-        if ((mp3 || wav) && step > (int32_t)(CY_CLOCK_HZ / 200)) step = CY_CLOCK_HZ / 200;   /* keep the decoder fed */
-        if (pc_profile_ms >= 0 && m.cpu.cycles >= (uint64_t)(pc_profile_ms * (CY_CLOCK_HZ / 1000))) {
+        if ((mp3 || wav) && step > (int32_t)(CLK / 200)) step = CLK / 200;   /* keep the decoder fed */
+        if (pc_profile_ms >= 0 && m.cpu.cycles >= (uint64_t)(pc_profile_ms * (CLK / 1000))) {
             /* sample the PC every 997 states (a prime, to avoid beating with loops) */
             for (int32_t d = 0; d < step; d += 997) {
                 cybiko_run(&m, step - d < 997 ? step - d : 997);
@@ -896,10 +1100,10 @@ int main(int argc, char **argv)
         }
         if (pair_path || bot.on) {
             /* 1 ms turns keep radio replies well inside CyOS's timeouts */
-            for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
-                int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
+            for (int32_t d = 0; d < step; d += CLK / 1000) {
+                int32_t n = step - d < (int32_t)(CLK / 1000) ? step - d : (int32_t)(CLK / 1000);
                 for (int k = 0; k <= nother; k++) cybiko_run(machines[k], n);
-                if (bot.on) bot_poll(m.cpu.cycles / (CY_CLOCK_HZ / 1000));
+                if (bot.on) bot_poll(m.cpu.cycles / (CLK / 1000));
                 led_poll(&m);
             }
         } else if (0
@@ -908,17 +1112,17 @@ int main(int argc, char **argv)
 #endif
                    ) {
 #ifdef CY_WITH_BROWSER
-            for (int32_t d = 0; d < step; d += CY_CLOCK_HZ / 1000) {
-                int32_t n = step - d < (int32_t)(CY_CLOCK_HZ / 1000) ? step - d : (int32_t)(CY_CLOCK_HZ / 1000);
+            for (int32_t d = 0; d < step; d += CLK / 1000) {
+                int32_t n = step - d < (int32_t)(CLK / 1000) ? step - d : (int32_t)(CLK / 1000);
                 cybiko_run(&m, n);
-                cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CY_CLOCK_HZ / 1000)));
+                cy_gate_poll(gate, (uint32_t)(m.cpu.cycles / (CLK / 1000)));
             }
 #endif
         } else {
             cybiko_run(&m, step);
         }
         led_poll(&m);
-        if (card_dir && m.cpu.cycles / (5ull * CY_CLOCK_HZ) != (m.cpu.cycles - step) / (5ull * CY_CLOCK_HZ)) card_sync(&m);
+        if (card_dir && m.cpu.cycles / (5ull * CLK) != (m.cpu.cycles - step) / (5ull * CLK)) card_sync(&m);
         if (mp3 || wav) audio_pump(&m, mp3, wav);
         if (browse_requested) {
             browse_requested = false;
@@ -937,7 +1141,7 @@ int main(int argc, char **argv)
                 snprintf(path, sizeof path, "%s/frame_%04d.pgm", frames, frame_no++);
                 write_pgm(path, lum);
                 last_version = v;
-                if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CY_CLOCK_HZ, path);
+                if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CLK, path);
             }
             for (int k = 0; k < nother; k++) {
                 static uint32_t last_version2[MAX_MACHINES - 1] = { 0xffffffff, 0xffffffff };
@@ -948,7 +1152,7 @@ int main(int argc, char **argv)
                     snprintf(path, sizeof path, "%s/%c_frame_%04d.pgm", frames, 'b' + k, frame_no2[k]++);
                     write_pgm(path, lum);
                     last_version2[k] = v;
-                    if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CY_CLOCK_HZ, path);
+                    if (frame_log) fprintf(stderr, "[%.3f] %s\n", (double)m.cpu.cycles / CLK, path);
                 }
             }
         }
@@ -1028,7 +1232,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "note: the OS wrote to flash (not saved without --save-flash)\n");
     }
 
-    double emu_s = (double)m.cpu.cycles / CY_CLOCK_HZ;
+    double emu_s = (double)m.cpu.cycles / CLK;
     fprintf(stderr,
             "\n--- %.2f s emulated in %.2f s host (%.0f%% of real time, %.1f MHz)\n"
             "pc=%06x sleeping=%d off=%d lcd_on=%d frames=%d\n"

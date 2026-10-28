@@ -67,6 +67,11 @@ struct h8s_cpu {
      * the core also sets it when CCR/EXR change. Cleared by the core when
      * irq_ack reports nothing to take. */
     volatile bool irq_check;
+    /* Set by LDC, ANDC, ORC and XORC to CCR or EXR: the chip takes no
+     * interrupt between one of them and the next instruction (MAME's
+     * prefetch_noirq). CyOS 1.2 relies on it: it enables interrupts with
+     * ANDC just before loading the new thread's stack pointer. */
+    bool     irq_hold;
 
     int32_t  icount;      /* states left in the current run slice */
     int32_t  slice;       /* length of the current run slice */

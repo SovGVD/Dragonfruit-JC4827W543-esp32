@@ -10,6 +10,10 @@
  *                     DTC count includes; f is 0 or 1 (meaning unknown)
  *   cf f <201 bytes>  send a long packet: 200 bytes plus the spare byte
  *
+ * The Classic (CyOS 1.2, SCI0) sends the same, but every 01 command has
+ * exactly one argument (01 03 00) and the packets have no spare byte
+ * (ReBiko's radio_coproc.c agrees).
+ *
  * From the AVR to the H8S:
  *
  *   03                the packet went out (CyOS waits up to 50 ms for a
@@ -41,21 +45,25 @@
 #define REC_OFFSET 0x7f800u
 #define ID_OFFSET 0x7f818u
 #define CRC_OFFSET 0x7fffcu
-#define SPARE 1                       /* extra byte at the end of each TX frame */
-#define ACK_DELAY (CY_CLOCK_HZ / 500) /* 2 ms from the last byte to the 03 */
+#define SPARE(m) ((m)->classic ? 0 : 1) /* extra byte at the end of each TX frame */
+#define ACK_DELAY(m) ((m)->clock_hz / 500) /* 2 ms from the last byte to the 03 */
 /* A heard packet reaches the H8S at the speed it comes over the air, not
  * at the SCI's: CyOS reads the signal strength 15 ms after the first byte
  * and expects the last one within 50 ms (short) or 115 ms (long). */
-#define AIR_BYTE (CY_CLOCK_HZ / 2400)
+#define AIR_BYTE(m) ((m)->clock_hz / 2400)
 
 enum { P_IDLE, P_CMD, P_ARGS, P_DATA };
 
 static uint32_t now(const cybiko_t *m) { return (uint32_t)m->synced; }
 
-static bool sci2_listening(const cybiko_t *m)
+/* The co-processor is on SCI2 on the Xtreme, on SCI0 on the Classic. */
+static int rf_port(const cybiko_t *m) { return m->classic ? 0 : 2; }
+
+static bool sci_listening(const cybiko_t *m)
 {
-    /* SCI2 module running (MSTPCRL bit 7 clear) with the receiver on */
-    return !(m->mstpcr[1] & 0x80) && (m->sci[2].scr & 0x10);
+    /* the SCI module running (MSTPCRL bit 5 + n clear) with the receiver on */
+    int n = rf_port(m);
+    return !(m->mstpcr[1] & (0x20 << n)) && (m->sci[n].scr & 0x10);
 }
 
 void cy_rf_reset(cybiko_t *m)
@@ -80,7 +88,7 @@ static void frame_done(cybiko_t *m)
         /* buf[0] is the flag byte; the packet follows */
         if (m->host.rf_send) m->host.rf_send(m->host.user, r->buf + 1, len, r->channel);
         r->ack_due = true;
-        r->ack_at = now(m) + ACK_DELAY;
+        r->ack_at = now(m) + ACK_DELAY(m);
     }
     r->parse = P_IDLE;
 }
@@ -96,7 +104,7 @@ void cy_rf_h8_byte(cybiko_t *m, uint8_t b)
         if (b == 0x01) {
             r->parse = P_CMD;
         } else if (b == 0x30 || b == 0xcf) {
-            r->need = 1 + (b == 0x30 ? CY_RF_SHORT : CY_RF_LONG) + SPARE;
+            r->need = 1 + (b == 0x30 ? CY_RF_SHORT : CY_RF_LONG) + SPARE(m);
             r->parse = P_DATA;
             r->led_red = m->synced;
             /* A real AVR cannot hear while it sends: drop a packet still
@@ -106,7 +114,7 @@ void cy_rf_h8_byte(cybiko_t *m, uint8_t b)
         break;
     case P_CMD:
         r->buf[r->have++] = b;
-        r->need = b == 0x02 ? 2 : b == 0x03 ? 3 : 1;
+        r->need = m->classic ? 2 : b == 0x02 ? 2 : b == 0x03 ? 3 : 1;
         r->parse = r->have < r->need ? P_ARGS : P_IDLE;
         if (r->parse == P_IDLE) frame_done(m);
         break;
@@ -145,10 +153,10 @@ void cy_rf_advance(cybiko_t *m)
     cy_rf_t *r = &m->rf;
     if (r->ack_due && (int32_t)(now(m) - r->ack_at) >= 0) {
         r->ack_due = false;
-        cybiko_serial_rx(m, 2, 0x03);
+        cybiko_serial_rx(m, rf_port(m), 0x03);
     }
     if (!r->inject_len && r->queued && r->parse == P_IDLE && !r->ack_due &&
-        m->sci[2].rx_count == 0 && sci2_listening(m)) {
+        m->sci[rf_port(m)].rx_count == 0 && sci_listening(m)) {
         int slot = r->q_head;
         r->q_head = (r->q_head + 1) % CY_RF_QUEUE;
         r->queued--;
@@ -163,9 +171,9 @@ void cy_rf_advance(cybiko_t *m)
         }
     }
     while (r->inject_pos < r->inject_len && (int32_t)(now(m) - r->inject_at) >= 0 &&
-           cybiko_serial_rx(m, 2, r->inject[r->inject_pos])) {
+           cybiko_serial_rx(m, rf_port(m), r->inject[r->inject_pos])) {
         r->inject_pos++;
-        r->inject_at += AIR_BYTE;
+        r->inject_at += AIR_BYTE(m);
         r->led_green = m->synced;
     }
     if (r->inject_pos >= r->inject_len) r->inject_len = r->inject_pos = 0;
@@ -174,7 +182,7 @@ void cy_rf_advance(cybiko_t *m)
 int cybiko_led(const cybiko_t *m)
 {
     const cy_rf_t *r = &m->rf;
-    uint64_t t = m->synced, hold = (uint64_t)CY_CLOCK_HZ * CY_LED_BLINK_MS / 1000;
+    uint64_t t = m->synced, hold = (uint64_t)m->clock_hz * CY_LED_BLINK_MS / 1000;
     bool red = r->parse == P_DATA || (r->led_red && t - r->led_red < hold);
     bool green = r->inject_len || (r->led_green && t - r->led_green < hold);
     if (red && green) return r->led_red >= r->led_green ? CY_LED_RED : CY_LED_GREEN;
@@ -193,7 +201,7 @@ uint32_t cy_rf_next(const cybiko_t *m)
         return d > 0 ? (uint32_t)d : 1;
     }
     /* Look again every millisecond while a packet waits for its turn. */
-    if (r->queued) return CY_CLOCK_HZ / 1000;
+    if (r->queued) return m->clock_hz / 1000;
     return 0xffffffffu;
 }
 
@@ -216,6 +224,7 @@ void cybiko_set_unit_id(cybiko_t *m, uint32_t id)
 {
     cy_rf_t *r = &m->rf;
     uint8_t *f = m->flash.mem;
+    if (m->classic) { r->classic_id = id; return; }
     if (!id || id == cybiko_unit_id(m)) return;
     if (!r->id_applied) {
         memcpy(r->id_orig, f + ID_OFFSET, 4);
@@ -228,6 +237,7 @@ void cybiko_set_unit_id(cybiko_t *m, uint32_t id)
 
 uint32_t cybiko_unit_id(const cybiko_t *m)
 {
+    if (m->classic) return m->rf.classic_id ? m->rf.classic_id : cy_classic_cyos_id(m);
     const uint8_t *p = m->flash.mem + ID_OFFSET;
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }

@@ -516,7 +516,7 @@ static bool prefixed_move(h8s_cpu_t *c, int kind, uint16_t w)
             } else {
                 uint8_t v = (uint8_t)(rd16(c, ea) >> 8);
                 if (kind == 1) c->ccr = v; else c->exr = v | H8S_EXR_NC;
-                c->irq_check = true;
+                c->irq_check = c->irq_hold = true;
             }
         }
         return true;
@@ -540,7 +540,7 @@ static bool prefixed_move(h8s_cpu_t *c, int kind, uint16_t w)
     } else {
         uint8_t v = (uint8_t)(rd16(c, ea) >> 8);
         if (kind == 1) c->ccr = v; else c->exr = v | H8S_EXR_NC;
-        c->irq_check = true;
+        c->irq_check = c->irq_hold = true;
     }
     return true;
 }
@@ -734,12 +734,12 @@ INLINE void execute(h8s_cpu_t *c)
         if (n_hi == 0) c->ccr = r8(c, n_lo);
         else if (n_hi == 1) c->exr = r8(c, n_lo) | H8S_EXR_NC;
         else { illegal(c, op); return; }
-        c->irq_check = true;
+        c->irq_check = c->irq_hold = true;
         return;
-    case 0x04: c->ccr |= (uint8_t)lo; c->irq_check = true; return;    /* orc */
-    case 0x05: c->ccr ^= (uint8_t)lo; c->irq_check = true; return;    /* xorc */
-    case 0x06: c->ccr &= (uint8_t)lo; c->irq_check = true; return;    /* andc */
-    case 0x07: c->ccr = (uint8_t)lo; c->irq_check = true; return;     /* ldc #,ccr */
+    case 0x04: c->ccr |= (uint8_t)lo; c->irq_check = c->irq_hold = true; return;    /* orc */
+    case 0x05: c->ccr ^= (uint8_t)lo; c->irq_check = c->irq_hold = true; return;    /* xorc */
+    case 0x06: c->ccr &= (uint8_t)lo; c->irq_check = c->irq_hold = true; return;    /* andc */
+    case 0x07: c->ccr = (uint8_t)lo; c->irq_check = c->irq_hold = true; return;     /* ldc #,ccr */
 
     case 0x08: w8(c, n_lo, ADD8(r8(c, n_lo), r8(c, n_hi))); return;   /* add.b */
     case 0x09: w16(c, n_lo, ADD16(r16(c, n_lo), r16(c, n_hi))); return; /* add.w */
@@ -1209,7 +1209,7 @@ int32_t h8s_run(h8s_cpu_t *c, int32_t states)
     c->icount = states;
     while (c->icount > 0) {
         /* SLEEP sets irq_check too, so one test per instruction covers both. */
-        if (UNLIKELY(c->irq_check)) {
+        if (UNLIKELY(c->irq_check) && LIKELY(!c->irq_hold)) {
             c->irq_check = false;
             int level = 0;
             int vec = c->bus.irq_ack ? c->bus.irq_ack(c->ctx, c, &level) : 0;
@@ -1224,6 +1224,7 @@ int32_t h8s_run(h8s_cpu_t *c, int32_t states)
                 break;
             }
         }
+        c->irq_hold = false;
         execute(c);
     }
     int32_t done = c->slice - c->icount;

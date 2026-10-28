@@ -54,6 +54,9 @@ static const struct {
     { 0xfffea0, 2, 0x4c, 60, { 0, 2, 4, 6, -1, -1,  8, -1 } },
 };
 
+/* The Classic's H8S/2241 has channels 0-2 only. */
+static int tpu_channels(const cybiko_t *m) { return m->classic ? 3 : 6; }
+
 static int tpu_shift(const cybiko_t *m, int ch)
 {
     if (!(m->tstr >> ch & 1)) return -1;
@@ -157,7 +160,7 @@ static bool tpu_read(cybiko_t *m, uint32_t a, uint8_t *v)
 {
     if (a == 0xffffc0) { *v = m->tstr; return true; }
     if (a == 0xffffc1) { *v = m->tsyr; return true; }
-    for (int ch = 0; ch < 6; ch++) {
+    for (int ch = 0; ch < tpu_channels(m); ch++) {
         uint32_t off = a - tpu_cfg[ch].base;
         if (off >= 16) continue;
         cy_tpu_ch_t *t = &m->tpu[ch];
@@ -189,11 +192,11 @@ static bool tpu_write(cybiko_t *m, uint32_t a, uint8_t v)
     if (a == 0xffffc0) {
         for (int ch = 0; ch < 6; ch++)
             if ((v ^ m->tstr) >> ch & 1) m->tpu[ch].acc = 0;
-        m->tstr = (uint8_t)(v & 0x3f);
+        m->tstr = (uint8_t)(v & (m->classic ? 0x07 : 0x3f));
         return true;
     }
     if (a == 0xffffc1) { m->tsyr = v; return true; }
-    for (int ch = 0; ch < 6; ch++) {
+    for (int ch = 0; ch < tpu_channels(m); ch++) {
         uint32_t off = a - tpu_cfg[ch].base;
         if (off >= 16) continue;
         cy_tpu_ch_t *t = &m->tpu[ch];
@@ -224,7 +227,7 @@ float cy_tpu_speaker_tone(const cybiko_t *m, float *duty)
     const cy_tpu_ch_t *t = &m->tpu[1];
     uint8_t iob = t->tior[0] >> 4;
     uint32_t cycle = tpu_cycle(m, 1);
-    float f = (float)(CY_CLOCK_HZ >> s);
+    float f = (float)(m->clock_hz >> s);
     if ((t->tmdr & 0x0f) == 0x03 && (iob & 3) && !(iob & 8)) {   /* PWM mode 2 */
         if (tpu_clear_tgr(m, 1) == 1) return 0;                 /* B is the period */
         *duty = (float)((uint32_t)t->tgr[1] + 1) / (float)cycle;
@@ -501,9 +504,24 @@ static void sci_tx_start(cybiko_t *m, int n)
     if (s->scr & SCR_TIE) cy_irq(m, sci_vec(n, 2));
 }
 
+/* Clocked sync with the receiver on and the transmitter off: the SCI makes
+ * the clock itself and takes in a byte each frame (the line it would send
+ * on stays high), until an overrun. The Classic reads its DataFlash so. */
+static bool sci_sync_rx(const cybiko_t *m, int n)
+{
+    const cy_sci_t *s = &m->sci[n];
+    return m->classic && n == 1 && (s->smr & 0x80) && (s->scr & (SCR_TE | SCR_RE)) == SCR_RE;
+}
+
 static void sci_rx_start(cybiko_t *m, int n)
 {
     cy_sci_t *s = &m->sci[n];
+    if (sci_sync_rx(m, n)) {
+        if (s->rx_busy || (s->ssr & SSR_ORER)) return;
+        s->rx_busy = true;
+        s->rx_left = cy_sci_frame(s);
+        return;
+    }
     if (s->rx_busy || !(s->scr & SCR_RE) || !s->rx_count) return;
     s->rx_busy = true;
     s->rx_left = cy_sci_frame(s);
@@ -512,9 +530,15 @@ static void sci_rx_start(cybiko_t *m, int n)
 static void sci_rx_done(cybiko_t *m, int n)
 {
     cy_sci_t *s = &m->sci[n];
-    uint8_t b = s->rx_fifo[s->rx_head];
-    s->rx_head = (uint8_t)((s->rx_head + 1) % sizeof s->rx_fifo);
-    s->rx_count--;
+    uint8_t b;
+    if (sci_sync_rx(m, n)) {
+        b = cy_at45_spi(m, 0xff);
+    } else {
+        if (!s->rx_count) { s->rx_busy = false; return; }
+        b = s->rx_fifo[s->rx_head];
+        s->rx_head = (uint8_t)((s->rx_head + 1) % sizeof s->rx_fifo);
+        s->rx_count--;
+    }
     s->rx_busy = false;
     if (s->ssr & SSR_RDRF) {
         s->ssr |= SSR_ORER;
@@ -532,12 +556,13 @@ static void sci_tx_done(cybiko_t *m, int n)
     s->tx_busy = false;
     bool sync = n < 2 && (s->smr & 0x80);
     /* Text goes out asynchronously; in clocked sync mode SCI1 talks to the
-     * cartridge's SD card and SCI0 to its decoder, which is not text. */
-    if (n == 1 && !sync) cy_disk_console(m, s->tsr);
-    if (n == 2) cy_rf_h8_byte(m, s->tsr);
+     * cartridge's SD card and SCI0 to its decoder, which is not text. On
+     * the Classic SCI1 is the DataFlash and SCI0 the radio. */
+    if (n == 1 && !sync && !m->classic) cy_disk_console(m, s->tsr);
+    if (n == (m->classic ? 0 : 2)) cy_rf_h8_byte(m, s->tsr);
     if (sync) {
         /* clocked sync: a byte comes back for each one sent */
-        uint8_t in = cy_cart_spi(m, n, s->tsr);
+        uint8_t in = m->classic ? (n == 1 ? cy_at45_spi(m, s->tsr) : 0xff) : cy_cart_spi(m, n, s->tsr);
         if (s->scr & SCR_RE) {
             if (s->ssr & SSR_RDRF) s->ssr |= SSR_ORER;
             else { s->rdr = in; s->ssr |= SSR_RDRF; }
@@ -584,7 +609,7 @@ static uint32_t spi_bulk(cybiko_t *m, uint32_t left)
     uint32_t frame = cy_sci_frame(s);
     while (n-- && left >= s->tx_left) {
         left -= s->tx_left;
-        uint8_t in = cy_cart_spi(m, 1, s->tsr);
+        uint8_t in = m->classic ? cy_at45_spi(m, s->tsr) : cy_cart_spi(m, 1, s->tsr);
         s->rdr = in;
         s->tsr = s->tdr;
         s->tdr = cy_dma_spi_frame(m, ids, SPI_RDR, SPI_TDR, in);
@@ -619,10 +644,10 @@ static void sci_advance(cybiko_t *m, uint32_t states)
  * and those catch up whenever the CPU next touches I/O, so it need not
  * end a slice: the MP3 player then sends byte after byte, polling SSR,
  * without a slice end for each. */
-static bool sci_tx_event(const cy_sci_t *s, int n)
+static bool sci_tx_event(const cybiko_t *m, const cy_sci_t *s, int n)
 {
-    if (n == 2 || (s->scr & (SCR_TIE | SCR_TEIE))) return true;
-    if (!(s->smr & 0x80)) return n == 1;          /* asynchronous: console text */
+    if (n == (m->classic ? 0 : 2) || (s->scr & (SCR_TIE | SCR_TEIE))) return true;
+    if (!(s->smr & 0x80)) return n == 1 || m->classic;   /* asynchronous: console text */
     return (s->scr & (SCR_RE | SCR_RIE)) == (SCR_RE | SCR_RIE);
 }
 
@@ -631,7 +656,7 @@ static uint32_t sci_next(const cybiko_t *m)
     uint32_t best = NO_EVENT;
     for (int n = 0; n < 3; n++) {
         const cy_sci_t *s = &m->sci[n];
-        uint32_t tx = s->tx_busy && sci_tx_event(s, n) ? s->tx_left : NO_EVENT;
+        uint32_t tx = s->tx_busy && sci_tx_event(m, s, n) ? s->tx_left : NO_EVENT;
         if (n == 1 && s->tx_busy) {
             int ids[2];
             int k = spi_frames(m, ids);
@@ -706,6 +731,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
         uint8_t delta = s->scr ^ v;
         s->scr = v;
         if ((delta & SCR_RE) && !(v & SCR_RE)) s->rx_busy = false;
+        if (s->rx_busy && !s->rx_count && !sci_sync_rx(m, n)) s->rx_busy = false;
         if ((delta & SCR_TIE) && (v & SCR_TIE) && (s->ssr & SSR_TDRE)) cy_irq(m, sci_vec(n, 2));
         if ((delta & SCR_TEIE) && (v & SCR_TEIE) && (s->ssr & SSR_TEND)) cy_irq(m, sci_vec(n, 3));
         if ((delta & SCR_RIE) && (v & SCR_RIE) && (s->ssr & SSR_RDRF)) cy_irq(m, sci_vec(n, 1));
@@ -715,7 +741,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
     }
     case 3:
         s->tdr = v;
-        if (!m->dxc && n == 0) cy_hle_probe(m, m->cpu.ppc);
+        if (!m->dxc && n == 0 && !m->classic) cy_hle_probe(m, m->cpu.ppc);
         /* A DMA/DTC write clears TDRE itself (the CPU clears it in SSR). */
         if (m->dxc && (s->scr & SCR_TE)) {
             s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
@@ -754,8 +780,16 @@ static void adc_advance(cybiko_t *m, uint32_t states)
         states -= m->adc_left;
         m->adc_left = 0;
         int ch = m->adc_ch;
-        uint16_t val = ch == 3 ? cy_cart_adc(m, ch) : ch == 0 ? cy_rf_rssi(m)
-                       : m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
+        uint16_t val;
+        if (ch == 0)
+            val = cy_rf_rssi(m);
+        else if (m->classic)
+            /* The Classic's battery: CyOS 1.2.46 wants channel 1 more than
+             * 15 above channel 2, or it reports the battery low (values
+             * from ReBiko and the Java emulator it follows). */
+            val = ch == 1 ? 0x300 : 0x100;
+        else
+            val = ch == 3 ? cy_cart_adc(m, ch) : m->host.adc_read ? m->host.adc_read(m->host.user, ch) : 0;
         m->addr[ch & 3] = val & 0x3ff;
         bool scan = m->adcsr & 0x10;
         int end = m->adcsr & 7;

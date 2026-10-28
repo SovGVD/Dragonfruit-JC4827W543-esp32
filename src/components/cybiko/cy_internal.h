@@ -57,6 +57,14 @@ uint16_t cy_rf_rssi(const cybiko_t *m);
 uint32_t cy_rf_next(const cybiko_t *m);
 void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
 
+/* cy_classic.c: the Classic's DataFlash on SCI1, chip select on P34, and
+ * the Cybiko ID in CyOS 1.2.46's RAM */
+void cy_classic_poll(cybiko_t *m);
+uint32_t cy_classic_cyos_id(const cybiko_t *m);
+void cy_at45_reset(cybiko_t *m);
+void cy_at45_cs(cybiko_t *m, bool selected);
+uint8_t cy_at45_spi(cybiko_t *m, uint8_t in);
+
 /* cy_cart.c: the MP3 player cartridge */
 void cy_cart_reset(cybiko_t *m);
 uint16_t cy_cart_adc(cybiko_t *m, int ch);

@@ -1,4 +1,5 @@
-/* Cybiko Xtreme mode: loads the ROM and CyOS flash from /Cybiko, runs the
+/* Cybiko mode: loads the ROM and CyOS flash from /Cybiko (the Classic's
+ * from /Cybiko/Classic, see cybiko_app.h), runs the
  * machine in a CPU task on core 1 and the screen, on-screen keyboard and
  * saving in a UI task on core 0.
  *
@@ -61,12 +62,16 @@ static const char *TAG = "cybiko";
 #define FLASH_SAVE_PATH CYBIKO_SD_DIR "/flash.bin"
 #define STATE_PATH CYBIKO_SD_DIR "/state.bin"
 #define CFG_PATH CYBIKO_SD_DIR "/cybiko.cfg"
+#define CLASSIC_SAVE_PATH CYBIKO_CLASSIC_DIR "/flash_saved.bin"
+#define CLASSIC_STATE_PATH CYBIKO_CLASSIC_DIR "/state.bin"
 #define APPS_DIR CYBIKO_SD_DIR "/apps"
 #define DISK_DEFAULT_MB 4
 
-#define CHUNK_STATES (CY_CLOCK_HZ / 1000)   /* run 1 ms of Cybiko time at a go */
+#define CHUNK_STATES (clock_hz / 1000)      /* run 1 ms of Cybiko time at a go */
 
 static cybiko_t *machine;                   /* allocated only in Cybiko mode */
+static bool classic;                        /* the Classic, not the Xtreme */
+static uint32_t clock_hz = CY_CLOCK_HZ;
 /* A CyOS update being installed: its file, and the flash write count at the
  * last save, which waits until CyOS's installer has stopped writing. */
 static char update_path[300];
@@ -76,7 +81,7 @@ static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BA
 static uint32_t disk_size;
 static QueueHandle_t key_queue;
 static uint64_t keys_after;           /* hold further key events until this cycle */
-#define MODIFIER_STATES (CY_CLOCK_HZ / 10) /* 100 ms of Cybiko time */
+#define MODIFIER_STATES (clock_hz / 10)    /* 100 ms of Cybiko time */
 static volatile bool pause_req, paused;
 static volatile int speed_pct = -1;         /* emulation speed over the last second */
 static volatile int busy_pct;               /* share of the last second the CPU loop ran */
@@ -91,9 +96,10 @@ typedef struct { int16_t key; bool down; } key_event_t;
 static void on_serial_tx(void *user, int port, uint8_t b)
 {
     (void)user;
-    /* The boot loader and CyOS print text on SCI1: log it a line at a time.
-     * SCI2 is the radio co-processor (cy_rf.c, cybiko_link.c). */
-    if (port != 1) return;
+    /* The boot loader and CyOS print text on SCI1 (the Classic's on SCI2):
+     * log it a line at a time. The other ports are the radio co-processor
+     * (cy_rf.c, cybiko_link.c) and the flash or the cartridge. */
+    if (port != (classic ? 2 : 1)) return;
     static char line[128];
     static size_t len;
     if (b == '\n' || b == '\r' || len == sizeof line - 1) {
@@ -199,11 +205,14 @@ static void cpu_task(void *arg)
          * on-screen keyboard sends both at once, see cybiko_ui.c). */
         while (machine->cpu.cycles >= keys_after && xQueueReceive(key_queue, &ev, 0) == pdTRUE) {
             cybiko_key(machine, ev.key, ev.down);
-            if (ev.down && (ev.key == CYK_SHIFT || ev.key == CYK_FN)) keys_after = machine->cpu.cycles + MODIFIER_STATES;
+            bool mod = classic ? ev.key == CYC_SHIFT || ev.key == CYC_FN : ev.key == CYK_SHIFT || ev.key == CYK_FN;
+            if (ev.down && mod) keys_after = machine->cpu.cycles + MODIFIER_STATES;
         }
         cybiko_link_poll(machine);
-        cybiko_gate_poll(machine);
-        cybiko_cart_poll(machine);
+        if (!classic) {
+            cybiko_gate_poll(machine);
+            cybiko_cart_poll(machine);
+        }
 
         int64_t run_start = esp_timer_get_time();
         cybiko_run(machine, CHUNK_STATES);
@@ -228,7 +237,7 @@ static void cpu_task(void *arg)
         stat_busy += now - run_start;
         if (!stat_t0) { stat_t0 = now; stat_c0 = machine->cpu.cycles; stat_busy = 0; }
         if (now - stat_t0 >= 5000000) {
-            uint64_t emu_us = (machine->cpu.cycles - stat_c0) * 1000000ull / CY_CLOCK_HZ;
+            uint64_t emu_us = (machine->cpu.cycles - stat_c0) * 1000000ull / clock_hz;
             ESP_LOGI(TAG, "speed %d%% of real time, CPU loop busy %d%%",
                      (int)(emu_us * 100 / (uint64_t)(now - stat_t0)),
                      (int)(stat_busy * 100 / (now - stat_t0)));
@@ -242,7 +251,7 @@ static void cpu_task(void *arg)
         show_busy += now - run_start;
         if (!show_t0) { show_t0 = now; show_c0 = machine->cpu.cycles; show_busy = 0; }
         if (now - show_t0 >= 1000000) {
-            uint64_t emu_us = (machine->cpu.cycles - show_c0) * 1000000ull / CY_CLOCK_HZ;
+            uint64_t emu_us = (machine->cpu.cycles - show_c0) * 1000000ull / clock_hz;
             speed_pct = (int)(emu_us * 100 / (uint64_t)(now - show_t0));
             busy_pct = (int)(show_busy * 100 / (now - show_t0));
             show_t0 = now;
@@ -252,15 +261,17 @@ static void cpu_task(void *arg)
         /* Say whether the kernel took the bigger RAM disk (cy_disk.c). */
         static uint8_t patched_seen;
         static bool unpatched_warned;
-        if (machine->disk_patched != patched_seen) {
+        if (classic) {
+            /* no RAM disk: CyOS 1.2 keeps its files in the DataFlash */
+        } else if (machine->disk_patched != patched_seen) {
             patched_seen = machine->disk_patched;
             ESP_LOGI(TAG, "RAM disk moved to %06x, %u KB", (unsigned)CY_DISK_BASE,
                      (unsigned)(machine->disk_size >> 10));
-        } else if (!patched_seen && !unpatched_warned && machine->cpu.cycles > 30ull * CY_CLOCK_HZ) {
+        } else if (!patched_seen && !unpatched_warned && machine->cpu.cycles > 30ull * clock_hz) {
             unpatched_warned = true;
             ESP_LOGW(TAG, "CyOS RAM disk set-up not recognised: the RAM disk stays at 512 KB");
         }
-        int64_t emu_us = (int64_t)((machine->cpu.cycles - c0) * 1000000ull / CY_CLOCK_HZ);
+        int64_t emu_us = (int64_t)((machine->cpu.cycles - c0) * 1000000ull / clock_hz);
         int64_t ahead = emu_us - (now - t0);
         if (ahead > 2000) {
             vTaskDelay(pdMS_TO_TICKS(ahead / 1000));
@@ -319,7 +330,7 @@ static void save_state(void)
     struct { char magic[4]; uint32_t version; int64_t clock; } st = {
         { 'C', 'Y', 'S', 'T' }, 1, (int64_t)time(NULL) + clock_base,
     };
-    write_file(STATE_PATH, &st, sizeof st);
+    write_file(classic ? CLASSIC_STATE_PATH : STATE_PATH, &st, sizeof st);
 }
 
 /* Write the RAM disk chunks CyOS changed into ramdisk.bin in place: the
@@ -342,9 +353,57 @@ static void save_disk(const uint32_t *dirty, const uint8_t *staged)
     ESP_LOGI(TAG, "saved %d KB of the RAM disk%s", n * (int)(CY_DISK_CHUNK / 1024), ok ? "" : " (write error)");
 }
 
+/* The Classic's DataFlash: the pages CyOS changed, copied while the CPU is
+ * paused, patched into flash_saved.bin, which is written whole the first
+ * time (from the 1 MB image, so the dump it came from stays untouched). */
+static void save_classic(void)
+{
+    static uint32_t dirty[CY_AT45_PAGES / 32];
+    static uint8_t *staged;
+    cpu_pause(true);
+    int changed = cybiko_at45_take_dirty(machine, dirty);
+    struct stat st;
+    bool whole = stat(CLASSIC_SAVE_PATH, &st) != 0 || st.st_size != CY_AT45_SIZE;
+    size_t len = whole ? CY_AT45_SIZE : (size_t)changed * CY_AT45_PAGE;
+    if (changed && !staged) staged = heap_caps_malloc(CY_AT45_SIZE, MALLOC_CAP_SPIRAM);
+    if (changed && staged) {
+        if (whole) {
+            memcpy(staged, flash, CY_AT45_SIZE);
+        } else {
+            int n = 0;
+            for (uint32_t p = 0; p < CY_AT45_PAGES; p++)
+                if (dirty[p / 32] & (1u << (p % 32)))
+                    memcpy(staged + (size_t)n++ * CY_AT45_PAGE, flash + p * CY_AT45_PAGE, CY_AT45_PAGE);
+        }
+    } else if (changed) {
+        /* no memory for the copy: the pages count as changed until next time */
+        for (size_t i = 0; i < CY_AT45_PAGES / 32; i++) machine->at45.dirty[i] |= dirty[i];
+        ESP_LOGW(TAG, "no memory to save the flash; trying again later");
+        changed = 0;
+    }
+    cpu_pause(false);
+    if (changed && whole) {
+        if (write_file(CLASSIC_SAVE_PATH, staged, len))
+            ESP_LOGI(TAG, "saved the flash (%d pages changed) to %s", changed, CLASSIC_SAVE_PATH);
+    } else if (changed) {
+        FILE *f = fopen(CLASSIC_SAVE_PATH, "r+b");
+        bool ok = f != NULL;
+        int n = 0;
+        for (uint32_t p = 0; ok && p < CY_AT45_PAGES; p++) {
+            if (!(dirty[p / 32] & (1u << (p % 32)))) continue;
+            ok = fseek(f, (long)(p * CY_AT45_PAGE), SEEK_SET) == 0 &&
+                 fwrite(staged + (size_t)n++ * CY_AT45_PAGE, 1, CY_AT45_PAGE, f) == CY_AT45_PAGE;
+        }
+        if (f) ok = fclose(f) == 0 && ok;
+        ESP_LOGI(TAG, "saved %d changed flash pages%s", changed, ok ? "" : " (write error)");
+    }
+    save_state();
+}
+
 void cybiko_app_save(bool force)
 {
     (void)force;                                /* only changed parts are ever written */
+    if (classic) { save_classic(); return; }
     static uint8_t *flash_copy;
     uint32_t dirty[sizeof machine->disk_dirty / sizeof machine->disk_dirty[0]];
     int changed = 0;
@@ -419,10 +478,58 @@ void cybiko_app_save(bool force)
 /* UI hooks                                                            */
 /* ------------------------------------------------------------------ */
 
-void cybiko_app_key(int key, bool down)
+static void queue_key(int key, bool down)
 {
     key_event_t ev = { (int16_t)key, down };
     xQueueSend(key_queue, &ev, pdMS_TO_TICKS(50));
+}
+
+/* The on-screen keyboard is the Xtreme's (CYK_* keys). The Classic gets the
+ * same keys (cybiko_classic_key), and Fn + a letter that types a digit on
+ * the Xtreme, as its keys show, types the Classic's own digit key, without
+ * Fn: Fn waits to see which key comes with it. */
+static void classic_key(int key, bool down)
+{
+    static const struct { int16_t letter, digit; } fn_digits[] = {
+        { CYK_Q, CYC_1 }, { CYK_W, CYC_2 }, { CYK_E, CYC_3 }, { CYK_R, CYC_4 }, { CYK_T, CYC_5 },
+        { CYK_Y, CYC_6 }, { CYK_U, CYC_7 }, { CYK_I, CYC_8 }, { CYK_O, CYC_9 }, { CYK_P, CYC_0 },
+    };
+    static bool fn_held, fn_sent;
+    static int16_t digit_for = -1, digit = -1;
+    if (key == CYK_FN) {
+        if (down) { fn_held = true; return; }
+        if (fn_sent) queue_key(CYC_FN, false);
+        fn_held = fn_sent = false;
+        return;
+    }
+    if (!down && key == digit_for) {
+        queue_key(digit, false);
+        digit_for = digit = -1;
+        return;
+    }
+    if (down && fn_held && !fn_sent) {
+        for (size_t i = 0; i < sizeof fn_digits / sizeof fn_digits[0]; i++)
+            if (fn_digits[i].letter == key) {
+                digit_for = (int16_t)key;
+                digit = fn_digits[i].digit;
+                queue_key(digit, true);
+                return;
+            }
+        queue_key(CYC_FN, true);
+        fn_sent = true;
+    }
+    int k = cybiko_classic_key(key);
+    if (k < 0) {
+        if (down) ESP_LOGW(TAG, "key %03x: the Classic has no such key", key);
+        return;
+    }
+    queue_key(k, down);
+}
+
+void cybiko_app_key(int key, bool down)
+{
+    if (classic) classic_key(key, down);
+    else queue_key(key, down);
 }
 
 cybiko_t *cybiko_app_machine(void) { return machine; }
@@ -497,6 +604,26 @@ void cybiko_app_set_vsync(bool on)
     nvs_handle_t h;
     if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, "vsync", on);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+bool cybiko_app_classic(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("cybiko", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "classic", &v);
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
+void cybiko_app_set_classic(bool classic)
+{
+    nvs_handle_t h;
+    if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "classic", classic);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -645,10 +772,102 @@ static bool stage_update(char *flash_path)
     return r == CY_BOOT_OK;
 }
 
+static void load_clock(const char *path)
+{
+    struct { char magic[4]; uint32_t version; int64_t clock; } st;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        if (fread(&st, 1, sizeof st, f) == sizeof st && !memcmp(st.magic, "CYST", 4))
+            clock_base = st.clock - (int64_t)time(NULL);
+        fclose(f);
+    }
+}
+
+static void start_sound(const char *cfg)
+{
+    int volume = 60;
+    char v[16];
+    if (cfg && config_get_value(cfg, "sound.volume", v, sizeof v)) {
+        volume = atoi(v);
+        if (volume < 0 || volume > 100) volume = 60;
+    }
+    uint8_t saved_volume;                       /* the boot menu's volume wins */
+    if (audio_saved_volume(&saved_volume)) volume = saved_volume;
+    if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
+}
+
+static void start_tasks(void)
+{
+    vsync = cybiko_app_vsync();
+    if (vsync) {
+        frames[0] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
+        frames[1] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
+        if (!frames[0] || !frames[1]) {
+            ESP_LOGW(TAG, "no memory for whole frames; the screen shows the drawing as it happens");
+            vsync = false;
+        }
+    }
+    ESP_LOGI(TAG, "screen: %s", vsync ? "whole frames (vsync)" : "as drawn");
+
+    key_queue = xQueueCreate(32, sizeof(key_event_t));
+    cybiko_ui_start();
+    xTaskCreatePinnedToCore(cpu_task, "cybiko", 6144, NULL, 5, NULL, 1);
+    ESP_LOGI(TAG, "running; free PSRAM %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+static EXT_RAM_BSS_ATTR char cfg[1024];
+
+/* The Classic: boot ROM and DataFlash from /Cybiko/Classic, the radio over
+ * ESP-NOW as the Xtreme's (cybiko.cfg's rf keys); no RAM disk, cartridge,
+ * WAP gate or browser, which CyOS 1.2 does not have. */
+static void start_classic(void)
+{
+    char rom_path[96], flash_path[96];
+    if (!cybiko_app_find_classic(rom_path, flash_path, sizeof rom_path)) {
+        fail("CYBIKO CLASSIC\n\nPUT CYROM112.BIN AND\nFLASH_V1246.BIN IN\n/CYBIKO/CLASSIC/");
+        return;
+    }
+    machine = heap_caps_calloc(1, sizeof *machine, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!machine) machine = heap_caps_calloc(1, sizeof *machine, MALLOC_CAP_SPIRAM);
+    rom = heap_caps_calloc(1, CY_ROM_BUF, MALLOC_CAP_SPIRAM);
+    flash = heap_caps_calloc(1, CY_AT45_SIZE, MALLOC_CAP_SPIRAM);
+    ram = heap_caps_calloc(1, CY_CLASSIC_RAM_SIZE, MALLOC_CAP_SPIRAM);
+    if (!machine || !rom || !flash || !ram) { fail("CYBIKO\n\nOUT OF MEMORY"); return; }
+
+    ESP_LOGI(TAG, "Classic: ROM %s, flash %s", rom_path, flash_path);
+    if (!load_file(rom_path, rom, CY_ROM_SIZE, true)) { fail("CYBIKO CLASSIC\n\nBAD ROM FILE"); return; }
+    struct stat st;
+    if (stat(flash_path, &st) != 0 || (st.st_size != CY_AT45_DB041_SIZE && st.st_size != CY_AT45_SIZE) ||
+        !load_file(flash_path, flash, st.st_size, true)) {
+        ESP_LOGE(TAG, "%s: %ld bytes, expected %u or %u", flash_path, (long)st.st_size,
+                 (unsigned)CY_AT45_DB041_SIZE, (unsigned)CY_AT45_SIZE);
+        fail("CYBIKO CLASSIC\n\nBAD FLASH FILE");
+        return;
+    }
+    if (st.st_size < CY_AT45_SIZE) {
+        cybiko_at45_format_free(flash, (uint32_t)(st.st_size / CY_AT45_PAGE));
+        ESP_LOGI(TAG, "512 KB dump: the other 512 KB of the 1 MB flash formatted as free space");
+    }
+    load_clock(CLASSIC_STATE_PATH);
+
+    size_t cfg_len;
+    bool have_cfg = config_read_file(CFG_PATH, cfg, sizeof cfg, &cfg_len) == CONFIG_OK;
+    start_sound(have_cfg ? cfg : NULL);
+
+    cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker,
+                       .rf_send = cybiko_link_send };
+    cybiko_init_classic(machine, &host, rom, flash, ram);
+    clock_hz = cybiko_clock_hz(machine);
+    cybiko_link_init(machine, have_cfg ? cfg : NULL);
+    start_tasks();
+}
+
 void cybiko_app_start(void)
 {
     sdmmc_card_t *card;
     if (m5_sd_mount(&card) != ESP_OK) { fail("CYBIKO\n\nNO SD CARD"); return; }
+    classic = cybiko_app_classic();
+    if (classic) { start_classic(); return; }
 
     char rom_path[96], flash_path[96];
     if (!cybiko_app_find_files(rom_path, flash_path, sizeof rom_path)) {
@@ -671,30 +890,14 @@ void cybiko_app_start(void)
         fail("CYBIKO\n\nBAD CYOS UPDATE\n(*.BOOT FILE)");
         return;
     }
-
-    struct { char magic[4]; uint32_t version; int64_t clock; } st;
-    FILE *f = fopen(STATE_PATH, "rb");
-    if (f) {
-        if (fread(&st, 1, sizeof st, f) == sizeof st && !memcmp(st.magic, "CYST", 4))
-            clock_base = st.clock - (int64_t)time(NULL);
-        fclose(f);
-    }
+    load_clock(STATE_PATH);
 
     /* Optional settings: sound.volume (0-100, default 60), disk.size and
      * the radio keys described in cybiko_link.h. */
-    static EXT_RAM_BSS_ATTR char cfg[1024];
     size_t cfg_len;
     bool have_cfg = config_read_file(CFG_PATH, cfg, sizeof cfg, &cfg_len) == CONFIG_OK;
     if (!load_disk(have_cfg ? cfg : NULL)) { fail("CYBIKO\n\nOUT OF MEMORY"); return; }
-    int volume = 60;
-    char v[16];
-    if (have_cfg && config_get_value(cfg, "sound.volume", v, sizeof v)) {
-        volume = atoi(v);
-        if (volume < 0 || volume > 100) volume = 60;
-    }
-    uint8_t saved_volume;                       /* the boot menu's volume wins */
-    if (audio_saved_volume(&saved_volume)) volume = saved_volume;
-    if (audio_init((uint8_t)volume) != ESP_OK) ESP_LOGW(TAG, "no sound");
+    start_sound(have_cfg ? cfg : NULL);
 
     cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker,
                        .rf_send = cybiko_gate_send, .app_call = cybiko_browser_app_call };
@@ -704,20 +907,5 @@ void cybiko_app_start(void)
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
     cybiko_gate_init(machine, flash, have_cfg ? cfg : NULL);
     cybiko_cart_init(machine, have_cfg ? cfg : NULL);
-
-    vsync = cybiko_app_vsync();
-    if (vsync) {
-        frames[0] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
-        frames[1] = heap_caps_malloc(CY_LCD_W * CY_LCD_H, MALLOC_CAP_SPIRAM);
-        if (!frames[0] || !frames[1]) {
-            ESP_LOGW(TAG, "no memory for whole frames; the screen shows the drawing as it happens");
-            vsync = false;
-        }
-    }
-    ESP_LOGI(TAG, "screen: %s", vsync ? "whole frames (vsync)" : "as drawn");
-
-    key_queue = xQueueCreate(32, sizeof(key_event_t));
-    cybiko_ui_start();
-    xTaskCreatePinnedToCore(cpu_task, "cybiko", 6144, NULL, 5, NULL, 1);
-    ESP_LOGI(TAG, "running; free PSRAM %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    start_tasks();
 }

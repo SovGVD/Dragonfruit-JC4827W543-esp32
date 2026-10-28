@@ -121,6 +121,17 @@ choice starts by itself after 5 seconds.
 - The MP3 cartridge, with `/Cybiko/card` as its card: MP3 playback and MXD
   videos.
 
+### Cybiko Classic
+
+- Boots CyOS 1.2.46 (the first Cybiko, from MAME's `cybikov1` dumps, which
+  also come with [ReBiko](https://github.com/RetroCodeRamen/rebiko)'s
+  release), to the desktop, Chat and the games.
+- Its flash emulated as a 1 MB AT45DB081, twice the real one, for more room
+  for files; CyOS's changes are saved to the SD card.
+- The radio over ESP-NOW as on the Xtreme (Classic to Classic).
+- Picked with the model button on the boot menu's Cybiko card; files in
+  `/Cybiko/Classic` (see [the Cybiko guide](docs/cybiko.md#cybiko-classic)).
+
 ## Running on a PC
 
 The host build compiles the same emulator code with a thin stand-in for
@@ -268,6 +279,12 @@ Schuerewegen's Cybiko driver, HD66421, PCF8593 and imgtool `cybikoxt` code, and
 Olivier Galibert's and hap's H8 core and peripherals, were the reference for
 the hardware model. No MAME code is copied; the details and the BSD-3-Clause
 notice are in [third-party notices](docs/third-party-notices.md).
+
+The Cybiko Classic follows Dan Berkowitz's
+[ReBiko](https://github.com/RetroCodeRamen/rebiko) (MIT): its memory map,
+DataFlash, radio framing, flash block format and more came from there, with
+MAME's `cybikov1` driver. The details and its license are in the
+[third-party notices](docs/third-party-notices.md#rebiko).
 
 ## License
 

@@ -48,7 +48,10 @@ follows:
 - the H8 instruction table and on-chip peripheral models (`src/devices/cpu/h8`),
   by Olivier Galibert and hap; `tools/h8s-diff/patterns.h` is generated from
   its `h8.lst`;
-- the Intel/AMD flash model, by Aaron Giles.
+- the Intel/AMD flash model, by Aaron Giles;
+- for the Cybiko Classic, the `cybikov1` machine, the H8S/2245 family
+  (`h8s2245`) and the AT45DBxx DataFlash (`at45dbxx`), by Tim Schuerewegen,
+  Olivier Galibert and hap.
 
 Portions derived from MAME: Copyright (c) Tim Schuerewegen, Olivier Galibert,
 hap, Aaron Giles and the MAME contributors. These MAME files are under the
@@ -78,6 +81,43 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
+```
+
+## ReBiko
+
+The Cybiko Classic emulation (`cy_classic.c` and the `m->classic` parts of
+`src/components/cybiko`) follows Dan Berkowitz's
+[ReBiko](https://github.com/RetroCodeRamen/rebiko), a Cybiko Classic and
+Xtreme emulator for the LilyGO T-Deck and the desktop. ReBiko worked out the
+Classic's memory map, the AT45 DataFlash on SCI1, the radio co-processor's
+Classic framing, the battery values CyOS 1.2.46 wants, the empty-block format
+of the flash (`cybiko_at45_format_free`), the idea of emulating a 1 MB
+AT45DB081 for more room, and where CyOS 1.2.46 keeps the Cybiko ID in RAM.
+Dragonfruit's code is written separately, but those details come from
+ReBiko, under the MIT license:
+
+```text
+MIT License
+
+Copyright (c) 2026 Dan Berkowitz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 `tools/h8s-diff` links against the GNU H8 simulator from GDB (GPL v3) when you

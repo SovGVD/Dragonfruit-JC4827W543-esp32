@@ -9,18 +9,33 @@
 static const char *const rom_names[] = { "bootrom.bin", "cyrom150.bin", "xtreme-rom.bin" };
 static const char *const flash_names[] = { "flash.bin", "cyos_v1508.bin", "xtreme-flash.bin" };
 
-static bool find(const char *const *names, int count, char *out, size_t cap)
+static const char *const classic_rom_names[] = { "cyrom112.bin", "boot.bin", "bootrom.bin" };
+static const char *const classic_flash_names[] = { "flash_saved.bin", "flash_v1246.bin", "flash.bin" };
+
+static bool find_in(const char *dir, const char *const *names, int count, char *out, size_t cap)
 {
     char path[96];
     struct stat st;
     for (int i = 0; i < count; i++) {
-        snprintf(path, sizeof path, CYBIKO_SD_DIR "/%s", names[i]);
+        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
         if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
             if (out && cap) snprintf(out, cap, "%s", path);
             return true;
         }
     }
     return false;
+}
+
+static bool find(const char *const *names, int count, char *out, size_t cap)
+{
+    return find_in(CYBIKO_SD_DIR, names, count, out, cap);
+}
+
+bool cybiko_app_find_classic(char *rom_path, char *flash_path, size_t cap)
+{
+    bool rom = find_in(CYBIKO_CLASSIC_DIR, classic_rom_names, 3, rom_path, cap);
+    bool flash = find_in(CYBIKO_CLASSIC_DIR, classic_flash_names, 3, flash_path, cap);
+    return rom && flash;
 }
 
 bool cybiko_app_find_files(char *rom_path, char *flash_path, size_t cap)

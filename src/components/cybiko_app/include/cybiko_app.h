@@ -2,8 +2,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Cybiko Xtreme mode of the firmware: everything it reads or writes lives in
- * CYBIKO_SD_DIR (/Cybiko on the SD card). */
+/* Cybiko mode of the firmware: everything it reads or writes lives in
+ * CYBIKO_SD_DIR (/Cybiko on the SD card), the Classic's in a folder of its
+ * own there. */
 
 /* Find the boot ROM and CyOS flash image in /Cybiko (SD must be mounted).
  * Accepted names, first match wins:
@@ -13,6 +14,22 @@
 bool cybiko_app_find_files(char *rom_path, char *flash_path, size_t cap);
 /* The original flash dump (the names above without flash.bin). */
 bool cybiko_app_find_dump(char *flash_path, size_t cap);
+
+/* The Cybiko Classic (the first model, CyOS 1.2) keeps its files in
+ * CYBIKO_CLASSIC_DIR (/Cybiko/Classic), first match wins:
+ *   boot ROM (32 KB):            cyrom112.bin, boot.bin, bootrom.bin
+ *   flash (512 KB or 1 MB):      flash_saved.bin, flash_v1246.bin, flash.bin
+ * The emulated flash is a 1 MB AT45DB081, so a 512 KB dump gets 512 KB of
+ * free space; once CyOS writes to it, it is saved as flash_saved.bin (1 MB)
+ * and the dump is left as it was. Both dumps are in ReBiko's release
+ * (roms/boot.bin and roms/flash.bin) and in MAME's cybikov1 set. */
+/* CYBIKO_CLASSIC_DIR is in m5_sd.h, next to CYBIKO_SD_DIR. */
+bool cybiko_app_find_classic(char *rom_path, char *flash_path, size_t cap);
+
+/* Which Cybiko starts, kept in NVS and switched in the boot menu: false
+ * (the default) the Xtreme, true the Classic. */
+bool cybiko_app_classic(void);
+void cybiko_app_set_classic(bool classic);
 
 /* A CyOS update image in /Cybiko: a file named *.boot of 64-512 KB, such as
  * the Russian ccyphRU1.5.08r.boot. It is installed into the flash on start

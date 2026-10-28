@@ -19,6 +19,7 @@
  * and /Cybiko (boot ROM, CyOS flash, saved RAM). FAT is case-insensitive. */
 #define PALM_SD_DIR   M5_SD_MOUNT_POINT "/PalmOS"
 #define CYBIKO_SD_DIR M5_SD_MOUNT_POINT "/Cybiko"
+#define CYBIKO_CLASSIC_DIR CYBIKO_SD_DIR "/Classic"
 
 /* Initialize the JC4827W543 shared SD/XPT2046 SPI2 bus. Safe to call again;
  * does not require a card or display. JC4827W543 builds only. */

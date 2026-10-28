@@ -248,3 +248,26 @@ void cybiko_at45_format_free(uint8_t *flash, uint32_t first)
     page[7] = (uint8_t)(v >> 8);
     for (uint32_t p = first; p < CY_AT45_PAGES; p++) memcpy(flash + p * CY_AT45_PAGE, page, CY_AT45_PAGE);
 }
+
+int cybiko_classic_key(int k)
+{
+    static const int16_t map[][2] = {
+        { CYK_A, CYC_A }, { CYK_B, CYC_B }, { CYK_C, CYC_C }, { CYK_D, CYC_D }, { CYK_E, CYC_E },
+        { CYK_F, CYC_F }, { CYK_G, CYC_G }, { CYK_H, CYC_H }, { CYK_I, CYC_I }, { CYK_J, CYC_J },
+        { CYK_K, CYC_K }, { CYK_L, CYC_L }, { CYK_M, CYC_M }, { CYK_N, CYC_N }, { CYK_O, CYC_O },
+        { CYK_P, CYC_P }, { CYK_Q, CYC_Q }, { CYK_R, CYC_R }, { CYK_S, CYC_S }, { CYK_T, CYC_T },
+        { CYK_U, CYC_U }, { CYK_V, CYC_V }, { CYK_W, CYC_W }, { CYK_X, CYC_X }, { CYK_Y, CYC_Y },
+        { CYK_Z, CYC_Z },
+        { CYK_F1, CYC_F1 }, { CYK_F2, CYC_F2 }, { CYK_F3, CYC_F3 }, { CYK_F4, CYC_F4 },
+        { CYK_F5, CYC_F5 }, { CYK_F6, CYC_F6 }, { CYK_F7, CYC_F7 },
+        { CYK_ESC, CYC_ESC }, { CYK_DEL, CYC_DEL }, { CYK_INS, CYC_INS }, { CYK_TAB, CYC_TAB },
+        { CYK_UP, CYC_UP }, { CYK_DOWN, CYC_DOWN }, { CYK_LEFT, CYC_LEFT }, { CYK_RIGHT, CYC_RIGHT },
+        { CYK_SELECT, CYC_SELECT }, { CYK_ENTER, CYC_ENTER }, { CYK_SPACE, CYC_SPACE },
+        { CYK_SHIFT, CYC_SHIFT }, { CYK_FN, CYC_FN }, { CYK_HELP, CYC_HELP },
+        { CYK_DOT, CYC_DOT }, { CYK_COMMA, CYC_COMMA }, { CYK_SEMI, CYC_SEMI },
+        { CYK_ONOFF, CYC_ONOFF },
+    };
+    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
+        if (map[i][0] == k) return map[i][1];
+    return -1;
+}

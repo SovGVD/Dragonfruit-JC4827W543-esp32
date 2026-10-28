@@ -1,4 +1,4 @@
-# Cybiko Xtreme
+# Cybiko Xtreme and Classic
 
 The JC4827W543 firmware also emulates the **Cybiko Xtreme** (2001): a Hitachi
 H8S/2323 at 18.432 MHz, 2 MB RAM, 512 KB flash and a 160×100 four-shade LCD.
@@ -293,6 +293,50 @@ carry them over ESP-NOW, with a small C library for other ESP32 projects in
 The boot loader and CyOS print text on serial port SCI1. The firmware logs those lines on the ESP32 serial monitor with the
 `cyos` tag.
 
+## Cybiko Classic
+
+The firmware also emulates the first Cybiko, the **Classic** (2000): an
+H8S/2241 at 11.0592 MHz, 512 KB RAM and CyOS 1.2 in a serial DataFlash. On
+the boot menu's Cybiko card, tap the model button (XTREME / CLASSIC) to
+switch; the card then says whether the Classic's files are there. It follows
+Dan Berkowitz's [ReBiko](https://github.com/RetroCodeRamen/rebiko) and MAME's
+`cybikov1` driver (see [third-party notices](third-party-notices.md#rebiko)).
+
+Its files live in `/Cybiko/Classic`:
+
+| File | Size | Accepted names (first match wins) |
+| --- | --- | --- |
+| Boot ROM | 32 KB | `cyrom112.bin`, `boot.bin`, `bootrom.bin` |
+| CyOS flash | 512 KB or 1 MB | `flash_saved.bin`, `flash_v1246.bin`, `flash.bin` |
+
+Both are MAME's `cybikov1` set (CyOS 1.2.46). ReBiko's release zip has them
+as `roms/boot.bin` and `roms/flash.bin`, which can be copied in under those
+names. The real Classic has a 512 KB AT45DB041; the emulator has a 1 MB
+AT45DB081 (as ReBiko does), which CyOS finds by itself ("4091 blocks"), so
+a 512 KB dump gets another 512 KB of free space. Once CyOS changes the flash
+(files, settings, the clock), the 1 MB image is saved as `flash_saved.bin`,
+after that only the changed pages; the dump stays as it was. Delete
+`flash_saved.bin` to start again from the dump. `state.bin` there keeps the
+clock.
+
+- **Keys.** The on-screen keyboard is the Xtreme's. Fn with Q-P types the
+  digits 1-0 (the Classic's own digit keys), as the keys show; Menu, the
+  brackets and "!" have no Classic key and are logged when pressed.
+- **Radio.** Over ESP-NOW with the same `cybiko.cfg` keys as the Xtreme
+  (`rf`, `rf.channel`, `rf.id`). Each board gets its own Cybiko ID; CyOS
+  1.2.46 keeps it in RAM, and the emulator puts the board's ID there. Two
+  Classics chat with each other in the PC runner; Classic to Xtreme is not
+  tested.
+- **Not there (yet).** The Classic's MP3 player and its memory expansion
+  module, a RAM disk, apps from `/Cybiko/apps`, the WAP gate and CyOS
+  updates are Xtreme only for now.
+
+In the [PC runner](#pc-runner), a flash image of 512 KB or 1 MB (or
+`--classic`) runs the Classic: `--save-flash FILE` writes the 1 MB flash at
+the end, `--pair FLASH2` and `--third FLASH3` add Classics with their own
+flash images on the radio, `--unit-id HEX` sets the first one's ID, and the
+key names are the Classic's.
+
 ## Desktop app
 
 `cybiko` runs the emulator in a window on a PC, with sound and the MP3
@@ -410,6 +454,9 @@ CPU loop was.
 
 ## Future improvements
 
+- **Cybiko Classic: MP3 player and memory expansion.** The Classic's own
+  MP3 module and memory module work differently from the Xtreme's; left for
+  the next round.
 - **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
   tested in the PC runner; the open questions are listed in
   [cybiko-docs](https://github.com/SovGVD/cybiko-docs/blob/main/mp3-cartridge.md#4-open-questions).

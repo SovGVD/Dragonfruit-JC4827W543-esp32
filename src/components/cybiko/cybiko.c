@@ -1,11 +1,17 @@
-/* Cybiko Xtreme: memory map, interrupt controller, I/O ports, system
- * registers and the run loop. See cybiko.h for the overall map. */
+/* Cybiko Xtreme and Classic: memory map, interrupt controller, I/O ports,
+ * system registers and the run loop. See cybiko.h for the overall maps. The
+ * Classic's H8S/2241 has the Xtreme's H8S/2323 registers where it has the
+ * same peripherals (MAME h8s2245 and h8s2320); the differences are handled
+ * where m->classic is tested. */
 #include <string.h>
 #include "cy_internal.h"
 
 #define FLASH_BASE 0x600000u
 #define RAM_BASE   0x400000u
 #define IRAM_BASE  0xffdc00u
+#define CLASSIC_RAM_BASE  0x200000u
+#define CLASSIC_IRAM_BASE 0xffec00u
+#define CLASSIC_IRAM_SIZE 0x1000u
 #define IO_BASE    0xfffe80u
 
 /* ------------------------------------------------------------------ */
@@ -31,6 +37,7 @@ static bool irq_level_type(const cybiko_t *m, int n)
 /* IRQ0-7 pin inputs; bit set = pin asserted (low). */
 static uint8_t irq_pins(const cybiko_t *m)
 {
+    if (m->classic) return 0x00;   /* CyOS 1.2 polls the keys from its timer tick */
     /* The On/Off button is on PA7, which doubles as IRQ7 on the H8S/2323;
      * pressing it is what can wake the CPU from software standby. */
     bool onoff = (m->keys[CYK_ONOFF >> 4] >> (CYK_ONOFF & 15)) & 1;
@@ -88,7 +95,19 @@ static int irq_best(cybiko_t *m, const h8s_cpu_t *cpu, int *level)
             p &= p - 1;
             int v = w * 32 + b;
             int lvl;
-            if (v == H8S_VEC_NMI) {
+            if (m->classic) {
+                /* H8S/2241: ICR bits give two priorities. Mode 0 masks all
+                 * but NMI with I; mode 1 masks priority 0 with I and
+                 * priority 1 too with I and UI (MAME h8s2245). */
+                int slot = v < 92 ? vector_slot[v] : -1;
+                lvl = v == H8S_VEC_NMI ? 2 : slot < 0 ? 0 : (m->icr[slot >> 3] >> (7 - (slot & 7))) & 1;
+                int filter = 0;
+                if ((m->syscr & 0x30) == 0x10)
+                    filter = (cpu->ccr & (H8S_CCR_I | H8S_CCR_UI)) == (H8S_CCR_I | H8S_CCR_UI) ? 2 : (cpu->ccr & H8S_CCR_I) ? 1 : 0;
+                else if (cpu->ccr & H8S_CCR_I)
+                    filter = 2;
+                if (lvl < filter) continue;
+            } else if (v == H8S_VEC_NMI) {
                 lvl = 8;
             } else {
                 int slot = v < 92 ? vector_slot[v] : -1;
@@ -137,8 +156,16 @@ static int irq_ack(void *ctx, h8s_cpu_t *cpu, int *level)
 /* ------------------------------------------------------------------ */
 
 /* Pins the port does not have read as 1 (MAME h8_port masks). */
-static uint8_t port_mask(int p)
+static uint8_t port_mask(const cybiko_t *m, int p)
 {
+    if (m->classic) {
+        switch (p) {
+        case 2: return 0xc0;      /* port 3 */
+        case 3: case 4: case 9: return 0xf0;   /* ports 4, 5, A */
+        case 15: return 0xe0;     /* port G */
+        default: return 0x00;
+        }
+    }
     switch (p) {
     case 2: return 0xc0;      /* port 3 */
     case 4: return 0xf0;      /* port 5 */
@@ -149,6 +176,18 @@ static uint8_t port_mask(int p)
 
 static uint8_t port_input(cybiko_t *m, int p)
 {
+    if (m->classic) {
+        switch (p) {
+        case 0: {                 /* port 1: bit 3 low while On/Off is held */
+            bool onoff = (m->keys[CYC_ONOFF >> 4] >> (CYC_ONOFF & 15)) & 1;
+            return onoff ? 0xf7 : 0xff;
+        }
+        case 14:                  /* port F: bit 0 RTC SDA, bit 2 high (MAME) */
+            return cy_rtc_sda(m) ? 0x05 : 0x04;
+        default:
+            return 0xff;
+        }
+    }
     switch (p) {
     case 9: {                 /* port A: bit 7 On/Off released, bit 6 charged */
         bool onoff = (m->keys[CYK_ONOFF >> 4] >> (CYK_ONOFF & 15)) & 1;
@@ -169,18 +208,25 @@ static uint8_t port_input(cybiko_t *m, int p)
 
 static uint8_t port_read(cybiko_t *m, int p)
 {
-    uint8_t mask = port_mask(p);
+    uint8_t mask = port_mask(m, p);
     uint8_t ddr = m->ddr[p];
     return (uint8_t)(mask | (m->dr[p] & ddr) | (port_input(m, p) & ~ddr & ~mask));
 }
 
 static void port_output(cybiko_t *m, int p)
 {
-    uint8_t data = (uint8_t)((m->dr[p] | ~m->ddr[p]) & ~port_mask(p));
+    uint8_t data = (uint8_t)((m->dr[p] | ~m->ddr[p]) & ~port_mask(m, p));
     if (p == 0) {
         /* P15 is the speaker; count edges software makes on it */
         if ((data ^ m->spk_pin) & 0x20) m->spk_edges++;
         m->spk_pin = data;
+    }
+    if (m->classic) {
+        /* P34 selects the DataFlash (low); PF1 is the RTC clock and PF0 its
+         * open-drain data, pulled low by making it an output. */
+        if (p == 2) cy_at45_cs(m, !(data & 0x10));
+        if (p == 14) cy_rtc_pins(m, data & 0x02, data & 0x01);
+        return;
     }
     if (p == 1) cy_cart_p2(m, data, m->ddr[1]);
     if (p == 2) cy_cart_p3(m, data, m->ddr[2]);
@@ -224,12 +270,16 @@ static uint8_t io_read_reg(cybiko_t *m, uint32_t a)
     case 0xffff3c: return m->mstpcr[0];
     case 0xffff3d: return m->mstpcr[1];
     }
-    if (a >= 0xfffec4 && a <= 0xfffece) return m->ipr[a - 0xfffec4];
+    if (m->classic) {
+        if (a >= 0xfffec0 && a <= 0xfffec2) return m->icr[a - 0xfffec0];
+    } else if (a >= 0xfffec4 && a <= 0xfffece) {
+        return m->ipr[a - 0xfffec4];
+    }
     if (a >= 0xfffeb0 && a <= 0xfffebf) return 0xff;              /* DDR: write-only */
     if (a >= 0xffff50 && a <= 0xffff5f) return port_read(m, (int)(a - 0xffff50));
     if (a >= 0xffff60 && a <= 0xffff6f) {
         int p = (int)(a - 0xffff60);
-        return (uint8_t)(m->dr[p] | port_mask(p));
+        return (uint8_t)(m->dr[p] | port_mask(m, p));
     }
     if (a >= 0xffff70 && a <= 0xffff74) return m->pcr[a - 0xffff70];
     if (a == 0xffff76 || a == 0xffff77) return m->odr[a - 0xffff76];
@@ -274,7 +324,7 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
         m->syscr = v;
         m->cpu.intm2 = (v & 0x30) == 0x20;
         /* RAME: on-chip RAM can be switched off, exposing external space. */
-        m->cpu.fine_size = (v & 1) ? sizeof m->iram : 0;
+        m->cpu.fine_size = (v & 1) ? (m->classic ? CLASSIC_IRAM_SIZE : sizeof m->iram) : 0;
         m->cpu.irq_check = true;
         return;
     case 0xffff3a: m->sckcr = v; return;
@@ -282,13 +332,19 @@ static void io_write(cybiko_t *m, uint32_t a, uint8_t v)
     case 0xffff3c: m->mstpcr[0] = v; return;
     case 0xffff3d: m->mstpcr[1] = v; return;
     }
-    if (a >= 0xfffec4 && a <= 0xfffece) { m->ipr[a - 0xfffec4] = v; m->cpu.irq_check = true; return; }
+    if (m->classic) {
+        if (a >= 0xfffec0 && a <= 0xfffec2) { m->icr[a - 0xfffec0] = v; m->cpu.irq_check = true; return; }
+    } else if (a >= 0xfffec4 && a <= 0xfffece) {
+        m->ipr[a - 0xfffec4] = v;
+        m->cpu.irq_check = true;
+        return;
+    }
     if (a >= 0xfffeb0 && a <= 0xfffebf) { int p = (int)(a - 0xfffeb0); m->ddr[p] = v; port_output(m, p); return; }
     if (a >= 0xffff60 && a <= 0xffff6f) { int p = (int)(a - 0xffff60); m->dr[p] = v; port_output(m, p); return; }
     if (a >= 0xffff70 && a <= 0xffff74) { m->pcr[a - 0xffff70] = v; return; }
     if (a == 0xffff76 || a == 0xffff77) { m->odr[a - 0xffff76] = v; return; }
     m->misc[a - IO_BASE] = v;
-    if (a == 0xffff06 || a == 0xffff07) {
+    if ((a == 0xffff06 || a == 0xffff07) && !m->classic) {
         if (!m->dxc) cy_hle_probe(m, m->cpu.ppc);
         cy_dma_control(m);
         /* A stopped transfer can bring an SCI event closer (spi_bulk). */
@@ -312,6 +368,13 @@ static uint16_t keyboard_read(cybiko_t *m, uint32_t a)
 {
     uint32_t sel = (a - 0xe00000u) >> 1;
     uint16_t v = 0xffff;
+    if (m->classic) {
+        /* CyOS 1.2 reads the rows with the CPU (the H8S/2241 has no DMA
+         * controller), so a read sees the keys at once. */
+        for (int row = 0; row < 9; row++)
+            if (!(sel >> row & 1)) v &= (uint16_t)~m->keys[row];
+        return v;
+    }
     bool held = m->dxc && m->key_held == a;
     m->key_held = m->dxc ? a : 0;
     if (!held) return 0xffff;
@@ -320,9 +383,30 @@ static uint16_t keyboard_read(cybiko_t *m, uint32_t a)
     return v;
 }
 
+/* The Classic's external space: ROM, RAM and the I/O registers are reached
+ * through the page tables and these few. */
+static uint16_t classic_read16(cybiko_t *m, uint32_t a)
+{
+    if (a >= 0xfffe80u) return (uint16_t)(io_read(m, a) << 8 | io_read(m, a + 1));
+    if (a >= 0x600000u && a < 0x800000u) return (uint16_t)(cy_lcd_read(&m->lcd, 0) << 8 | cy_lcd_read(&m->lcd, 1));
+    if (a >= 0xe00000u && a < 0xf00000u) return keyboard_read(m, a);
+    if (a < 0x10000u) return (uint16_t)(m->rom[a & 0x7fff] << 8 | m->rom[(a & 0x7fff) + 1]);
+    m->unmapped_reads++;
+    return 0xffff;
+}
+
+static void classic_write8(cybiko_t *m, uint32_t a, uint8_t v)
+{
+    if (a >= 0xfffe80u) { io_write(m, a, v); return; }
+    if (a >= 0x600000u && a < 0x800000u) { cy_lcd_write(&m->lcd, (int)(a & 1), v); return; }
+    if (a < 0x10000u) return;                            /* ROM */
+    m->unmapped_writes++;
+}
+
 static uint16_t bus_read16(void *ctx, uint32_t a)
 {
     cybiko_t *m = ctx;
+    if (m->classic) return classic_read16(m, a);
     if (a >= 0xfffe80u) return (uint16_t)(io_read(m, a) << 8 | io_read(m, a + 1));
     if (a >= FLASH_BASE && a < 0x800000u) return cy_flash_read16(m, (a - FLASH_BASE) & (CY_FLASH_SIZE - 1));
     if (a >= 0xe00000u && a < 0xf00000u) return keyboard_read(m, a);
@@ -336,7 +420,11 @@ static uint8_t bus_read8(void *ctx, uint32_t a)
 {
     cybiko_t *m = ctx;
     if (a >= 0xfffe80u) return io_read(m, a);
-    if (a == 0x100000u || a == 0x100001u) return cy_lcd_read(&m->lcd, (int)(a & 1));
+    if (m->classic) {
+        if (a >= 0x600000u && a < 0x800000u) return cy_lcd_read(&m->lcd, (int)(a & 1));
+    } else if (a == 0x100000u || a == 0x100001u) {
+        return cy_lcd_read(&m->lcd, (int)(a & 1));
+    }
     uint16_t w = bus_read16(ctx, a & ~1u);
     return (uint8_t)(a & 1 ? w : w >> 8);
 }
@@ -350,6 +438,11 @@ static void bus_write16(void *ctx, uint32_t a, uint16_t v)
         if (cy_periph_write16(m, a, v)) return;
         io_write(m, a, (uint8_t)(v >> 8));
         io_write(m, a + 1, (uint8_t)v);
+        return;
+    }
+    if (m->classic) {
+        classic_write8(m, a, (uint8_t)(v >> 8));
+        classic_write8(m, a + 1, (uint8_t)v);
         return;
     }
     if (a >= FLASH_BASE && a < 0x800000u) { cy_flash_write16(m, (a - FLASH_BASE) & (CY_FLASH_SIZE - 1), v); return; }
@@ -371,6 +464,7 @@ static void bus_write16(void *ctx, uint32_t a, uint16_t v)
 static void bus_write8(void *ctx, uint32_t a, uint8_t v)
 {
     cybiko_t *m = ctx;
+    if (m->classic) { classic_write8(m, a, v); return; }
     if (a >= 0xfffe80u) { io_write(m, a, v); return; }
     if (a == 0x100000u || a == 0x100001u) { cy_lcd_write(&m->lcd, (int)(a & 1), v); return; }
     if (a >= FLASH_BASE && a < 0x800000u) {
@@ -389,7 +483,7 @@ static void bus_illegal(void *ctx, h8s_cpu_t *cpu, uint16_t op)
 {
     cybiko_t *m = ctx;
     (void)cpu;
-    if (op == CY_HLE_OP && cy_hle(m)) return;
+    if (op == CY_HLE_OP && !m->classic && cy_hle(m)) return;
     if (op == CY_APP_OP && m->host.app_call) {
         cpu->er[0] = m->host.app_call(m->host.user, cpu->er[0], cpu->er[1]);
         m->app_called = true;
@@ -430,6 +524,7 @@ void cybiko_reset(cybiko_t *m)
 {
     memset(m->pend, 0, sizeof m->pend);
     memset(m->ipr, 0x77, sizeof m->ipr);
+    memset(m->icr, 0, sizeof m->icr);
     m->ier = m->isr = 0;
     m->iscr = 0;
     m->syscr = 0x01;
@@ -456,12 +551,13 @@ void cybiko_reset(cybiko_t *m)
     cy_dma_reset(m);
     cy_lcd_reset(&m->lcd);
     cy_rtc_reset(m);
-    cy_flash_reset(m);
+    if (m->classic) cy_at45_reset(m);
+    else cy_flash_reset(m);
     cy_rf_reset(m);
     cy_cart_reset(m);
 
-    m->cpu.fine_base = IRAM_BASE;
-    m->cpu.fine_size = sizeof m->iram;
+    m->cpu.fine_base = m->classic ? CLASSIC_IRAM_BASE : IRAM_BASE;
+    m->cpu.fine_size = m->classic ? CLASSIC_IRAM_SIZE : sizeof m->iram;
     m->cpu.fine_mem = m->iram;
     m->cpu.intm2 = false;
     cy_bus_timing(m);
@@ -475,6 +571,8 @@ void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
 {
     memset(m, 0, sizeof *m);
     if (host) m->host = *host;
+    m->clock_hz = CY_CLOCK_HZ;
+    m->ram_size = CY_RAM_SIZE;
     m->rom = rom;
     m->ram = ram;
     m->flash.mem = flash;
@@ -493,6 +591,34 @@ void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
     h8s_map(&m->cpu, 0x000000, 0x40000, rom, CY_ROM_BUF, false);
     h8s_map(&m->cpu, RAM_BASE, CY_RAM_SIZE, ram, CY_RAM_SIZE, true);
     h8s_map(&m->cpu, FLASH_BASE, 0x200000, flash, CY_FLASH_SIZE, false);
+    cybiko_reset(m);
+}
+
+void cybiko_init_classic(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
+                         uint8_t *flash, uint8_t *ram)
+{
+    memset(m, 0, sizeof *m);
+    if (host) m->host = *host;
+    m->classic = true;
+    m->clock_hz = CY_CLASSIC_CLOCK_HZ;
+    m->ram_size = CY_CLASSIC_RAM_SIZE;
+    m->rom = rom;
+    m->ram = ram;
+    m->at45.mem = flash;
+    memcpy(rom + CY_ROM_SIZE, rom, CY_ROM_SIZE);
+    memset(m->hle_pc, 0xff, sizeof m->hle_pc);  /* no native routines (yet) */
+
+    h8s_init(&m->cpu);
+    m->cpu.ctx = m;
+    m->cpu.bus.read8 = bus_read8;
+    m->cpu.bus.read16 = bus_read16;
+    m->cpu.bus.write8 = bus_write8;
+    m->cpu.bus.write16 = bus_write16;
+    m->cpu.bus.irq_ack = irq_ack;
+    m->cpu.bus.illegal = bus_illegal;
+
+    h8s_map(&m->cpu, 0x000000, 0x10000, rom, CY_ROM_BUF, false);
+    h8s_map(&m->cpu, CLASSIC_RAM_BASE, 0x200000, ram, CY_CLASSIC_RAM_SIZE, true);
     cybiko_reset(m);
 }
 
@@ -519,7 +645,7 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
             break;
         }
         /* Hot code in CyOS modules is found where the CPU is found. */
-        if (m->cpu.cycles >= m->hle_sample_at) {
+        if (m->cpu.cycles >= m->hle_sample_at && !m->classic) {
             m->hle_sample_at = m->cpu.cycles + CY_CLOCK_HZ / 20;
             cy_hle_probe(m, m->cpu.pc);
         }
@@ -530,6 +656,7 @@ int32_t cybiko_run(cybiko_t *m, int32_t states)
             m->wdt_rst = rst;      /* WOVF survives the reset it caused */
         }
     }
+    if (m->classic) cy_classic_poll(m);
     speaker_update(m);
     return done;
 }
@@ -543,8 +670,8 @@ static void speaker_update(cybiko_t *m)
     float duty = 0.5f, f = m->standby ? 0 : cy_tpu_speaker_tone(m, &duty);
     if (f == 0) {
         uint64_t span = now - m->spk_since;
-        if (span < CY_CLOCK_HZ / 50) return;          /* measure over 20 ms */
-        f = m->spk_edges >= 4 ? (float)m->spk_edges * CY_CLOCK_HZ / 2.0f / (float)span : 0;
+        if (span < m->clock_hz / 50) return;          /* measure over 20 ms */
+        f = m->spk_edges >= 4 ? (float)m->spk_edges * (float)m->clock_hz / 2.0f / (float)span : 0;
         if (f < 20 || f > 20000) f = 0;
         m->spk_edges = 0;
         m->spk_since = now;

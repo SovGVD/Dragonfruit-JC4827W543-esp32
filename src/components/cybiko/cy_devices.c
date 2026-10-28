@@ -84,7 +84,7 @@ static void civil_from_days(int64_t z, int *y, int *mon, int *d)
 static int64_t host_seconds(const cybiko_t *m)
 {
     if (m->host.wall_time) return m->host.wall_time(m->host.user);
-    return (int64_t)(h8s_time(&m->cpu) / CY_CLOCK_HZ);
+    return (int64_t)(h8s_time(&m->cpu) / m->clock_hz);
 }
 
 static int64_t rtc_seconds(const cybiko_t *m)
@@ -104,7 +104,7 @@ static void rtc_latch(cybiko_t *m)
     int wday = (int)((days % 7 + 11) % 7);   /* 1970-01-01 was a Thursday (4) */
     int hour = sod / 3600;
 
-    r->data[1] = to_bcd((int)((h8s_time(&m->cpu) % CY_CLOCK_HZ) * 100 / CY_CLOCK_HZ));
+    r->data[1] = to_bcd((int)((h8s_time(&m->cpu) % m->clock_hz) * 100 / m->clock_hz));
     r->data[2] = to_bcd(sod % 60);
     r->data[3] = to_bcd(sod / 60 % 60);
     if (r->data[4] & 0x80) {                 /* 12-hour format */

@@ -26,7 +26,7 @@
 #include <stddef.h>
 #include "h8s.h"
 
-#define CY_CLOCK_HZ    18432000u
+#define CY_CLOCK_HZ    18432000u     /* the Xtreme; see cybiko_clock_hz() */
 #define CY_LCD_W       160
 #define CY_LCD_H       100
 #define CY_ROM_SIZE    0x8000u
@@ -38,6 +38,29 @@
 #define CY_DISK_BASE   0x800000u     /* where cybiko_set_disk puts the RAM disk */
 #define CY_DISK_MAX    0x600000u     /* 6 MB: up to the keyboard at e00000 */
 #define CY_DISK_CHUNK  4096u         /* dirty-tracking granularity */
+
+/* The Cybiko Classic (cybiko_init_classic) is an older, smaller machine:
+ *
+ *   000000-007fff  32 KB mask ROM of the H8S/2241 (cyrom112.bin)
+ *   200000-27ffff  512 KB RAM (mirrored up to 3fffff)
+ *   600000-600001  HD66421 LCD controller (mirrored up to 7fffff)
+ *   e00000-efffff  keyboard matrix
+ *   ffec00-fffbff  4 KB on-chip RAM
+ *   fffe80-ffffff  on-chip I/O registers
+ *
+ * at 11.0592 MHz. CyOS (1.2.x) and every file live in an AT45DB041 serial
+ * DataFlash on SCI1 (clocked sync, chip select on P34), read by the DTC;
+ * nothing of it is in the address map. The radio co-processor is on SCI0,
+ * the serial port on SCI2. Here the flash is the 1 MB AT45DB081, the same
+ * chip with twice the pages, which CyOS 1.2 recognises and uses (an idea of
+ * ReBiko's, see docs/third-party-notices.md): a 512 KB dump fills the first
+ * half and cybiko_at45_format_free() makes the rest empty blocks. */
+#define CY_CLASSIC_CLOCK_HZ 11059200u
+#define CY_CLASSIC_RAM_SIZE 0x80000u
+#define CY_AT45_PAGE        264u
+#define CY_AT45_PAGES       4096u
+#define CY_AT45_SIZE        (CY_AT45_PAGE * CY_AT45_PAGES)   /* 1081344 */
+#define CY_AT45_DB041_SIZE  (CY_AT45_PAGE * 2048u)           /* the real chip, 540672 */
 
 /* Keys are (row << 4) | bit in the keyboard matrix, as MAME's A.0-A.8. CyOS
  * scans rows 0-9 only, with every higher address bit low, so Help, "." and P
@@ -70,6 +93,31 @@ enum {
     CYK_HELP = CY_KEY(9, 0), CYK_DOT = CY_KEY(9, 1), CYK_P = CY_KEY(9, 4),
     CYK_EXCL = CY_KEY(9, 2), CYK_SEMI = CY_KEY(9, 3),
     CYK_ONOFF = CY_KEY(15, 15),
+};
+
+/* The Classic's keyboard: MAME's A.0-A.8, nine rows of eight keys, the
+ * same numbering (CY_KEY(row, bit)). A key down also raises IRQ2, which is
+ * how CyOS 1.2.46 knows to scan. */
+enum {
+    CYC_F7 = CY_KEY(0, 0), CYC_ESC = CY_KEY(0, 1), CYC_DEL = CY_KEY(0, 2), CYC_LEFT = CY_KEY(0, 3),
+    CYC_Q = CY_KEY(0, 4), CYC_A = CY_KEY(0, 5), CYC_GRAVE = CY_KEY(0, 6), CYC_SHIFT = CY_KEY(0, 7),
+    CYC_F6 = CY_KEY(1, 0), CYC_UP = CY_KEY(1, 1), CYC_INS = CY_KEY(1, 2), CYC_2 = CY_KEY(1, 3),
+    CYC_W = CY_KEY(1, 4), CYC_S = CY_KEY(1, 5), CYC_Z = CY_KEY(1, 6), CYC_FN = CY_KEY(1, 7),
+    CYC_F5 = CY_KEY(2, 0), CYC_F3 = CY_KEY(2, 1), CYC_SPACE = CY_KEY(2, 2), CYC_3 = CY_KEY(2, 3),
+    CYC_E = CY_KEY(2, 4), CYC_D = CY_KEY(2, 5), CYC_X = CY_KEY(2, 6), CYC_HELP = CY_KEY(2, 7),
+    CYC_F4 = CY_KEY(3, 0), CYC_1 = CY_KEY(3, 1), CYC_TAB = CY_KEY(3, 2), CYC_4 = CY_KEY(3, 3),
+    CYC_R = CY_KEY(3, 4), CYC_F = CY_KEY(3, 5), CYC_C = CY_KEY(3, 6), CYC_LBRACKET = CY_KEY(3, 7),
+    CYC_RIGHT = CY_KEY(4, 0), CYC_DOWN = CY_KEY(4, 1), CYC_SELECT = CY_KEY(4, 2), CYC_5 = CY_KEY(4, 3),
+    CYC_T = CY_KEY(4, 4), CYC_G = CY_KEY(4, 5), CYC_V = CY_KEY(4, 6), CYC_RBRACKET = CY_KEY(4, 7),
+    CYC_F2 = CY_KEY(5, 0), CYC_SEMI = CY_KEY(5, 1), CYC_ENTER = CY_KEY(5, 2), CYC_6 = CY_KEY(5, 3),
+    CYC_Y = CY_KEY(5, 4), CYC_H = CY_KEY(5, 5), CYC_B = CY_KEY(5, 6), CYC_BACKSLASH = CY_KEY(5, 7),
+    CYC_F1 = CY_KEY(6, 0), CYC_SLASH = CY_KEY(6, 1), CYC_BKSP = CY_KEY(6, 2), CYC_7 = CY_KEY(6, 3),
+    CYC_U = CY_KEY(6, 4), CYC_J = CY_KEY(6, 5), CYC_N = CY_KEY(6, 6),
+    CYC_MINUS = CY_KEY(7, 0), CYC_DOT = CY_KEY(7, 1), CYC_0 = CY_KEY(7, 2), CYC_8 = CY_KEY(7, 3),
+    CYC_I = CY_KEY(7, 4), CYC_K = CY_KEY(7, 5), CYC_M = CY_KEY(7, 6),
+    CYC_QUOTE = CY_KEY(8, 0), CYC_EQUALS = CY_KEY(8, 1), CYC_9 = CY_KEY(8, 2), CYC_P = CY_KEY(8, 3),
+    CYC_O = CY_KEY(8, 4), CYC_L = CY_KEY(8, 5), CYC_COMMA = CY_KEY(8, 6),
+    CYC_ONOFF = CY_KEY(15, 15),    /* not in the matrix: P13 */
 };
 
 /* Host hooks. Any of them may be NULL. */
@@ -182,6 +230,7 @@ typedef struct {
     uint32_t inject_at;                        /* when its next byte arrives */
     uint8_t id_orig[4], crc_orig[4];           /* flash bytes before cybiko_set_unit_id */
     bool id_applied;
+    uint32_t classic_id;                       /* Classic: the ID kept in CyOS's RAM, 0 none */
     uint32_t sent, heard;                      /* packets, for diagnostics */
     uint64_t led_red, led_green;               /* when the LED last blinked (states) */
 } cy_rf_t;
@@ -214,9 +263,29 @@ typedef struct {
     uint16_t mp3_head, mp3_count;
 } cy_cart_t;
 
+/* The Classic's AT45DB081 DataFlash (cy_classic.c). */
+typedef struct {
+    uint8_t *mem;              /* CY_AT45_SIZE bytes */
+    bool selected, output;
+    uint8_t cmd[8], cmd_len, status;
+    const uint8_t *out;        /* page being read out, or NULL for the status */
+    uint16_t out_pos, prog_pos;
+    bool programming;
+    uint8_t buffer[2][CY_AT45_PAGE];
+    uint32_t writes;           /* pages programmed since power-on */
+    uint32_t dirty[CY_AT45_PAGES / 32];  /* pages programmed since cybiko_at45_take_dirty */
+    uint32_t unknown;          /* commands the model does not have */
+    uint8_t last_unknown;
+} cy_at45_t;
+
 typedef struct cybiko {
     h8s_cpu_t cpu;
     cy_host_t host;
+    bool classic;              /* a Cybiko Classic, not an Xtreme */
+    uint32_t clock_hz;
+    uint32_t ram_size;
+    cy_at45_t at45;            /* Classic only */
+    uint8_t icr[3];            /* Classic: interrupt control registers A-C */
 
     uint8_t *rom, *ram;
     uint8_t iram[0x2000];
@@ -298,9 +367,21 @@ typedef struct cybiko {
  * boot, or with a saved RAM disk). Ends with a reset. */
 void cybiko_init(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
                  uint8_t *flash, uint8_t *ram);
+/* The same for a Cybiko Classic: rom as above, flash is CY_AT45_SIZE bytes
+ * (the DataFlash), ram CY_CLASSIC_RAM_SIZE bytes. */
+void cybiko_init_classic(cybiko_t *m, const cy_host_t *host, uint8_t *rom,
+                         uint8_t *flash, uint8_t *ram);
+static inline uint32_t cybiko_clock_hz(const cybiko_t *m) { return m->clock_hz; }
+/* Make pages first..CY_AT45_PAGES-1 of a DataFlash image empty CyOS blocks,
+ * for a 512 KB AT45DB041 dump loaded into the bigger chip. */
+void cybiko_at45_format_free(uint8_t *flash, uint32_t first);
+/* Copy the bitmap of DataFlash pages programmed since the last call
+ * (CY_AT45_PAGES bits) and clear it; returns how many were. */
+int cybiko_at45_take_dirty(cybiko_t *m, uint32_t *bits);
+
 /* Power-on reset of the CPU and peripherals; memory is kept. */
 void cybiko_reset(cybiko_t *m);
-/* Run for about `states` CPU states (18.432 MHz). Returns states done. */
+/* Run for about `states` CPU states (cybiko_clock_hz). Returns states done. */
 int32_t cybiko_run(cybiko_t *m, int32_t states);
 
 void cybiko_key(cybiko_t *m, int key, bool down);
@@ -325,9 +406,11 @@ size_t cybiko_mp3_take(cybiko_t *m, uint8_t *buf, size_t max);
 uint8_t cybiko_mp3_volume(const cybiko_t *m);
 /* Give this machine its own Cybiko ID (all copies of a flash dump share
  * one, and CyOS ignores packets from its own ID) by rewriting the ID record
- * in the flash image. Call before the machine boots; 0 keeps the dump's. */
+ * in the flash image. Call before the machine boots; 0 keeps the dump's.
+ * On the Classic, whose flash record is not known, the ID is put into
+ * CyOS 1.2.46's copy of it in RAM once CyOS runs (as ReBiko does). */
 void cybiko_set_unit_id(cybiko_t *m, uint32_t id);
-/* The ID in the flash image. */
+/* The ID in the flash image (the Classic: the one given, else CyOS's). */
 uint32_t cybiko_unit_id(const cybiko_t *m);
 /* Undo the ID change in a copy of the flash about to be saved. */
 void cybiko_flash_original(const cybiko_t *m, uint8_t *copy);

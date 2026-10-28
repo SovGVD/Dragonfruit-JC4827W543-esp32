@@ -1,4 +1,4 @@
-# How the emulator models the Cybiko Xtreme
+# How the emulator models the Cybiko Xtreme (and the Classic)
 
 How this project's Cybiko Xtreme emulator is built: which file models which
 part of the machine, the choices it makes where the hardware is not known,
@@ -85,6 +85,39 @@ Where the hardware is not known, or a host stands in for it:
 - **RAM disk on the SD card**: files in `/Cybiko/apps/` are written into the
   RAM disk image while the machine is off; CyOS finds them on its start-up
   scan.
+
+## The Classic
+
+The Classic (`cybiko_init_classic`) is the same machine code with
+`m->classic` set where the two differ, following ReBiko and MAME's
+`cybikov1` / `h8s2245`:
+
+- **Memory map.** ROM at 0 (32 KB, mirrored to 64 KB), 512 KB RAM at 200000
+  (mirrored through 3fffff), the HD66421 LCD at 600000, the keyboard at
+  e00000 (rows on address lines, keys in the low byte, read by the CPU with
+  no settling delay), on-chip RAM ffec00-fffbff. Anything else is counted as
+  unmapped.
+- **Interrupts.** The H8S/2241 has ICR A-C (fec0-fec2) instead of IPR: one
+  priority bit per source, with interrupt control mode 0 or 1. CyOS 1.2 uses
+  mode 0 with every priority 0.
+- **DataFlash** (`cy_classic.c`). An AT45DB081 (1 MB, 4096 pages of 264
+  bytes) on SCI1 in clocked sync mode, chip select on P3.4. CyOS reads it
+  with the receiver on and the transmitter off, so SCI1 then clocks bytes in
+  by itself, one frame after another, into the DTC. Writes go through the
+  buffer commands and land in the page when chip select goes high; changed
+  pages are marked for saving. Unknown commands are counted.
+- **Radio** on SCI0, the same AVR as the Xtreme's, but 01 commands carry one
+  argument and packets have no spare byte.
+- **Others.** 3 TPU channels, battery readings CyOS 1.2.46 accepts (A/D
+  channel 1 0x300, channel 2 0x100), the RTC on port F (SDA pulled low
+  through the DDR), On/Off on P1.3, no DMA controller, USB or cartridge.
+- **The interrupt hold after ANDC/LDC/ORC/XORC** (in the H8S core, for both
+  models). The chip takes no interrupt between one of these and the next
+  instruction. CyOS 1.2's scheduler enables interrupts with ANDC one
+  instruction before it loads the next thread's stack pointer; without the
+  hold, a timer tick in between found the stack pointer outside the current
+  thread's stack, killed the thread, and left the tick's busy flag set, so
+  the keyboard scan stopped.
 
 ## What the emulator adds
 

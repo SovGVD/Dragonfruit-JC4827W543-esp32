@@ -14,7 +14,10 @@
  * out or puts it back (some games will not start with it in), one turns
  * whole frames ("vsync": the screen is shown only once CyOS has finished
  * drawing it) on or off, and one picks the screen's colours: the green
- * tint of the real LCD or plain greys.
+ * tint of the real LCD or plain greys. A fourth, in place of the folder
+ * name, picks the model: the Xtreme (files in /Cybiko) or the Classic
+ * (files in /Cybiko/Classic); the card shows whether that model's files are
+ * there. The Classic has no MP3 cartridge, so its MP3 button is dimmed.
  *
  * The CALIBRATE button opens the touch calibration. It also opens by itself
  * when no calibration has been made yet (none saved, none in palm.cfg), and
@@ -85,6 +88,12 @@ enum { CY_BTN_CART, CY_BTN_VSYNC, CY_BTN_PALETTE, CY_BTN_COUNT };
 #define CY_BTN_H 24
 #define CY_BTN_DY 120
 #define CY_BTN_GAP 3
+/* The model button, where the other card shows its folder. */
+#define CY_MODEL_W 150
+#define CY_MODEL_H 24
+#define CY_MODEL_DY 60
+
+static bool cy_ready_xtreme, cy_ready_classic;
 
 static void text_centered(int cx, int y, const char *s, int scale, uint16_t fg, uint16_t bg)
 {
@@ -110,12 +119,18 @@ static void draw_card(int i, bool selected)
     display_ui_fill(c->x + c->w - b, c->y, b, c->h, edge);
     display_ui_fill(c->x + b, c->y + b, c->w - 2 * b, c->h - 2 * b, c->color);
     text_centered(cx, c->y + 24, c->name, 4, COLOR_TITLE, c->color);
-    text_centered(cx, c->y + 66, c->folder, 2, COLOR_DIM, c->color);
+    if (i == BOOT_SYSTEM_CYBIKO) {
+        display_ui_fill(cx - CY_MODEL_W / 2, c->y + CY_MODEL_DY, CY_MODEL_W, CY_MODEL_H, COLOR_BUTTON);
+        text_centered(cx, c->y + CY_MODEL_DY + 5, cybiko_app_classic() ? "CLASSIC" : "XTREME", 2,
+                      COLOR_TITLE, COLOR_BUTTON);
+    } else {
+        text_centered(cx, c->y + 66, c->folder, 2, COLOR_DIM, c->color);
+    }
     text_centered(cx, c->y + 98, c->ready ? "READY" : c->missing, 2,
                   c->ready ? COLOR_OK : COLOR_BAD, c->color);
     if (i == BOOT_SYSTEM_CYBIKO) {
         const char *label[CY_BTN_COUNT] = {
-            [CY_BTN_CART] = cybiko_app_cart_in() ? "MP3: IN" : "MP3: OUT",
+            [CY_BTN_CART] = cybiko_app_classic() ? "MP3: --" : cybiko_app_cart_in() ? "MP3: IN" : "MP3: OUT",
             [CY_BTN_VSYNC] = cybiko_app_vsync() ? "VSYNC: ON" : "VSYNC: OFF",
             [CY_BTN_PALETTE] = cybiko_app_gray() ? "LCD: GRAY" : "LCD: GREEN",
         };
@@ -231,6 +246,20 @@ static bool orientation_at(int x, int y)
     return x >= ORI_X && x < ORI_X + ORI_W && y >= ORI_Y && y < ORI_Y + ORI_H;
 }
 
+static bool cy_model_at(int x, int y)
+{
+    const card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
+    int x0 = c->x + c->w / 2 - CY_MODEL_W / 2, y0 = c->y + CY_MODEL_DY;
+    return x >= x0 && x < x0 + CY_MODEL_W && y >= y0 && y < y0 + CY_MODEL_H;
+}
+
+static void cy_update_ready(void)
+{
+    card_t *c = &cards[BOOT_SYSTEM_CYBIKO];
+    c->ready = cybiko_app_classic() ? cy_ready_classic : cy_ready_xtreme;
+    c->missing = cybiko_app_classic() ? "NO CLASSIC FILES" : "NO ROM/FLASH";
+}
+
 /* The Cybiko card's button under (x, y), or -1. */
 static int cy_button_at(int x, int y)
 {
@@ -256,7 +285,9 @@ static bool scan_card(void)
     if (m5_sd_mount(&card) != ESP_OK) return false;
     struct stat st;
     cards[BOOT_SYSTEM_PALM].ready = stat(PALM_SD_DIR "/palm.rom", &st) == 0;
-    cards[BOOT_SYSTEM_CYBIKO].ready = cybiko_app_find_files(NULL, NULL, 0);
+    cy_ready_xtreme = cybiko_app_find_files(NULL, NULL, 0);
+    cy_ready_classic = cybiko_app_find_classic(NULL, NULL, 0);
+    cy_update_ready();
     m5_sd_unmount(card);
     return true;
 }
@@ -306,6 +337,7 @@ boot_system_t boot_menu_run(void)
     int touched = -1;
     bool cal_touched = false, ori_touched = false;
     int vol_touched = 0, cy_touched = -1;
+    bool model_touched = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         TickType_t now = xTaskGetTickCount();
@@ -321,6 +353,7 @@ boot_system_t boot_menu_run(void)
                 ori_touched = orientation_at(x, y);
                 vol_touched = volume_button_at(x, y);
                 cy_touched = cy_button_at(x, y);
+                model_touched = cy_model_at(x, y);
             }
             if (hit >= 0 && hit != selected) {
                 draw_card(selected, false);
@@ -330,9 +363,15 @@ boot_system_t boot_menu_run(void)
         } else if (touching && vol_touched) {
             change_volume(vol_touched);
             draw_footer(0);
+        } else if (touching && model_touched) {
+            cybiko_app_set_classic(!cybiko_app_classic());
+            cy_update_ready();
+            draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
+            draw_footer(0);
         } else if (touching && cy_touched >= 0) {
-            if (cy_touched == CY_BTN_CART) cybiko_app_set_cart_in(!cybiko_app_cart_in());
-            else if (cy_touched == CY_BTN_VSYNC) cybiko_app_set_vsync(!cybiko_app_vsync());
+            if (cy_touched == CY_BTN_CART) {
+                if (!cybiko_app_classic()) cybiko_app_set_cart_in(!cybiko_app_cart_in());
+            } else if (cy_touched == CY_BTN_VSYNC) cybiko_app_set_vsync(!cybiko_app_vsync());
             else cybiko_app_set_gray(!cybiko_app_gray());
             draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
             draw_footer(0);

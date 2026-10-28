@@ -96,8 +96,8 @@ enum {
 };
 
 /* The Classic's keyboard: MAME's A.0-A.8, nine rows of eight keys, the
- * same numbering (CY_KEY(row, bit)). A key down also raises IRQ2, which is
- * how CyOS 1.2.46 knows to scan. */
+ * same numbering (CY_KEY(row, bit)). CyOS 1.2.46 scans it from its timer
+ * tick. */
 enum {
     CYC_F7 = CY_KEY(0, 0), CYC_ESC = CY_KEY(0, 1), CYC_DEL = CY_KEY(0, 2), CYC_LEFT = CY_KEY(0, 3),
     CYC_Q = CY_KEY(0, 4), CYC_A = CY_KEY(0, 5), CYC_GRAVE = CY_KEY(0, 6), CYC_SHIFT = CY_KEY(0, 7),
@@ -377,6 +377,9 @@ static inline uint32_t cybiko_clock_hz(const cybiko_t *m) { return m->clock_hz; 
 void cybiko_at45_format_free(uint8_t *flash, uint32_t first);
 /* Copy the bitmap of DataFlash pages programmed since the last call
  * (CY_AT45_PAGES bits) and clear it; returns how many were. */
+/* The Classic key for an Xtreme one (CYK_*), or -1 when the Classic has no
+ * such key (Menu, the brackets, "!"). */
+int cybiko_classic_key(int xtreme_key);
 int cybiko_at45_take_dirty(cybiko_t *m, uint32_t *bits);
 
 /* Power-on reset of the CPU and peripherals; memory is kept. */

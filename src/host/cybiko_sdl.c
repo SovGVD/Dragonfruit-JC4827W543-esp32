@@ -462,7 +462,8 @@ static void save_flash(uint8_t *flash)
     free(copy);
 }
 
-static bool gray;    /* --gray: plain greys instead of the LCD tint */
+static bool gray;      /* --gray: plain greys instead of the LCD tint */
+static bool halloween; /* --halloween: black, purple and orange, as on the board */
 
 static void show_lcd(SDL_Texture *tex, const uint8_t *lum)
 {
@@ -475,6 +476,14 @@ static void show_lcd(SDL_Texture *tex, const uint8_t *lum)
             /* a grey-green LCD: lum 0 black, 255 the panel colour */
             uint32_t l = lum[y * CY_LCD_W + x];
             if (gray) { row[x] = l << 16 | l << 8 | l; continue; }
+            if (halloween) {
+                static const uint32_t s[4][4] = { { 0, 0x12, 0x08, 0x16 }, { 85, 0x4e, 0x22, 0x6e },
+                                                  { 170, 0xc4, 0x52, 0x14 }, { 255, 0xff, 0xa0, 0x30 } };
+                const uint32_t *a = s[l > 170 ? 2 : l > 85 ? 1 : 0], *z = a + 4, t = l - a[0];
+                row[x] = (a[1] + (int)(z[1] - a[1]) * (int)t / 85) << 16 |
+                         (a[2] + (int)(z[2] - a[2]) * (int)t / 85) << 8 | (a[3] + (int)(z[3] - a[3]) * (int)t / 85);
+                continue;
+            }
             uint32_t r = 0x18 + l * (0xc6 - 0x18) / 255, g = 0x1c + l * (0xd0 - 0x1c) / 255,
                      b = 0x18 + l * (0xbc - 0x18) / 255;
             row[x] = r << 16 | g << 8 | b;
@@ -490,8 +499,9 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--zoom") && i + 1 < argc) zoom = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--gray")) gray = true;
+        else if (!strcmp(argv[i], "--halloween")) halloween = true;
         else if (argv[i][0] == '-') {
-            fprintf(stderr, "usage: %s [DIR] [--zoom N] [--gray]\n"
+            fprintf(stderr, "usage: %s [DIR] [--zoom N] [--gray | --halloween]\n"
                             "DIR holds the ROM and flash dumps; see docs/cybiko.md\n", argv[0]);
             return 2;
         } else snprintf(dir, sizeof dir, "%s", argv[i]);

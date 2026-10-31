@@ -62,8 +62,10 @@ void cybiko_app_set_cart_in(bool in);
 bool cybiko_app_vsync(void);
 void cybiko_app_set_vsync(bool on);
 
-/* The screen's colours, kept in NVS and switched in the boot menu: false
- * (the default) is the grey-green tint of the real LCD, true plain greys
- * from black to white. */
-bool cybiko_app_gray(void);
-void cybiko_app_set_gray(bool gray);
+/* The screen's colours, kept in NVS and switched in the boot menu: the
+ * grey-green tint of the real LCD (the default), plain greys from black to
+ * white, or Halloween (black ink, purple and orange on a pumpkin-orange
+ * panel). */
+typedef enum { CY_PALETTE_LCD, CY_PALETTE_GRAY, CY_PALETTE_HALLOWEEN, CY_PALETTE_COUNT } cy_palette_t;
+cy_palette_t cybiko_app_palette(void);
+void cybiko_app_set_palette(cy_palette_t p);

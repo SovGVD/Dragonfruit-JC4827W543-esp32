@@ -628,7 +628,9 @@ void cybiko_app_set_classic(bool classic)
     nvs_close(h);
 }
 
-bool cybiko_app_gray(void)
+/* NVS key "gray" from when there were two palettes: 0 green, 1 gray, and
+ * now 2 Halloween. */
+cy_palette_t cybiko_app_palette(void)
 {
     nvs_handle_t h;
     uint8_t v = 0;
@@ -636,14 +638,18 @@ bool cybiko_app_gray(void)
         nvs_get_u8(h, "gray", &v);
         nvs_close(h);
     }
-    return v != 0;
+    if (v >= CY_PALETTE_COUNT) {
+        ESP_LOGW(TAG, "screen palette %u in NVS unknown, using LCD", v);
+        v = CY_PALETTE_LCD;
+    }
+    return (cy_palette_t)v;
 }
 
-void cybiko_app_set_gray(bool gray)
+void cybiko_app_set_palette(cy_palette_t p)
 {
     nvs_handle_t h;
     if (nvs_open("cybiko", NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, "gray", gray);
+    nvs_set_u8(h, "gray", (uint8_t)p);
     nvs_commit(h);
     nvs_close(h);
 }

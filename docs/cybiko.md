@@ -222,15 +222,20 @@ the screen every 40 ms as it is, mid-drawing too. The serial log says which
 at start ("screen: whole frames (vsync)" or "as drawn"). The web emulator
 does the same.
 
-## Screen colours (LCD: GREEN / LCD: GRAY)
+## Screen colours (LCD: GREEN / LCD: GRAY / HALLOWEEN)
 
 The third button on the Cybiko card of the boot menu picks the screen's
 colours, kept in NVS. **LCD: GREEN** (the default) tints the four shades like
 the real grey-green STN screen, black ink on a pale green. **LCD: GRAY**
 shows them as plain greys from black to white, the way PC screenshots of
-Cybiko games usually look. The serial log says which at start
-("screen palette: LCD" or "gray"). The desktop app takes `--gray` for the
-same, and the web emulator has it in its settings.
+Cybiko games usually look. **HALLOWEEN** shows black ink with purple and
+orange greys on a pumpkin-orange panel. Each tap moves to the next one. The
+serial log says which at start ("screen palette: LCD", "gray" or
+"Halloween"). The desktop app takes `--gray` or `--halloween` for the same,
+and the web emulator has them in its settings, where Halloween is also the
+default from 24 October to 1 November. The board keeps LCD: GREEN as its
+default all year, because it has no real date to go by (no RTC or network
+time), so Halloween there is a tap away.
 
 ## Sound
 
@@ -350,7 +355,7 @@ On Ubuntu (26.04 has SDL3 packaged):
 sudo apt install build-essential cmake libsdl3-dev
 cmake -S src/host -B build-host -DHOST_UI=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-host --target cybiko -j
-build-host/cybiko ~/Cybiko            # the folder with the dumps; --zoom N for the window size, --gray for plain greys
+build-host/cybiko ~/Cybiko            # the folder with the dumps; --zoom N for the window size, --gray for plain greys, --halloween for orange and purple
 ```
 
 Without `libsdl3-dev` CMake downloads SDL3 and builds it, which needs the

@@ -385,19 +385,28 @@ static void draw_all(void)
 }
 
 /* LCD luminance to big-endian RGB565: the greenish STN tint of the real
- * screen, or plain greys from black to white (cybiko_app_gray()). */
+ * screen, plain greys from black to white, or Halloween (cybiko_app_palette()).
+ * Each palette is a list of { lum, r, g, b } stops, lum in between
+ * interpolated; Halloween matches the web emulator's. */
 static uint8_t lut[256][2];
 
-static void build_lut(bool gray)
+static void build_lut(cy_palette_t p)
 {
-    static const int lcd_ink[3] = { 0x18, 0x20, 0x28 }, lcd_paper[3] = { 0xb4, 0xc4, 0xa4 };
-    static const int gray_ink[3] = { 0x00, 0x00, 0x00 }, gray_paper[3] = { 0xff, 0xff, 0xff };
-    const int *ink = gray ? gray_ink : lcd_ink, *paper = gray ? gray_paper : lcd_paper;
-    ESP_LOGI(TAG, "screen palette: %s", gray ? "gray" : "LCD");
-    for (int v = 0; v < 256; v++) {
-        int r = ink[0] + (paper[0] - ink[0]) * v / 255;
-        int g = ink[1] + (paper[1] - ink[1]) * v / 255;
-        int b = ink[2] + (paper[2] - ink[2]) * v / 255;
+    static const int stops[CY_PALETTE_COUNT][4][4] = {
+        [CY_PALETTE_LCD] = { { 0, 0x18, 0x20, 0x28 }, { 255, 0xb4, 0xc4, 0xa4 } },
+        [CY_PALETTE_GRAY] = { { 0, 0x00, 0x00, 0x00 }, { 255, 0xff, 0xff, 0xff } },
+        [CY_PALETTE_HALLOWEEN] = { { 0, 0x12, 0x08, 0x16 }, { 85, 0x4e, 0x22, 0x6e },
+                                   { 170, 0xc4, 0x52, 0x14 }, { 255, 0xff, 0xa0, 0x30 } },
+    };
+    static const char *const name[CY_PALETTE_COUNT] = { "LCD", "gray", "Halloween" };
+    const int (*s)[4] = stops[p];
+    ESP_LOGI(TAG, "screen palette: %s", name[p]);
+    for (int v = 0, k = 0; v < 256; v++) {
+        while (s[k + 1][0] < 255 && v > s[k + 1][0]) k++;
+        const int *a = s[k], *z = s[k + 1], d = z[0] - a[0], t = v - a[0];
+        int r = a[1] + (z[1] - a[1]) * t / d;
+        int g = a[2] + (z[2] - a[2]) * t / d;
+        int b = a[3] + (z[3] - a[3]) * t / d;
         uint16_t c = UI_RGB(r, g, b);
         lut[v][0] = (uint8_t)(c >> 8);
         lut[v][1] = (uint8_t)c;
@@ -504,7 +513,7 @@ static void ui_task(void *arg)
     bool was_down = false, boot_was = false, onoff_held = false;
     int64_t boot_since = 0, last_frame = 0, last_save = esp_timer_get_time(), last_touch = 0, last_load = 0;
 
-    build_lut(cybiko_app_gray());
+    build_lut(cybiko_app_palette());
     portrait = cybiko_app_portrait();
     if (portrait) build_portrait();
     L = portrait ? &layout_portrait : &layout_landscape;

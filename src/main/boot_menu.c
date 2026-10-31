@@ -129,10 +129,11 @@ static void draw_card(int i, bool selected)
     text_centered(cx, c->y + 98, c->ready ? "READY" : c->missing, 2,
                   c->ready ? COLOR_OK : COLOR_BAD, c->color);
     if (i == BOOT_SYSTEM_CYBIKO) {
+        static const char *const palette_label[CY_PALETTE_COUNT] = { "LCD: GREEN", "LCD: GRAY", "HALLOWEEN" };
         const char *label[CY_BTN_COUNT] = {
             [CY_BTN_CART] = cybiko_app_classic() ? "MP3: --" : cybiko_app_cart_in() ? "MP3: IN" : "MP3: OUT",
             [CY_BTN_VSYNC] = cybiko_app_vsync() ? "VSYNC: ON" : "VSYNC: OFF",
-            [CY_BTN_PALETTE] = cybiko_app_gray() ? "LCD: GRAY" : "LCD: GREEN",
+            [CY_BTN_PALETTE] = palette_label[cybiko_app_palette()],
         };
         for (int b = 0; b < CY_BTN_COUNT; b++) {
             int x0 = cy_button_x(b);
@@ -372,7 +373,7 @@ boot_system_t boot_menu_run(void)
             if (cy_touched == CY_BTN_CART) {
                 if (!cybiko_app_classic()) cybiko_app_set_cart_in(!cybiko_app_cart_in());
             } else if (cy_touched == CY_BTN_VSYNC) cybiko_app_set_vsync(!cybiko_app_vsync());
-            else cybiko_app_set_gray(!cybiko_app_gray());
+            else cybiko_app_set_palette((cybiko_app_palette() + 1) % CY_PALETTE_COUNT);
             draw_card(BOOT_SYSTEM_CYBIKO, selected == BOOT_SYSTEM_CYBIKO);
             draw_footer(0);
         } else if (touching && ori_touched) {

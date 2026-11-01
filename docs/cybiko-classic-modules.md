@@ -204,7 +204,7 @@ from how MP3.app uses a command without seeing it change anything.
 | --- | --- | --- | --- |
 | 0110 | u16 max | u32 song ids | the MP3 play list (high byte 1: MP3's) |
 | 0011 | u32 song | its details, under 0xb0 bytes (below) | what MP3.app shows for a song |
-| 0012 | u32 song | | pause, or go on, if it is the song playing; else the song to play next |
+| 0012 | u32 song | | pause, or go on, if it is the song playing; else play it from the start (MP3.app's play button with no saved place; the File Manager's Play on an SMC file sends 1f 0000, 14, then this) |
 | 0013, 0043 | u32 song, u16 block | | play a song from a 512-byte block |
 | 0014 | | | stop |
 | 0015 | | | play (the play list, else every song) |
@@ -220,6 +220,7 @@ from how MP3.app uses a command without seeing it change anything.
 | 0031 | | u16 hardware, u16 software | versions (the emulator says 1 and 0103) |
 | 0038 | u16 max, u16 kind, u32 from, u32 folder | u32 file ids | list the card (folder ffff fffe or 0: the top one; kind 1, from MP3.app: MP3 files only). Fewer than 0x32 ids: the end |
 | 0039 | u32 file | u32 size, u16 time and u16 date (DOS, little-endian), u8 attributes, the name | a file's details |
+| 003b | | 20 bytes: u32 total @4 and u32 free @8, in 512-byte blocks; the rest not known (sent as 0) | the card's size: the File Manager's free/total on its SMC line (found by trying values) |
 | 003a | u32 file, u16 kind, u32 value | | set a file's details (`MP3.dl`; not seen) |
 | 003b | | 20 bytes | the card's size (`MP3.dl` checks it against 4 to 64 MB) |
 | 0032, 1032 | u32 folder, the name | u32 file | find a file by name |

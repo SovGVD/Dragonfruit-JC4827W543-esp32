@@ -21,7 +21,7 @@
  * pause/go on, 13 play from a block, 14 stop, 15 play, 16 go to a block, 17
  * status, 18 volume, 19 balance, 1a equalizer, 1c repeat and shuffle, 1d new
  * play list, 1e previous/next, 1f mode, 31 versions, 38 list the card, 39 a
- * file's details. Commands not known are answered with nothing and logged
+ * file's details, 3b the card's size. Commands not known are answered with nothing and logged
  * (cy_mp3c_t.log), as are all but the status polls. */
 #ifndef CY_MP3C_H
 #define CY_MP3C_H
@@ -61,6 +61,8 @@ struct cy_mp3c {
     void *user;
     bool armed;                /* a chunk is coming in (cy_mp3c_arm) */
     uint32_t commands, unknown, dropped;
+    bool software;             /* MP3.dl has talked: a command other than 31, which CyOS
+                                * 1.2.57 sends itself at start-up */
     uint16_t follow;           /* the handler: this many bytes of data follow the answer */
     bool second;               /* the handler is called for those */
 

@@ -120,3 +120,9 @@ sharp pixels (`--zoom N`), so the CD's clips can be watched on a PC.
 The clip player (`main.e`) is Cybiko's code, so it is not in this
 repository: `--template` copies it from a CD clip. Clips of 30-40 s are
 what Cybiko shipped and what was tested.
+
+cybiko-docs' copy of the converter
+([tools/cybiko_mxd.py](https://github.com/SovGVD/cybiko-docs/blob/main/tools/cybiko_mxd.py))
+carries free players instead, among them `--player both` (experimental),
+whose clips also play on the Cybiko Classic with its MP3 player (see
+[cybiko-classic-modules.md](cybiko-classic-modules.md#mxd-clips-on-the-classic)).

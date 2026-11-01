@@ -12,7 +12,7 @@ Status, 2026-11-01:
 | --- | --- |
 | Memory card (256 KB RAM, 1 MB DataFlash) | Emulated; CyOS 1.2.57 sees and uses it. PC-tested |
 | Installing System Pack 57 (CyOS 1.2.57) | Emulated, from Cybiko's own `Cybiko-AutoUpdate.exe`, on the board, in the PC runner and in the web emulator. PC-tested |
-| MP3 player | Emulated from what its software does: songs from a folder, MP3.app's controls, the player's six buttons on screen. PC-tested |
+| MP3 player | Emulated from what its software does: songs from a folder, MP3.app's controls, the player's six buttons on screen, applications and MXD clips run from its card. PC-tested |
 
 None of it has been tried on the board yet. Sources are listed at the end;
 what is a guess is marked as one.
@@ -221,12 +221,15 @@ from how MP3.app uses a command without seeing it change anything.
 | 0038 | u16 max, u16 kind, u32 from, u32 folder | u32 file ids | list the card (folder ffff fffe or 0: the top one; kind 1, from MP3.app: MP3 files only). Fewer than 0x32 ids: the end |
 | 0039 | u32 file | u32 size, u16 time and u16 date (DOS, little-endian), u8 attributes, the name | a file's details |
 | 003b | | 20 bytes: u32 total @4 and u32 free @8, in 512-byte blocks; the rest not known (sent as 0) | the card's size: the File Manager's free/total on its SMC line (found by trying values) |
-| 003a | u32 file, u16 kind, u32 value | | set a file's details (`MP3.dl`; not seen) |
+| 003a | u32 file, u16 what, u32 value | | set a file's detail; 4 is its size (CyOS sets it when it rewrites a file; guess) |
 | 003b | | 20 bytes | the card's size (`MP3.dl` checks it against 4 to 64 MB) |
-| 0032, 1032 | u32 folder, the name | u32 file | find a file by name |
+| 0032, 1032 | u32 folder, the name | u32 file | find a file by name; 1032 makes it when it is not there. CyOS looks for `statistics.dat` on the card after it ran an application from there |
 | 0033 | u32 file | | delete |
 | 0034 | u32 file, u32, the new name | | rename |
-| 0030, 0035, 0036, 0037, 003c | | | open, read, write, close and others for CyOS's files on the card: not decoded |
+| 003c | u32 file | u16 | asked before CyOS opens a file of the card; `MP3.dl` takes 2 as "open already" (guess); the emulator says 0 |
+| 0036 | u32 file, u32 block, u16 length | | read from that 512-byte block; then `MP3.dl` sends the header of command 0002 (no data) and takes length / 512 chunks of 512 bytes, with no answer header |
+| 0037 | u32 file, u32 block, u16 length | | write: after the answer `MP3.dl` sends length / 512 chunks of 512 bytes, with no header, and reads an answer |
+| 0030, 0035 | | | not decoded (0035 has 8 bytes: two u32) |
 | 0020-0027 | | | MP3.app's FM mode (the extended player): not decoded |
 
 The status (0017): u16 state (0 stopped, 1 paused, 2 playing for MP3; 3 to
@@ -263,13 +266,48 @@ so the player answers with less.
   moving the data, so when writing TDR raised the next transfer at once,
   that one started from the old registers and sent the first byte twice.
   It now writes them back first (`cy_dma.c`), as the real DTC does.
-- **Not there.** CyOS's file work on the card (copying games to it), FM,
-  voice recording, the equalizer and the USB link to a PC.
+- **Applications on the card.** CyOS runs an application kept on the
+  player's card (File Manager: SMC, then the file; the desktop's SMC
+  folder), reading it with 3c, 36 and 0002; the emulator answers them and
+  37, 32/1032 and 3a (writes go into the card's folder). A file keeps its
+  id while it is there; new files get the next ids.
+- **Not there.** Copying files to and from the card in the File Manager is
+  not tested, nor are delete and rename (33, 34); FM, voice recording, the
+  equalizer and the USB link to a PC.
 
 Tested in the PC runner (MP3.app 1.3.13 on CyOS 1.2.57): the song list,
 play, pause, stop, next, Shift+Right (go to), volume, repeat and shuffle,
 the title, artist, album, bit rate and time on screen, and the music in a
 WAV file.
+
+### MP3.dl's exports
+
+What `mp3_control.dl` and the free clip player use (export N of `MP3.dl`,
+found from their code and checked in an emulator):
+
+| Export | Call | What |
+| --- | --- | --- |
+| 1 | `u8 ()` | take the bus (1: done) |
+| 2 | `()` | let it go |
+| 3 | `int (u16 command, data, u16 length)` | send a command: its header and data (0: sent) |
+| 4 | `int (u16 *status, buffer, u16 *length)` | read the answer: 0 OK, 2 busy (try again after 500 ms, up to 20 times), 5 no answer |
+
+Export 0 waits for the ready line to change. `mp3_control.dl` 1.1.3 has the
+steps for playing a file by name (31 versions, 1f mode, 14 stop, 12 play).
+
+### MXD clips on the Classic
+
+A clip made by cybiko-docs' `cybiko_mxd.py --player both` (or its web
+page's "Classic + Xtreme" player; experimental) plays on the Classic as on
+the Xtreme: copy it onto the MP3 player's card (`/Cybiko/Classic/smc` on
+the board) with `MP3.dl` installed, and run it from the SMC folder. The
+player tells the MP3 player to play the clip's own file from the block
+where its sound starts, and shows the frames as on the Xtreme (5 frames a
+second in the PC runner). How the player finds `MP3.dl` or `sound.dl` at
+run time is in cybiko-docs'
+[player/README.md](https://github.com/SovGVD/cybiko-docs/blob/main/player/README.md#classic--xtreme-experimental).
+Whether a real MP3 player plays a file that isn't an `.mp3` and serves
+CyOS's reads while it plays is not known.
 
 ### Installing the software
 

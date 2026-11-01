@@ -109,7 +109,15 @@ is backed up in [cybiko-roms](https://github.com/SovGVD/cybiko-roms)
   is slow and once says "INCORRECT FILES FOUND!!! cluster count: 0", which
   is harmless (not there on the next start).
 
-How to use it:
+**CyOS 1.2.57 is the default.** cybiko-roms has `classic/flash_v1257.bin`,
+made once by this installer from the 1.2.46 dump (`cybiko_host --rom
+cyrom112.bin --flash flash_v1246.bin --sysupdate Cybiko-AutoUpdate.exe
+--save-flash flash_v1257.bin --seconds 460`). The board takes it before
+`flash_v1246.bin`, and the web emulator's Start fetches it, with 1.2.46 as a
+choice (Settings, CyOS). The installer is for a flash that has 1.2.46 and
+files to keep.
+
+How to use the installer:
 
 - **Board:** copy `Cybiko-AutoUpdate.exe` to `/Cybiko/Classic` and start the
   Classic. The serial log shows each step; when it is done the file is

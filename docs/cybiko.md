@@ -312,11 +312,15 @@ Its files live in `/Cybiko/Classic`:
 | File | Size | Accepted names (first match wins) |
 | --- | --- | --- |
 | Boot ROM | 32 KB | `cyrom112.bin`, `boot.bin`, `bootrom.bin` |
-| CyOS flash | 512 KB or 1 MB | `flash_saved.bin`, `flash_v1246.bin`, `flash.bin` |
+| CyOS flash | 512 KB or 1 MB | `flash_saved.bin`, `flash_v1257.bin`, `flash_v1246.bin`, `flash.bin` |
 
-Both are MAME's `cybikov1` set (CyOS 1.2.46). ReBiko's release zip has them
-as `roms/boot.bin` and `roms/flash.bin`, which can be copied in under those
-names. The real Classic has a 512 KB AT45DB041; the emulator has a 1 MB
+The boot ROM is MAME's `cybikov1` dump. For the flash, take
+`flash_v1257.bin` from [cybiko-roms](https://github.com/SovGVD/cybiko-roms)
+`classic/`: CyOS 1.2.57, the Classic's last CyOS (System Pack 57, installed
+once on the 1.2.46 dump by the PC runner), which knows the memory card.
+`flash_v1246.bin` is MAME's own dump (CyOS 1.2.46). ReBiko's release zip has
+the boot ROM and the 1.2.46 flash as `roms/boot.bin` and `roms/flash.bin`,
+which can be copied in under those names. The real Classic has a 512 KB AT45DB041; the emulator has a 1 MB
 AT45DB081 (as ReBiko does), which CyOS finds by itself ("4091 blocks"), so
 a 512 KB dump gets another 512 KB of free space. Once CyOS changes the flash
 (files, settings, the clock), the 1 MB image is saved as `flash_saved.bin`,
@@ -336,10 +340,12 @@ clock.
   is in unless `cybiko.cfg` has `classic.card = 0`; its flash is
   `/Cybiko/Classic/card.bin`. CyOS 1.2.57 uses it (Card Flash in the File
   Manager); CyOS 1.2.46 does not see it.
-- **CyOS 1.2.57.** Copy Cybiko's `Cybiko-AutoUpdate.exe` (System Pack 57,
-  in cybiko-roms `classic/`) to `/Cybiko/Classic`: the next start installs it
-  through CyOS's console, as Cybiko's AutoUpdate did, in about 6 minutes, and
-  renames the file `.installed`. Details:
+- **CyOS 1.2.57.** `flash_v1257.bin` is taken before `flash_v1246.bin`. To
+  move a `flash_saved.bin` that has 1.2.46 to 1.2.57 and keep its files, copy
+  Cybiko's `Cybiko-AutoUpdate.exe` (System Pack 57, in cybiko-roms
+  `classic/`) to `/Cybiko/Classic`: the next start installs it through CyOS's
+  console, as Cybiko's AutoUpdate did, in about 6 minutes of emulated time,
+  and renames the file `.installed`. Details:
   [cybiko-classic-modules.md](cybiko-classic-modules.md).
 - **Not there (yet).** The Classic's MP3 player (two of its libraries are
   missing, see [cybiko-classic-modules.md](cybiko-classic-modules.md)), a RAM

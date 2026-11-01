@@ -210,6 +210,11 @@ endif()
 enable_testing()
 add_executable(test_h8s test_h8s.c ../components/h8s/h8s.c)
 target_include_directories(test_h8s PRIVATE ../components/h8s/include)
+if(MSVC)
+    target_compile_options(test_h8s PRIVATE /UNDEBUG)
+else()
+    target_compile_options(test_h8s PRIVATE -Wall -Wextra -UNDEBUG)
+endif()
 add_test(NAME h8s COMMAND test_h8s)
 
 set(CYBIKO_SOURCES

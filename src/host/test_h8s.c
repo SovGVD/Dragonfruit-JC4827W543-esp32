@@ -219,7 +219,12 @@ static void test_exceptions(void)
     h8s_run(&cpu, 1);                      /* nop: masked */
     assert(cpu.pc == CODE + 2 && pending_vec == 20);
     h8s_run(&cpu, 1);                      /* andc */
-    h8s_run(&cpu, 1);                      /* interrupt taken before bra */
+    /* No interrupt between ANDC/ORC/XORC/LDC and the next instruction (H8S
+     * manual; MAME's prefetch_noirq; CyOS 1.2 relies on it), so the bra
+     * still runs once and the interrupt comes after it. */
+    h8s_run(&cpu, 1);                      /* bra . (interrupt held off) */
+    assert(cpu.pc == CODE + 4 && pending_vec == 20);
+    h8s_run(&cpu, 1);                      /* interrupt taken */
     assert(cpu.pc == 0x2000 && (cpu.ccr & H8S_CCR_I) && pending_vec == 0);
     h8s_run(&cpu, 1);                      /* rte */
     assert(cpu.pc == CODE + 4 && !(cpu.ccr & H8S_CCR_I));

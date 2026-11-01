@@ -51,7 +51,7 @@ The boot menu, where you pick the system:
 | [JC4827W543 board guide](docs/jc4827w543.md) | Wiring, building, flashing, the boot menu, the SD card, touch calibration, Palm RAM and storage |
 | [Cybiko Xtreme](docs/cybiko.md) | Files, storage, games, controls, sound, radio, the MP3 cartridge, the desktop app |
 | [How the emulator models the Cybiko](docs/cybiko-internals.md) | Which file models what, emulator choices and additions |
-| [Cybiko Classic: MP3 player and memory card](docs/cybiko-classic-modules.md) | What is known about the Classic's add-ons, for emulating them later |
+| [Cybiko Classic: memory card, CyOS 1.2.57, MP3 player](docs/cybiko-classic-modules.md) | The Classic's slot, the emulated memory card, installing System Pack 57, and what the MP3 player still needs |
 | [Cybiko radio over ESP-NOW](docs/cybiko-radio-protocol.md) | Carrying Cybiko packets between boards; a C library for other ESP32 projects |
 | [MP3 cartridge in the emulator](docs/cybiko-mp3-cartridge.md) | Using the cartridge, its card folder, making MXD clips |
 | [cybiko-docs](https://github.com/SovGVD/cybiko-docs) | The Cybiko Xtreme itself: hardware, CyOS, file formats, radio and chat protocol, CyWIG, MP3 cartridge |
@@ -130,6 +130,9 @@ choice starts by itself after 5 seconds.
 - Its flash emulated as a 1 MB AT45DB081, twice the real one, for more room
   for files; CyOS's changes are saved to the SD card.
 - The radio over ESP-NOW as on the Xtreme (Classic to Classic).
+- The 1Mb Memory Card (256 KB RAM, 1 MB flash), and CyOS 1.2.57 installed
+  from Cybiko's own System Pack 57 updater (`Cybiko-AutoUpdate.exe`), which
+  uses the card.
 - Picked with the model button on the boot menu's Cybiko card; files in
   `/Cybiko/Classic` (see [the Cybiko guide](docs/cybiko.md#cybiko-classic)).
 
@@ -283,8 +286,9 @@ notice are in [third-party notices](docs/third-party-notices.md).
 
 The Cybiko Classic follows Dan Berkowitz's
 [ReBiko](https://github.com/RetroCodeRamen/rebiko) (MIT): its memory map,
-DataFlash, radio framing, flash block format and more came from there, with
-MAME's `cybikov1` driver. The details and its license are in the
+DataFlash, radio framing, flash block format, the CyOS console protocol used
+to install System Pack 57 and more came from there, with MAME's `cybikov1`
+driver. The details and its license are in the
 [third-party notices](docs/third-party-notices.md#rebiko).
 
 ## License

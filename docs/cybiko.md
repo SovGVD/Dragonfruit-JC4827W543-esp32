@@ -332,15 +332,27 @@ clock.
   1.2.46 keeps it in RAM, and the emulator puts the board's ID there. Two
   Classics chat with each other in the PC runner; Classic to Xtreme is not
   tested.
-- **Not there (yet).** The Classic's MP3 player and its memory card (what is
-  known about them: [cybiko-classic-modules.md](cybiko-classic-modules.md)), a RAM disk, apps from `/Cybiko/apps`, the WAP gate and CyOS
-  updates are Xtreme only for now.
+- **Memory card.** The Classic's 1Mb Memory Card (256 KB RAM, 1 MB flash)
+  is in unless `cybiko.cfg` has `classic.card = 0`; its flash is
+  `/Cybiko/Classic/card.bin`. CyOS 1.2.57 uses it (Card Flash in the File
+  Manager); CyOS 1.2.46 does not see it.
+- **CyOS 1.2.57.** Copy Cybiko's `Cybiko-AutoUpdate.exe` (System Pack 57,
+  in cybiko-roms `classic/`) to `/Cybiko/Classic`: the next start installs it
+  through CyOS's console, as Cybiko's AutoUpdate did, in about 6 minutes, and
+  renames the file `.installed`. Details:
+  [cybiko-classic-modules.md](cybiko-classic-modules.md).
+- **Not there (yet).** The Classic's MP3 player (two of its libraries are
+  missing, see [cybiko-classic-modules.md](cybiko-classic-modules.md)), a RAM
+  disk, apps from `/Cybiko/apps` and the WAP gate.
 
 In the [PC runner](#pc-runner), a flash image of 512 KB or 1 MB (or
 `--classic`) runs the Classic: `--save-flash FILE` writes the 1 MB flash at
 the end, `--pair FLASH2` and `--third FLASH3` add Classics with their own
 flash images on the radio, `--unit-id HEX` sets the first one's ID, and the
-key names are the Classic's.
+key names are the Classic's. `--mem-card IMG` plugs in the memory card,
+`--sysupdate Cybiko-AutoUpdate.exe` installs System Pack 57 (give it
+`--seconds 420`), and `--con STEP` (with `--con-at MS`) types console
+commands or sends a file (`put:FILE[=NAME]`) over CyOS's console.
 
 ## Desktop app
 
@@ -459,10 +471,9 @@ CPU loop was.
 
 ## Future improvements
 
-- **Cybiko Classic: MP3 player and memory card.** Both sat in the Classic's
-  68-pin slot and work differently from the Xtreme's cartridge. The slot's
-  pinout, the chips, how they worked, a plan for each and the CyOS and MP3
-  software still needed are in
+- **Cybiko Classic: MP3 player.** The memory card and CyOS 1.2.57 are
+  emulated; the MP3 player waits for its `MP3.dl` and `mp3_control.dl`
+  libraries. The slot, the chips and the plan are in
   [cybiko-classic-modules.md](cybiko-classic-modules.md).
 - **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
   tested in the PC runner; the open questions are listed in

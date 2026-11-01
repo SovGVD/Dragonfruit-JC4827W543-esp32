@@ -1,68 +1,127 @@
-# Cybiko Classic: the MP3 player and the memory card
+# Cybiko Classic: the memory card, CyOS 1.2.57 and the MP3 player
 
 The first Cybiko, the Classic, had two add-ons for the 68-pin slot on its
-back: the **MP3 player** (CY65P10) and the **memory card** (sold as the
-"Cybiko 1Mb Memory Card", or Expansion Memory). Only one of them fits at a
-time, because they share the slot. Neither is emulated yet. This page collects
-what is known about them, so that they can be emulated later. The Xtreme's MP3
-cartridge is a different device; it is described in
-[cybiko-mp3-cartridge.md](cybiko-mp3-cartridge.md).
+back: the **memory card** (the "Cybiko 1Mb Memory Card", or Expansion Memory)
+and the **MP3 player** (CY65P10). Only one of them fits at a time, because
+they share the slot. Both need a newer CyOS than the 1.2.46 of MAME's dump:
+Cybiko's **System Pack 57** (CyOS 1.2.57).
 
-Status, 2026-11-01: research only. Sources are listed at the end; what is a
-guess is marked as one.
+Status, 2026-11-01:
+
+| What | State |
+| --- | --- |
+| Memory card (256 KB RAM, 1 MB DataFlash) | Emulated; CyOS 1.2.57 sees and uses it. PC-tested |
+| Installing System Pack 57 (CyOS 1.2.57) | Emulated, from Cybiko's own `Cybiko-AutoUpdate.exe`, on the board, in the PC runner and in the web emulator. PC-tested |
+| MP3 player | Not emulated: two of its libraries are missing (see [below](#the-mp3-player-cy65p10)) |
+
+None of it has been tried on the board yet. Sources are listed at the end;
+what is a guess is marked as one.
 
 ## The expansion slot
 
-The slot uses a PCMCIA Type 1 connector, but not PCMCIA signals ("PCMCIA
-connector but not PCMCIA signals"). 33.6K PCMCIA modems were seen by CyOS,
-which reported modem errors; they did not work. The pinout, from the
-hallikainen.org page:
+The slot uses a PCMCIA Type 1 connector, but not PCMCIA signals. Cybiko's
+CY6411 schematic (Gleb's copy, kept with the project's files) shows what the
+slot (X2) carries, and corrects the guesses an earlier version of this page
+made from the hallikainen.org pinout:
 
-| Pins | Signals |
+| Signals on the slot | Where they go in the Classic |
 | --- | --- |
-| 1, 34, 35, 68 | GND |
-| 17, 51 | 3.27 V |
-| 30-32, 3-7, 64-66, 36-40 | D0-D15, the CPU's data bus |
-| 63-56, 46, 45, 42, 44, 55, 47, 48, 54, 53, 12-14 | A0-A19, the CPU's address bus |
-| 43, 49 | /RD, /WR |
-| 24 | /RS, reset |
-| 41 | /RC, expansion RAM chip select |
-| 10 | /C0, the internal DataFlash's chip select (CPU P3.4, pin 12) |
-| 9, 27, 25, 26 | SCK, SIN, SOT, RDY/BSY: the internal DataFlash's serial lines |
-| 2, 19 | /C1, /C2, expansion flash chip selects 1 and 2 |
-| 21, 23, 22 | SC2, SI2, SO2, the expansion flash's serial clock, in and out |
+| D0-D7, A0-A19, /RD, /WR | the CPU's parallel bus |
+| CE1 | chip select CS2: the card's RAM, at 400000 |
+| CEF1- | port P2.1: the card's DataFlash chip select |
+| DIN, DOUT, CCLK | **SCI1**, shared with the internal DataFlash (whose select is P3.4) |
+| a second flash select | P1.4, for a card with two flash chips |
+| R_BF, RES, TIOCA0/B0/A1/B2, TMO1 | the flash's ready line, reset, timer pins |
 
-So the slot carries both the CPU's parallel bus, with a chip select for
-expansion RAM, and a second serial DataFlash bus with two chip selects. In
-the emulator the internal DataFlash is an AT45 on SCI1, chip select P3.4 (see
-[cybiko-internals.md](cybiko-internals.md#the-classic)). SC2/SI2/SO2 are very
-likely SCI2, the port the emulator treats as CyOS's console today. That is a
-guess, but a strong one: the H8S/2241's third SCI is the only serial port
-left.
+So the card's flash is on the same serial bus as the internal one, and only
+its chip select differs. SCI2 is not on the slot: it goes to the PC serial
+cable (TXDS/RXDS), as CyOS's console, and SCI0 goes to the radio's AVR. The
+inside of the Classic has a BS62XV4000 SRAM on CS1, footprints for an
+AT45DB161 or AT45DB041A, and a PCF8593 real-time clock.
 
 ## The memory card
 
-- It adds **256 KB of static RAM and 1 MB of DataFlash** (Wikipedia: "256
-  kilobytes of static RAM, and 1 megabyte of data flash memory"). The hardware
-  table on hallikainen.org says "Flash disk: 512 KB, extendible up to 1 MB".
-- "Some Cybiko programs will not run unless the Expansion Memory is plugged
-  in" (Wikipedia), so programs could use the extra RAM.
-- From the pinout: the SRAM is on the parallel bus behind /RC, and the flash
-  is a serial DataFlash on SC2/SI2/SO2 behind /C1 (and /C2 for a second chip).
-  The hallikainen page links an AT45D081 data sheet next to these pins, so the
-  chip is most likely a 1 MB AT45DB081: the same family as the internal
-  AT45DB041, and the same chip the emulator already uses as the Classic's
-  internal flash.
-- **Which CyOS supports it.** CyOS 1.2.46 (the MAME dump) has a single flash
-  device class, `OnboardFlash`, and no other flash device, card or RAM-module
-  strings in RAM after it boots. Support most likely came with a later System
-  Pack (CyOS 1.2.57 or 1.3.x for the Classic). This is to be checked once that
-  CyOS is at hand (see [What is needed](#what-is-needed)).
-- **Plan for emulating it.** Map 256 KB of RAM at the area /RC selects (found
-  by watching where the newer CyOS probes). Put a second AT45DB081 model on
-  SCI2 behind /C1, sharing the code in `cy_classic.c`, and save it as its own
-  file next to the internal flash. On the board this could also be the
-  `/Cybiko/Classic` folder's "card" image.
+- **256 KB of static RAM and 1 MB of DataFlash** (Wikipedia; "Some Cybiko
+  programs will not run unless the Expansion Memory is plugged in").
+- **How CyOS 1.2.57 finds it.** Its start-up writes each size from 2 MB down
+  to 64 KB at 400000 + size - 4, then reads back the mirror at 5ffffc: the
+  RAM answers as 256 KB. Its flash driver picks a chip by number: 0 is P3.4
+  (inside), 1 is P2.1 (the card), 2 is P1.4. CyOS then says "Cartridge: RAM
+  262144 bytes, flash disk 4091 blocks", and the File Manager shows **Card
+  Flash** (991 KB) next to the internal flash.
+- **In the emulator** (`cy_classic.c`): 256 KB of RAM at 400000, mirrored up
+  to 5fffff, and a second AT45DB081 behind P2.1 on SCI1, sharing the internal
+  flash's code. A new card is formatted empty. CyOS 1.2.46 ignores it.
+- **On the board:** the card is in unless `cybiko.cfg` has
+  `classic.card = 0`. Its flash is `/Cybiko/Classic/card.bin` (1 MB), saved
+  when CyOS writes to it, like `flash_saved.bin`. Delete it for an empty card.
+- **In the PC runner:** `--mem-card IMG` plugs it in; IMG is loaded (or an
+  empty card made) and written back at the end if it changed.
+- **In the web emulator:** Settings, Memory card in (on by default). Its
+  flash is kept in the browser.
+
+Tested in the PC runner: File Manager, Fn+Enter on a file, Copy to... Card
+Flash copied it (26 pages written), and the copy reads back from the card
+image.
+
+## Installing System Pack 57 (CyOS 1.2.57)
+
+Cybiko shipped CyOS updates as **System Packs**, installed from a PC by
+`Cybiko-AutoUpdate.exe` over the serial cable. Gleb found System Pack 57; it
+is backed up in [cybiko-roms](https://github.com/SovGVD/cybiko-roms)
+(`classic/Cybiko-AutoUpdate.exe`).
+
+- **Inside the .exe.** It is a Windows program that keeps the files as
+  resources of type `FILES_TO_LOAD`: resource 2000 lists the names, 2001 + i
+  holds file i. Its `autoupdate.ini` has a part per model. The Classic's
+  `[114]` takes `common\System Pack\*` and `114\System Pack\*` (31 files:
+  `comp1.2.57r.boot`, `desktop.app` and the other apps), then runs `boot
+  comp1.2.57r.boot` and `avr write avr19c6.bin`. `[119]` is CyOS 1.3.57 for
+  Classics that run CyOS from a parallel ROM at 100000; the emulated Classic
+  has none, so it is not used. `FILES_TO_BOOT` (1996-1999) holds the loaders.
+- **The .boot file** is compressed with the boot ROM's LZSS (header
+  `01c0ffab`, then the packed and unpacked sizes; flag bits from the lowest,
+  1 a literal; a match is two bytes a, b: distance `a | (b & 0xf0) << 4`,
+  length `(b & 15) + 3`). The ROM unpacks it to 200000 and jumps to the word
+  at 200004. CyOS 1.2.57 keeps its Cybiko ID at 222cf4 in RAM, where the
+  emulator puts the board's (or the tab's) ID, as for 1.2.46.
+- **How it goes in** (`cy_sysupdate.c`, `cy_con.c`). Through CyOS's console
+  on SCI2 at 57600 baud, as AutoUpdate did. ReBiko (MIT, Dan Berkowitz)
+  worked out the console protocol and the order, in its
+  `tools/rebiko_cyos_update.py`; Dragonfruit's code is written separately:
+  - A command is its text, a newline and a 16-bit sum (each byte: `sum =
+    ((sum ^ c) << 1)`, the carry back in at bit 0). CyOS answers 02 (taken)
+    or 01 (bad sum), and "Ready >" when the command is done.
+  - `rcv NAME SIZE` sends a file: CyOS asks "sendN" for block N, the PC
+    answers `C`, N, the length (16 bits, little-endian), up to 512 bytes and
+    their CRC-32. CyOS says "receive successfull", or gives up.
+  - The steps: `ver` (already 1.2.57: nothing to do), every file but
+    `desktop.app`, `rm -f desktop.app`, `desktop.app` (CyOS cannot replace
+    the desktop it runs before it is deleted), `boot comp1.2.57r.boot`,
+    `reboot`, then `ver` must say 1.2.57. A failed step is done again, up
+    to five times. `avr write avr19c6.bin` (the radio chip's firmware) is
+    left out: the radio chip is emulated.
+- **Fix found on the way.** Bytes sent while a receive error flag was up
+  raised only the error interrupt, so CyOS never read them and the transfer
+  died. Clearing the error flag now raises the receive interrupt when a byte
+  is waiting (`cy_periph.c`), as the real SCI does.
+- **It takes about 6 minutes of emulated time**; the first start of 1.2.57
+  is slow and once says "INCORRECT FILES FOUND!!! cluster count: 0", which
+  is harmless (not there on the next start).
+
+How to use it:
+
+- **Board:** copy `Cybiko-AutoUpdate.exe` to `/Cybiko/Classic` and start the
+  Classic. The serial log shows each step; when it is done the file is
+  renamed `Cybiko-AutoUpdate.exe.installed`, and `flash_saved.bin` holds CyOS
+  1.2.57. If it fails, the log says why and the file stays, so the next start
+  tries again.
+- **PC runner:** `--sysupdate Cybiko-AutoUpdate.exe --save-flash out.bin
+  --seconds 420` (with `--mem-card card.bin` for the card); `[update]` lines
+  show the steps.
+- **Web emulator:** the Classic's **Install CyOS 1.2.57** button fetches the
+  .exe from cybiko-roms and installs it, running as fast as the computer
+  can.
 
 ## The MP3 player (CY65P10)
 
@@ -71,75 +130,53 @@ slot:
 
 | Part | Chip |
 | --- | --- |
-| CPU | Hitachi H8S/2246 (HD6472246, 16-bit, 11 MHz), with its own firmware inside |
-| MP3 decoder | Micronas MAS3507D-F10 (MPEG 1 and 2, layers 2 and 3, 8-384 kbit/s) |
+| CPU | Hitachi H8S/2246 (16-bit, 11 MHz), with its own firmware inside |
+| MP3 decoder | Micronas MAS3507D-F10 (MPEG 1 and 2, layers 2 and 3) |
 | DAC | Micronas DAC3550A |
-| USB | National USBN9603, full speed, to a mini-USB socket |
-| Storage | one SmartMedia (SSFDC) card, 4 to 64 MB, FAT12 |
-| Extended edition | FM tuner (Philips TDA7021T, TDA7040T stereo decoder) and a microphone for voice recording |
+| USB | National USBN9603, to a mini-USB socket |
+| Storage | one SmartMedia card, 4 to 64 MB, FAT12 |
+| Extended edition | FM tuner (TDA7021T, TDA7040T) and a microphone |
 
-How it worked, from the Cybiko MP3 Player manual pages:
+From the manual pages: it plays on its own six buttons; the Cybiko's MP3
+application adds an equalizer and play-list editing. It needs System Pack
+v.56 or later. Music goes onto the SmartMedia card over the player's USB,
+and the card can also hold Cybiko games and apps.
 
-- It plays on its own buttons (six keys and a two-colour LED). The Cybiko MP3
-  application, loaded with CyberLoad, adds "extended control, including an
-  equalizer and play-list editing", and the buttons keep working while it
-  runs.
-- It needs System Pack v.56 or later on the Cybiko ("CyOS v.1.2.x" on the
-  spec sheet). The Cybiko must be off when the player is plugged in or out.
-- Music gets onto the SmartMedia card over the player's own USB. Windows shows
-  the card as a removable disk; on the Mac, the Cybiko MP3 Loader is used. On
-  insertion the player builds a play-list of the tunes it finds.
-- The card can also hold Cybiko games and applications. So CyOS can read files
-  from the SmartMedia card through the player, much as the Xtreme reads apps
-  from its MP3 cartridge's card.
-- Lite edition: MP3 only. Extended edition: also FM radio and voice
-  record/playback.
+**What the uploads showed.** Gleb's `MP3 (200x)(Cybiko Inc.).app` (backed up
+as `classic/MP3.app` in cybiko-roms) is the Classic's MP3 application,
+v1.3.13, for CyOS 1.2.56 and later, with MP3, FM and Voice modes. It needs
+two libraries it does not have: `MP3.dl` (1.1.7) and `mp3_control.dl`
+(1.1.3). They are in neither System Pack 57 nor the three Cybiko SDKs (2010
+Std, 2112 Std, 3012 Pro: compilers, help and examples only; their
+`FlashDevices.c` example names `MP3_DRIVE_NAME` next to the A and B flash
+drives). Most likely they came on the player's own CD or card.
 
-**How the Classic talks to it is not documented.** Its own CPU and firmware do
-the decoding, USB and card work, so the Classic only sends commands and
-reads or writes files. That goes either over the parallel bus or over the
-SCI2 lines. Emulating it means implementing that command protocol (HLE). The
-player's H8S/2246 has its program in on-chip ROM that nobody has dumped, so
-running its real firmware is not an option. The protocol has to be read out of
-the Classic side: the MP3 application and CyOS's driver for the player.
+**So the player is not emulated.** How the Classic talks to it is in those
+two libraries. With them, the plan is to trace their bus and pin accesses in
+the PC runner, answer them from a model in the style of `cy_cart.c` (the
+SmartMedia card as a FAT folder via `cy_vfat`, MP3 frames to `cy_mp3`), and
+put the player's buttons on the on-screen keyboard. The player's own
+firmware is in its CPU's on-chip ROM, which nobody has dumped, so running it
+is not an option.
 
-The CyOS 1.2.46 dump has a deleted file named `AppHackMP3.app` in its flash.
-Its blocks have been reused, so only the name is left. It shows the player's
-software existed for CyOS 1.2. `mplayer.app` in the same dump is the `.mus`
-melody player, not MP3.
+**Still wanted:** `MP3.dl` and `mp3_control.dl` (the MP3 player's CD, or a
+SmartMedia card from one).
 
-**Plan for emulating it.**
-1. Get the Classic's MP3 application and the System Pack that supports the
-   player (see below).
-2. Find its driver's commands by running it in the PC runner with I/O tracing
-   on the bus and SCI2.
-3. Answer them from a model in the style of `cy_cart.c`: the SmartMedia card
-   as a FAT folder (`cy_vfat`, as for the Xtreme's cartridge), and MP3 frames
-   to the existing `cy_mp3` decoder.
-4. The player's own buttons go on the on-screen keyboard. The FM radio and
-   the voice recording are left out.
+## Other uploads
 
-## What is needed
-
-1. **The Classic's later CyOS** (System Pack v.56 or later). ReBiko's
-   `tools/rebiko_cyos_update.py` installs CyOS 1.2.57 for the Classic from
-   Cybiko's `Cybiko-AutoUpdate.exe`; its notes say kn100.me keeps a copy. That
-   copy is the only source found so far.
-2. **The Classic MP3 application.** The cybiko.net mirror's `Applications/`
-   folder has "MP3 (200x)(Cybiko Inc.).app", which is likely it. It still has
-   to be checked that it is the Classic's and not the Xtreme's.
-3. Neither site can be reached from the sandbox the emulator is built in, so
-   the files have to be downloaded by hand. They also belong in
-   [cybiko-roms](https://github.com/SovGVD/cybiko-roms) as a backup.
+- `cios_beta_2.app` and `hypercomm.app` are HyperDev homebrew; both need
+  CyOS 1.3.57, which the emulated Classic does not run.
+- The CY6411 schematic and the Classic's user manual are kept with the
+  project's files, not in cybiko-roms (Gleb's choice).
 
 ## Sources
 
+- Cybiko's CY6411 schematic and `Cybiko-AutoUpdate.exe` (System Pack 57),
+  uploaded by Gleb; kn100.me keeps a copy of the updater
 - [Cybiko expansion connector pinout](https://pic.hallikainen.org/techref/cybiko/expansion.htm), hallikainen.org
 - [CY65P10 MP3 player for Cybiko Classic](https://pic.hallikainen.org/techref/cybiko/CY65P10.htm), hallikainen.org
-- [Cybiko hardware](https://pic.hallikainen.org/techref/cybiko.htm), hallikainen.org (specifications, "Flash disk: 512 KB, extendible up to 1 MB")
-- [MP3 Player](http://dbzoo.com/cybiko/mp3player), DBZoo (chips, editions, SmartMedia sizes)
-- [Mp3 Player](https://bluecybiko.tripod.com/bluecybiko/id4.html), BlueCybiko (the manual: System Pack v.56, USB, play-list, the shared slot with the 1Mb Memory Card)
+- [MP3 Player](http://dbzoo.com/cybiko/mp3player), DBZoo
+- [Mp3 Player](https://bluecybiko.tripod.com/bluecybiko/id4.html), BlueCybiko (the manual)
 - [Cybiko](https://en.wikipedia.org/wiki/Cybiko), Wikipedia (memory card: 256 KB SRAM and 1 MB DataFlash)
+- [ReBiko](https://github.com/RetroCodeRamen/rebiko) by Dan Berkowitz (MIT): `tools/rebiko_cyos_update.py`, the console protocol and the order of the update
 - MAME's `cybiko.cpp` lists the MP3 player's chips; it has no driver for the player or the memory card
-- [ReBiko](https://github.com/RetroCodeRamen/rebiko): `tools/rebiko_cyos_update.py` (System Pack to CyOS 1.2.57)
-- The [DBZoo memory expansion unit page](https://www.dbzoo.com/cybiko/memoryexpansionunit) exists but could not be read (server error)

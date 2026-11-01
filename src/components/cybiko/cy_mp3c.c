@@ -79,6 +79,7 @@ static void answer(cy_mp3c_t *p)
     p->ans_hdr[2] = (uint8_t)(status >> 8);
     p->ans_hdr[3] = (uint8_t)status;
     p->commands++;
+    if ((p->cmd & 0xff) != 0x31) p->software = true;
     p->state = MP3C_ANS_HDR;
     p->pos = 0;
     next_chunk(p, 4);
@@ -429,6 +430,19 @@ uint8_t cy_mp3c_player(cy_mp3c_t *p, uint16_t cmd, const uint8_t *data, uint16_t
         put16(out + 2, 0x0103);
         *out_len = 4;
         return 0;
+    case 0x3b: {                                      /* the card's size, 20 bytes: u32 total and u32 */
+        if (!p->files) scan(p);                       /* free, in 512-byte blocks, @4 and @8 (the File */
+        if (p->no_card) return 0x08;                  /* Manager's "free/total" on the SMC line); the */
+        uint32_t used = 0, total = 64u << 11;         /* rest is not known (0). A 64 MB card, the */
+        for (uint16_t i = 0; i < p->nfiles; i++)      /* biggest SmartMedia the player takes, unless */
+            used += (p->files[i].size + 511) / 512;   /* the songs need more */
+        if (used > total) total = used;
+        memset(out, 0, 20);
+        put32(out + 4, total);
+        put32(out + 8, total - used);
+        *out_len = 20;
+        return 0;
+    }
     case 0x17:                                        /* status, 20 bytes */
         if (!p->files) scan(p);
         if (p->no_card) return 0x08;                  /* MP3.app: "There is no SMC in your cartridge" */
@@ -446,10 +460,9 @@ uint8_t cy_mp3c_player(cy_mp3c_t *p, uint16_t cmd, const uint8_t *data, uint16_t
         *out_len = song_info(p, a, out);
         return *out_len ? 0 : 1;
     case 0x12:                                        /* {u32 song}: pause or go on if it is the one */
-        if (!file(p, a)) return 1;                    /* playing, else the one to play next */
-        if (p->play_state == CY_MP3C_PLAYING && a == p->song) p->play_state = CY_MP3C_PAUSED;
+        if (!file(p, a)) return 1;                    /* playing, else play it from the start (the File */
+        if (p->play_state == CY_MP3C_PLAYING && a == p->song) p->play_state = CY_MP3C_PAUSED;   /* Manager's Play: 1f, 14, 12) */
         else if (p->play_state == CY_MP3C_PAUSED && a == p->song && p->fp) p->play_state = CY_MP3C_PLAYING;
-        else if (p->play_state == CY_MP3C_STOPPED) p->song = a;
         else play(p, a, 0);
         return 0;
     case 0x13: case 0x43:                             /* play a song from a block: {u32 id, u16 block} */

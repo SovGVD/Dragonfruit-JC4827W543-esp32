@@ -11,6 +11,7 @@
  * pages, and so is where CyOS 1.2.46 keeps the Cybiko ID in RAM. */
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 #define ST_READY 0x80
 #define ST_MISMATCH 0x40
@@ -23,9 +24,8 @@ static uint32_t at45_addr(const cy_at45_t *f)
 static uint32_t at45_page(const cy_at45_t *f) { return (at45_addr(f) >> 9) & (CY_AT45_PAGES - 1); }
 static uint16_t at45_byte(const cy_at45_t *f) { return (uint16_t)(at45_addr(f) & 0x1ff) % CY_AT45_PAGE; }
 
-static void at45_program(cybiko_t *m, uint32_t page, const uint8_t *src)
+static void at45_program(cy_at45_t *f, uint32_t page, const uint8_t *src)
 {
-    cy_at45_t *f = &m->at45;
     uint8_t *p = f->mem + page * CY_AT45_PAGE;
     f->writes++;
     if (memcmp(p, src, CY_AT45_PAGE) == 0) return;
@@ -35,25 +35,24 @@ static void at45_program(cybiko_t *m, uint32_t page, const uint8_t *src)
 
 /* Chip select going high ends a command; the program commands write their
  * buffer into the page then. */
-static void at45_end(cybiko_t *m)
+static void at45_end(cy_at45_t *f)
 {
-    cy_at45_t *f = &m->at45;
     if (f->cmd_len >= 4) {
         uint32_t page = at45_page(f);
         uint8_t *p = f->mem + page * CY_AT45_PAGE;
         switch (f->cmd[0]) {
-        case 0x82: case 0x83: case 0x88: at45_program(m, page, f->buffer[0]); break;
-        case 0x85: case 0x86: case 0x89: at45_program(m, page, f->buffer[1]); break;
+        case 0x82: case 0x83: case 0x88: at45_program(f, page, f->buffer[0]); break;
+        case 0x85: case 0x86: case 0x89: at45_program(f, page, f->buffer[1]); break;
         case 0x81: {                                  /* page erase */
             uint8_t blank[CY_AT45_PAGE];
             memset(blank, 0xff, sizeof blank);
-            at45_program(m, page, blank);
+            at45_program(f, page, blank);
             break;
         }
         case 0x50: {                                  /* block erase: 8 pages */
             uint8_t blank[CY_AT45_PAGE];
             memset(blank, 0xff, sizeof blank);
-            for (uint32_t i = 0; i < 8; i++) at45_program(m, (page & ~7u) + i, blank);
+            for (uint32_t i = 0; i < 8; i++) at45_program(f, (page & ~7u) + i, blank);
             break;
         }
         case 0x58: case 0x59: break;                  /* auto page rewrite: no change */
@@ -66,11 +65,10 @@ static void at45_end(cybiko_t *m)
     f->programming = false;
 }
 
-void cy_at45_cs(cybiko_t *m, bool selected)
+void cy_at45_cs(cy_at45_t *f, bool selected)
 {
-    cy_at45_t *f = &m->at45;
     if (f->selected == selected) return;
-    if (!selected) at45_end(m);
+    if (!selected) at45_end(f);
     f->selected = selected;
 }
 
@@ -80,11 +78,12 @@ static void at45_unknown(cy_at45_t *f, uint8_t op)
     f->last_unknown = op;
 }
 
-/* One byte each way on SCI1 (clocked sync). */
+/* One byte each way on SCI1 (clocked sync), with the chip whose select is
+ * low: the built-in one, or the memory card's. */
 uint8_t cy_at45_spi(cybiko_t *m, uint8_t in)
 {
-    cy_at45_t *f = &m->at45;
-    if (!f->selected) return 0xff;
+    cy_at45_t *f = m->at45.selected ? &m->at45 : m->card.mem && m->card.selected ? &m->card : NULL;
+    if (!f) return m->mp3c ? cy_mp3c_spi(m->mp3c, in, (m->sci[1].scr >> 4) & 3) : 0xff;
     if (f->output) {
         if (!f->out) return f->status;
         uint8_t v = f->out[f->out_pos];
@@ -159,9 +158,8 @@ uint8_t cy_at45_spi(cybiko_t *m, uint8_t in)
     return 0xff;
 }
 
-void cy_at45_reset(cybiko_t *m)
+void cy_at45_reset(cy_at45_t *f)
 {
-    cy_at45_t *f = &m->at45;
     f->selected = false;
     f->cmd_len = 0;
     f->output = f->programming = false;
@@ -169,27 +167,48 @@ void cy_at45_reset(cybiko_t *m)
     f->status = ST_READY | ST_DB081;
 }
 
-int cybiko_at45_take_dirty(cybiko_t *m, uint32_t *bits)
+static int take_dirty(cy_at45_t *f, uint32_t *bits)
 {
     int n = 0;
     for (size_t i = 0; i < CY_AT45_PAGES / 32; i++) {
-        bits[i] = m->at45.dirty[i];
+        bits[i] = f->dirty[i];
         n += __builtin_popcount(bits[i]);
-        m->at45.dirty[i] = 0;
+        f->dirty[i] = 0;
     }
     return n;
 }
 
-/* The Cybiko ID. CyOS 1.2.46 reads it at start into a word in RAM, which
- * its radio uses from then on; where the Classic keeps it in the flash is not
+int cybiko_at45_take_dirty(cybiko_t *m, uint32_t *bits) { return take_dirty(&m->at45, bits); }
+int cybiko_card_take_dirty(cybiko_t *m, uint32_t *bits) { return m->card.mem ? take_dirty(&m->card, bits) : 0; }
+
+/* The memory card ("Cybiko 1Mb Memory Card"), from the Classic's schematic
+ * (CY6411) and CyOS 1.2.57: 256 KB of static RAM on chip select CS2, which
+ * CyOS finds at 400000 by writing each power of two below 2 MB and reading
+ * back the mirror at 5ffffc, and a DataFlash on SCI1 next to the built-in
+ * one, selected by P21 (CyOS's third flash, on P14, is not fitted). CyOS
+ * 1.2.46 knows neither. */
+void cybiko_classic_card(cybiko_t *m, uint8_t *flash, uint8_t *ram)
+{
+    m->card.mem = flash;
+    m->card_ram = ram;
+    if (ram) h8s_map(&m->cpu, CY_CARD_RAM_BASE, 0x200000, ram, CY_CARD_RAM_SIZE, true);
+    cy_at45_reset(&m->card);
+}
+
+/* The Cybiko ID. CyOS 1.2 reads it at start into a word in RAM, which its
+ * radio uses from then on; where the Classic keeps it in the flash is not
  * known, so a given ID goes into that word, again whenever CyOS changes it.
- * The address and the version string that tells this CyOS apart are
- * ReBiko's (sci0_v1.c); the word is written only once CyOS's radio object
- * exists, since the boot loader uses that RAM before CyOS runs. Other CyOS
- * versions keep the ID of their flash. */
+ * For 1.2.46 the address and the version string that tells this CyOS apart
+ * are ReBiko's (sci0_v1.c); the word is written only once CyOS's radio
+ * object exists, since the boot loader uses that RAM before CyOS runs. For
+ * 1.2.57 (System Pack 57) the word is the one its console's "id" command
+ * reads and sets, and it is written only once CyOS has put an ID there.
+ * Other CyOS versions keep the ID of their flash. */
 #define V1246_VERSION_AT 0x20364au
 #define V1246_RADIO_OBJ  0x21f216u
 #define V1246_CYID       0x21f9dcu
+#define V1257_VERSION_AT 0x203decu
+#define V1257_CYID       0x222cf4u
 
 static uint32_t ram32(const cybiko_t *m, uint32_t a)
 {
@@ -197,23 +216,29 @@ static uint32_t ram32(const cybiko_t *m, uint32_t a)
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
-static bool cyos_1246_running(const cybiko_t *m)
+/* Where the running CyOS keeps the ID, or 0 (not known, or not running yet) */
+static uint32_t cyid_word(const cybiko_t *m)
 {
-    if (memcmp(m->ram + (V1246_VERSION_AT - 0x200000u), "1.2.46", 6)) return false;
-    uint32_t obj = ram32(m, V1246_RADIO_OBJ);
-    return obj >= 0x200000u && obj < 0x200000u + CY_CLASSIC_RAM_SIZE;
+    if (!memcmp(m->ram + (V1246_VERSION_AT - 0x200000u), "1.2.46", 6)) {
+        uint32_t obj = ram32(m, V1246_RADIO_OBJ);
+        return obj >= 0x200000u && obj < 0x200000u + CY_CLASSIC_RAM_SIZE ? V1246_CYID : 0;
+    }
+    if (!memcmp(m->ram + (V1257_VERSION_AT - 0x200000u), "1.2.57", 6))
+        return ram32(m, V1257_CYID) ? V1257_CYID : 0;
+    return 0;
 }
 
 uint32_t cy_classic_cyos_id(const cybiko_t *m)
 {
-    return cyos_1246_running(m) ? ram32(m, V1246_CYID) : 0;
+    uint32_t a = cyid_word(m);
+    return a ? ram32(m, a) : 0;
 }
 
 void cy_classic_poll(cybiko_t *m)
 {
-    uint32_t id = m->rf.classic_id;
-    if (!id || !cyos_1246_running(m) || ram32(m, V1246_CYID) == id) return;
-    uint8_t *p = m->ram + (V1246_CYID - 0x200000u);
+    uint32_t id = m->rf.classic_id, a;
+    if (!id || !(a = cyid_word(m)) || ram32(m, a) == id) return;
+    uint8_t *p = m->ram + (a - 0x200000u);
     p[0] = (uint8_t)(id >> 24); p[1] = (uint8_t)(id >> 16); p[2] = (uint8_t)(id >> 8); p[3] = (uint8_t)id;
 }
 

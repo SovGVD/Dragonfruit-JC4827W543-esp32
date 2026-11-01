@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "cybiko.c" "cy_periph.c" "cy_devices.c" "cy_dma.c" "cy_disk.c" "cy_hle.c" "cy_rf.c" "cy_cart.c" "cy_classic.c" "cy_usb.c"
+    SRCS "cybiko.c" "cy_periph.c" "cy_devices.c" "cy_dma.c" "cy_disk.c" "cy_hle.c" "cy_rf.c" "cy_cart.c" "cy_classic.c" "cy_usb.c" "cy_con.c" "cy_sysupdate.c" "cy_mp3c.c"
     INCLUDE_DIRS "include"
     REQUIRES h8s
     LDFRAGMENTS "linker.lf"

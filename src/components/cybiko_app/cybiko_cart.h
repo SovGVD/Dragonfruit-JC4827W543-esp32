@@ -19,7 +19,11 @@
 /* cfg is the text of /Cybiko/cybiko.cfg, or NULL. Call after cybiko_init
  * and before the machine runs. */
 void cybiko_cart_init(cybiko_t *m, const char *cfg);
-/* CPU task: pass the music CyOS sent to the decoder. */
+/* Start the MP3 decoder (cybiko_cart_init does for the cartridge; the
+ * Classic's MP3 player needs it too). */
+void cybiko_cart_start_decoder(void);
+/* CPU task: pass the music CyOS sent (or the Classic's player plays) to the
+ * decoder. */
 void cybiko_cart_poll(cybiko_t *m);
 /* Carry CyOS's changes on the card over to the card folder. Call with the
  * CPU task paused. */

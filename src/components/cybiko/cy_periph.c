@@ -8,6 +8,7 @@
  * h8_timer8, h8_watchdog, h8_sci and h8_adc devices. */
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 #define NO_EVENT 0xffffffffu
 
@@ -730,6 +731,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
         if (s->tx_busy && n < 2 && (s->smr & 0x80) && (s->scr & ~v & (SCR_TE | SCR_RE))) sci_tx_done(m, n);
         uint8_t delta = s->scr ^ v;
         s->scr = v;
+        if (m->classic && n == 1 && m->mp3c && (delta & v & (SCR_TE | SCR_RE))) cy_mp3c_arm(m->mp3c);
         if ((delta & SCR_RE) && !(v & SCR_RE)) s->rx_busy = false;
         if (s->rx_busy && !s->rx_count && !sci_sync_rx(m, n)) s->rx_busy = false;
         if ((delta & SCR_TIE) && (v & SCR_TIE) && (s->ssr & SSR_TDRE)) cy_irq(m, sci_vec(n, 2));
@@ -748,14 +750,20 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
             if (!s->tx_busy) sci_tx_start(m, n);
         }
         break;
-    case 4:
+    case 4: {
+        bool had_error = sci_error(s);
         if ((s->scr & SCR_TE) && (s->ssr & s->ssr_read & SSR_TDRE) && !(v & SSR_TDRE))
             s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
         s->ssr = (uint8_t)((s->ssr & (~s->ssr_read | v | SSR_TDRE | SSR_TEND | SSR_MPB) & ~SSR_MPBT) | (v & SSR_MPBT));
         s->ssr_read &= s->ssr;
+        /* RXI is a level (RDRF and RIE): a byte that came in while an error
+         * flag was up raised ERI only, and asks for RXI once that is
+         * cleared. CyOS 1.2's console otherwise leaves it in RDR for good. */
+        if (had_error && !sci_error(s) && (s->ssr & SSR_RDRF) && (s->scr & SCR_RIE)) cy_irq(m, sci_vec(n, 1));
         if (!s->tx_busy && !(s->ssr & SSR_TDRE)) sci_tx_start(m, n);
         sci_rx_start(m, n);
         break;
+    }
     case 6: m->scmr[n] = v & 0x0d; break;
     default: break;
     }

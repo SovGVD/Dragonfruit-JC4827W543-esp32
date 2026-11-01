@@ -7,6 +7,9 @@
 #include "cybiko.h"
 #include "cybiko_progs.h"
 #include "cy_internal.h"
+#include "cy_mp3c.h"
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { \
@@ -715,6 +718,74 @@ static void test_cart(void)
     CHECK((h8s_read8(&m.cpu, 0xffff55) & 0x40) != 0);
 }
 
+/* The Classic's MP3 player: a command and its answer over the slot, as
+ * CyOS's own check moves them (both ways at once, byte by byte). */
+static uint16_t mp3c_xfer(cy_mp3c_t *p, uint16_t cmd, const uint8_t *data, uint16_t len, uint8_t *ans, uint16_t *status)
+{
+    uint8_t h[4] = { (uint8_t)(len >> 8), (uint8_t)len, (uint8_t)(cmd >> 8), (uint8_t)cmd };
+    for (int i = 0; i < 4; i++) cy_mp3c_spi(p, h[i], 3);
+    for (uint16_t i = 0; i < len; i++) cy_mp3c_spi(p, data[i], 3);
+    for (int i = 0; i < 4; i++) h[i] = cy_mp3c_spi(p, 0xff, 3);
+    uint16_t n = (uint16_t)(h[0] << 8 | h[1]);
+    *status = (uint16_t)(h[2] << 8 | h[3]);
+    for (uint16_t i = 0; i < n; i++) ans[i] = cy_mp3c_spi(p, 0xff, 3);
+    return n;
+}
+
+static void test_mp3_player(void)
+{
+    char dir[] = "/tmp/cy_mp3c_XXXXXX";
+    CHECK(mkdtemp(dir) != NULL);
+    char path[64];
+    snprintf(path, sizeof path, "%s/song.mp3", dir);
+    FILE *f = fopen(path, "wb");
+    uint8_t frame[1200] = { 0xff, 0xfb, 0x90, 0x40 };   /* MPEG 1 layer 3, 128 kbps, stereo */
+    fwrite(frame, 1, sizeof frame, f);
+    fclose(f);
+
+    static cy_mp3c_t p;
+    cy_mp3c_init(&p, cy_mp3c_player, NULL, NULL);
+    cy_mp3c_set_root(&p, dir);
+    uint8_t ans[512], ready = p.ready;
+    uint16_t st;
+    CHECK(cy_mp3c_spi(&p, 0x00, 3) == 0xff && p.commands == 0);   /* not selected: nothing */
+    cy_mp3c_select_pin(&p, false);
+    CHECK(p.ready != ready);                                    /* ready for the header */
+    CHECK(mp3c_xfer(&p, 0x31, NULL, 0, ans, &st) == 4 && st == 0x0031 && ans[3] == 0x03);
+    uint8_t list[12] = { 0x00, 0x80, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xfe };
+    CHECK(mp3c_xfer(&p, 0x38, list, 12, ans, &st) == 4 && ans[3] == 1);         /* one file, id 1 */
+    uint8_t id[4] = { 0, 0, 0, 1 };
+    uint16_t n = mp3c_xfer(&p, 0x39, id, 4, ans, &st);
+    CHECK(n == 9 + 8 && !memcmp(ans + 9, "song.mp3", 8) && ans[2] == 0x04 && ans[3] == 0xb0);  /* 1200 bytes */
+    n = mp3c_xfer(&p, 0x11, id, 4, ans, &st);
+    CHECK(n < 0xb0 && ans[5] == 128 && ans[7] == 1 && !memcmp(ans + 8, "song", 4));   /* no tag: the name */
+    /* a play list of one, the data after the answer */
+    uint8_t cnt[2] = { 0, 1 };
+    mp3c_xfer(&p, 0x11d, cnt, 2, ans, &st);
+    for (int i = 0; i < 4; i++) cy_mp3c_spi(&p, id[i], 3);
+    for (int i = 0; i < 4; i++) cy_mp3c_spi(&p, 0xff, 3);
+    CHECK(p.nlist == 1 && p.list[0] == 1);
+    mp3c_xfer(&p, 0x15, NULL, 0, ans, &st);                     /* play */
+    CHECK(p.play_state == CY_MP3C_PLAYING && p.song == 1);
+    uint8_t buf[2000];
+    CHECK(cy_mp3c_stream(&p, buf, 1000) == 1000 && buf[0] == 0xff);
+    CHECK(mp3c_xfer(&p, 0x17, NULL, 0, ans, &st) == 20 && ans[1] == CY_MP3C_PLAYING && ans[15] == 1 && ans[19] == 1);
+    mp3c_xfer(&p, 0x12, id, 4, ans, &st);                       /* pause */
+    CHECK(p.play_state == CY_MP3C_PAUSED && cy_mp3c_stream(&p, buf, 100) == 0);
+    cy_mp3c_button(&p, CY_MP3C_BTN_PLAY);                       /* the player's own button */
+    CHECK(cy_mp3c_stream(&p, buf, 1000) == 200 && p.play_state == CY_MP3C_STOPPED);   /* the end */
+    uint8_t vol = 10;
+    mp3c_xfer(&p, 0x18, &vol, 1, ans, &st);
+    CHECK(p.volume == 10 && cy_mp3c_gain(&p) == 0x6a - 36);
+    p.unknown = 0;
+    mp3c_xfer(&p, 0x77, NULL, 0, ans, &st);
+    CHECK(p.unknown == 1);
+    cy_mp3c_select_pin(&p, true);
+    cy_mp3c_free(&p);
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void)
 {
     ram = malloc(CY_RAM_SIZE);
@@ -735,6 +806,7 @@ int main(void)
     test_hle_loops();
     test_radio();
     test_cart();
+    test_mp3_player();
     free(ram);
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all cybiko tests passed\n");

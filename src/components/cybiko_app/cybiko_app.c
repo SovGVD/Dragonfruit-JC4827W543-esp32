@@ -37,6 +37,8 @@
 #include "cybiko_browser.h"
 #include "cybiko_gate.h"
 #include "cybiko.h"
+#include "cy_sysupdate.h"
+#include "cy_mp3c.h"
 #include "display.h"
 #include "m5_sd.h"
 #include "palm_config.h"
@@ -64,6 +66,10 @@ static const char *TAG = "cybiko";
 #define CFG_PATH CYBIKO_SD_DIR "/cybiko.cfg"
 #define CLASSIC_SAVE_PATH CYBIKO_CLASSIC_DIR "/flash_saved.bin"
 #define CLASSIC_STATE_PATH CYBIKO_CLASSIC_DIR "/state.bin"
+#define CLASSIC_CARD_PATH CYBIKO_CLASSIC_DIR "/card.bin"         /* the memory card's flash */
+#define CLASSIC_UPDATE_PATH CYBIKO_CLASSIC_DIR "/Cybiko-AutoUpdate.exe"
+#define CLASSIC_SMC_DIR CYBIKO_CLASSIC_DIR "/smc"             /* the MP3 player's SmartMedia card */
+#define CLASSIC_INSTALL_DIR CYBIKO_CLASSIC_DIR "/install"     /* files to send into CyOS's flash */
 #define APPS_DIR CYBIKO_SD_DIR "/apps"
 #define DISK_DEFAULT_MB 4
 
@@ -77,6 +83,13 @@ static uint32_t clock_hz = CY_CLOCK_HZ;
 static char update_path[300];
 static uint32_t update_writes;
 static uint8_t *rom, *flash, *ram;
+static uint8_t *card;                       /* Classic: the memory card's flash, or NULL */
+static cy_mp3c_t *mp3c;                     /* Classic: the MP3 player, or NULL */
+static volatile uint32_t mp3_buttons;       /* its buttons pressed on screen, for the CPU task */
+static cy_su_t *sysupdate;                  /* Classic: System Pack 57 going in */
+static uint8_t *sysupdate_exe;
+static bool installing;                     /* sysupdate is sending CLASSIC_INSTALL_DIR's files */
+static uint8_t *install_data[CY_SU_MAX_FILES];
 static uint8_t *disk;                       /* the RAM disk, moved to CY_DISK_BASE */
 static uint32_t disk_size;
 static QueueHandle_t key_queue;
@@ -100,6 +113,7 @@ static void on_serial_tx(void *user, int port, uint8_t b)
      * log it a line at a time. The other ports are the radio co-processor
      * (cy_rf.c, cybiko_link.c) and the flash or the cartridge. */
     if (port != (classic ? 2 : 1)) return;
+    if (sysupdate) cy_su_rx(sysupdate, b);
     static char line[128];
     static size_t len;
     if (b == '\n' || b == '\r' || len == sizeof line - 1) {
@@ -185,6 +199,53 @@ const uint8_t *cybiko_app_frame(void)
 
 bool cybiko_app_vsync_on(void) { return vsync && !in_browser; }
 
+/* System Pack 57 (cy_sysupdate.h), a step each millisecond of Cybiko time.
+ * Once it is in, the updater is renamed so that it does not run again; the
+ * flash is saved as always (every 30 s, when idle). */
+static void sysupdate_poll(void)
+{
+    static char said[160];
+    cy_su_state_t st = cy_su_poll(sysupdate, 1);
+    const char *what = installing ? "install" : "System Pack 57";
+    if (strcmp(said, sysupdate->message)) {
+        int total, done = cy_su_progress(sysupdate, &total);
+        ESP_LOGI(TAG, "%s: %d/%d %s", what, done, total, sysupdate->message);
+        snprintf(said, sizeof said, "%s", sysupdate->message);
+    }
+    if (installing && (st == CY_SU_DONE || st == CY_SU_FAILED)) {
+        if (st == CY_SU_DONE) {                 /* done: moved to install/installed */
+            mkdir(CLASSIC_INSTALL_DIR "/installed", 0777);
+            for (int i = 0; i < sysupdate->nfiles; i++) {
+                char from[96], to[110];
+                snprintf(from, sizeof from, CLASSIC_INSTALL_DIR "/%s", sysupdate->files[i].name);
+                snprintf(to, sizeof to, CLASSIC_INSTALL_DIR "/installed/%s", sysupdate->files[i].name);
+                remove(to);
+                if (rename(from, to) != 0) ESP_LOGW(TAG, "install: could not move %s to %s", from, to);
+            }
+            ESP_LOGI(TAG, "install: %s; the files are now in %s/installed", sysupdate->message, CLASSIC_INSTALL_DIR);
+        } else {
+            ESP_LOGE(TAG, "install: failed: %s (tried again at the next start)", sysupdate->message);
+        }
+        for (int i = 0; i < CY_SU_MAX_FILES; i++) { free(install_data[i]); install_data[i] = NULL; }
+        installing = false;
+        free(sysupdate);
+        sysupdate = NULL;
+        return;
+    }
+    if (st == CY_SU_DONE) {
+        if (rename(CLASSIC_UPDATE_PATH, CLASSIC_UPDATE_PATH ".installed") != 0)
+            ESP_LOGW(TAG, "could not rename %s", CLASSIC_UPDATE_PATH);
+    } else if (st == CY_SU_FAILED) {
+        ESP_LOGE(TAG, "System Pack 57 not installed: %s (it is tried again at the next start)", sysupdate->message);
+    } else {
+        return;
+    }
+    free(sysupdate_exe);
+    sysupdate_exe = NULL;
+    free(sysupdate);
+    sysupdate = NULL;
+}
+
 static void cpu_task(void *arg)
 {
     (void)arg;
@@ -209,9 +270,15 @@ static void cpu_task(void *arg)
             if (ev.down && mod) keys_after = machine->cpu.cycles + MODIFIER_STATES;
         }
         cybiko_link_poll(machine);
+        if (sysupdate) sysupdate_poll();
         if (!classic) {
             cybiko_gate_poll(machine);
             cybiko_cart_poll(machine);
+        } else if (mp3c) {
+            uint32_t b = __atomic_exchange_n(&mp3_buttons, 0, __ATOMIC_RELAXED);
+            for (int i = 0; b; i++, b >>= 1)
+                if (b & 1) cy_mp3c_button(mp3c, i);
+            cybiko_cart_poll(machine);                /* the MP3 player's music */
         }
 
         int64_t run_start = esp_timer_get_time();
@@ -353,6 +420,36 @@ static void save_disk(const uint32_t *dirty, const uint8_t *staged)
     ESP_LOGI(TAG, "saved %d KB of the RAM disk%s", n * (int)(CY_DISK_CHUNK / 1024), ok ? "" : " (write error)");
 }
 
+/* The memory card's flash: the changed pages into card.bin (written whole
+ * the first time). */
+static void save_card(void)
+{
+    static uint32_t dirty[CY_AT45_PAGES / 32];
+    static uint8_t page[CY_AT45_PAGE];
+    struct stat st;
+    bool whole = stat(CLASSIC_CARD_PATH, &st) != 0 || st.st_size != CY_AT45_SIZE;
+    cpu_pause(true);
+    int changed = cybiko_card_take_dirty(machine, dirty);
+    cpu_pause(false);
+    if (!changed && !whole) return;
+    /* A page CyOS writes again meanwhile is marked again: saved next time. */
+    if (whole) {
+        if (write_file(CLASSIC_CARD_PATH, card, CY_AT45_SIZE)) ESP_LOGI(TAG, "saved the memory card to %s", CLASSIC_CARD_PATH);
+        return;
+    }
+    FILE *f = fopen(CLASSIC_CARD_PATH, "r+b");
+    bool ok = f != NULL;
+    for (uint32_t p = 0; ok && p < CY_AT45_PAGES; p++) {
+        if (!(dirty[p / 32] & (1u << (p % 32)))) continue;
+        cpu_pause(true);
+        memcpy(page, card + p * CY_AT45_PAGE, CY_AT45_PAGE);
+        cpu_pause(false);
+        ok = fseek(f, (long)(p * CY_AT45_PAGE), SEEK_SET) == 0 && fwrite(page, 1, CY_AT45_PAGE, f) == CY_AT45_PAGE;
+    }
+    if (f) ok = fclose(f) == 0 && ok;
+    ESP_LOGI(TAG, "saved %d changed memory card pages%s", changed, ok ? "" : " (write error)");
+}
+
 /* The Classic's DataFlash: the pages CyOS changed, copied while the CPU is
  * paused, patched into flash_saved.bin, which is written whole the first
  * time (from the 1 MB image, so the dump it came from stays untouched). */
@@ -397,6 +494,7 @@ static void save_classic(void)
         if (f) ok = fclose(f) == 0 && ok;
         ESP_LOGI(TAG, "saved %d changed flash pages%s", changed, ok ? "" : " (write error)");
     }
+    if (card) save_card();
     save_state();
 }
 
@@ -524,6 +622,13 @@ static void classic_key(int key, bool down)
         return;
     }
     queue_key(k, down);
+}
+
+bool cybiko_app_mp3_player(void) { return mp3c != NULL; }
+
+void cybiko_app_mp3_button(int button)
+{
+    if (mp3c && button >= 0 && button < 32) __atomic_fetch_or(&mp3_buttons, 1u << button, __ATOMIC_RELAXED);
 }
 
 void cybiko_app_key(int key, bool down)
@@ -823,6 +928,145 @@ static void start_tasks(void)
 
 static EXT_RAM_BSS_ATTR char cfg[1024];
 
+static void mp3c_log(void *user, const char *line) { (void)user; ESP_LOGI(TAG, "%s", line); }
+
+/* The MP3 player (CY65P10). Its SmartMedia card is the folder
+ * /Cybiko/Classic/smc; MP3.app and its two libraries must be on the flash
+ * (docs/cybiko-classic-modules.md). */
+static void start_mp3_player(void)
+{
+    mp3c = heap_caps_calloc(1, sizeof *mp3c, MALLOC_CAP_SPIRAM);
+    if (!mp3c) { ESP_LOGW(TAG, "MP3 player: no memory for it, left out"); return; }
+    cy_mp3c_init(mp3c, cy_mp3c_player, mp3c_log, NULL);
+    cy_mp3c_set_root(mp3c, CLASSIC_SMC_DIR);
+    machine->mp3c = mp3c;
+    cybiko_cart_start_decoder();
+    ESP_LOGI(TAG, "MP3 player in the slot, its card %s", CLASSIC_SMC_DIR);
+}
+
+static bool folder_has_files(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    struct dirent *de;
+    bool any = false;
+    while (!any && (de = readdir(dir)) != NULL) any = de->d_name[0] != '.';
+    closedir(dir);
+    return any;
+}
+
+/* What is in the slot on the back, from cybiko.cfg:
+ *   classic.slot = auto   default: the MP3 player when /Cybiko/Classic/smc
+ *                         has files, else the memory card
+ *   classic.slot = card   the memory card
+ *   classic.slot = mp3    the MP3 player
+ *   classic.slot = empty  nothing (as classic.card = 0)
+ * The memory card ("Cybiko 1Mb Memory Card": 256 KB RAM, 1 MB flash) has
+ * its flash in card.bin, an empty card at first. CyOS 1.2.46 uses neither;
+ * 1.2.57 (System Pack 57) does. */
+static void start_card(const char *cfg)
+{
+    char v[8], slot[8] = "auto";
+    if (cfg) config_get_value(cfg, "classic.slot", slot, sizeof slot);
+    if (cfg && config_get_value(cfg, "classic.card", v, sizeof v) && atoi(v) == 0 && !strcmp(slot, "auto"))
+        strcpy(slot, "empty");
+    mkdir(CLASSIC_SMC_DIR, 0777);                   /* to show where the songs go */
+    if (!strcmp(slot, "mp3") || (!strcmp(slot, "auto") && folder_has_files(CLASSIC_SMC_DIR))) {
+        start_mp3_player();
+        return;
+    }
+    if (strcmp(slot, "auto") && strcmp(slot, "card")) {
+        if (strcmp(slot, "empty")) ESP_LOGW(TAG, "classic.slot = %s: not known, the slot left empty", slot);
+        ESP_LOGI(TAG, "slot: empty");
+        return;
+    }
+    card = heap_caps_malloc(CY_AT45_SIZE, MALLOC_CAP_SPIRAM);
+    uint8_t *card_ram = heap_caps_calloc(1, CY_CARD_RAM_SIZE, MALLOC_CAP_SPIRAM);
+    if (!card || !card_ram) {
+        ESP_LOGW(TAG, "memory card: no memory for it, left out");
+        free(card);
+        free(card_ram);
+        card = NULL;
+        return;
+    }
+    if (!load_file(CLASSIC_CARD_PATH, card, CY_AT45_SIZE, true)) {
+        cybiko_at45_format_free(card, 0);
+        ESP_LOGI(TAG, "memory card: empty (no %s yet)", CLASSIC_CARD_PATH);
+    } else {
+        ESP_LOGI(TAG, "memory card: %s", CLASSIC_CARD_PATH);
+    }
+    cybiko_classic_card(machine, card, card_ram);
+}
+
+/* Files in /Cybiko/Classic/install (programs such as MP3.app and the
+ * libraries MP3.dl and mp3_control.dl) go into CyOS's flash through its
+ * console once CyOS is up, then move to install/installed. */
+static void start_install(void)
+{
+    mkdir(CLASSIC_INSTALL_DIR, 0777);           /* to show where the files go */
+    DIR *dir = opendir(CLASSIC_INSTALL_DIR);
+    if (!dir) return;
+    static cy_su_file_t files[CY_SU_MAX_FILES];
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        char path[96];
+        struct stat st;
+        if (de->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, CLASSIC_INSTALL_DIR "/%s", de->d_name);
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (strlen(de->d_name) >= sizeof files[0].name || st.st_size <= 0 || st.st_size > 512 * 1024 || n == CY_SU_MAX_FILES) {
+            ESP_LOGW(TAG, "install: %s left out (name over %u characters, empty, over 512 KB, or over %d files)",
+                     de->d_name, (unsigned)sizeof files[0].name - 1, CY_SU_MAX_FILES);
+            continue;
+        }
+        uint8_t *d = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM);
+        if (!d || !load_file(path, d, (size_t)st.st_size, true)) {
+            ESP_LOGW(TAG, "install: could not read %s", path);
+            free(d);
+            continue;
+        }
+        install_data[n] = d;
+        snprintf(files[n].name, sizeof files[n].name, "%s", de->d_name);
+        files[n].data = d;
+        files[n].size = (uint32_t)st.st_size;
+        n++;
+    }
+    closedir(dir);
+    if (!n) return;
+    sysupdate = heap_caps_calloc(1, sizeof *sysupdate, MALLOC_CAP_SPIRAM);
+    if (!sysupdate || !cy_su_start_files(sysupdate, machine, files, n)) {
+        ESP_LOGE(TAG, "install: %s", sysupdate ? sysupdate->message : "no memory");
+        for (int i = 0; i < n; i++) { free(install_data[i]); install_data[i] = NULL; }
+        free(sysupdate);
+        sysupdate = NULL;
+        return;
+    }
+    installing = true;
+    ESP_LOGI(TAG, "install: %d files from %s going into CyOS's flash", n, CLASSIC_INSTALL_DIR);
+}
+
+/* System Pack 57: Cybiko-AutoUpdate.exe in /Cybiko/Classic goes in through
+ * CyOS's console once CyOS is up (about 6 minutes). Without it, the files
+ * in /Cybiko/Classic/install go in (start_install). */
+static void start_sysupdate(void)
+{
+    struct stat st;
+    if (stat(CLASSIC_UPDATE_PATH, &st) != 0) { start_install(); return; }
+    sysupdate_exe = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM);
+    sysupdate = heap_caps_calloc(1, sizeof *sysupdate, MALLOC_CAP_SPIRAM);
+    if (!sysupdate_exe || !sysupdate || !load_file(CLASSIC_UPDATE_PATH, sysupdate_exe, (size_t)st.st_size, true) ||
+        !cy_su_start(sysupdate, machine, sysupdate_exe, (size_t)st.st_size)) {
+        ESP_LOGE(TAG, "%s: %s", CLASSIC_UPDATE_PATH, sysupdate ? sysupdate->message : "no memory");
+        free(sysupdate_exe);
+        free(sysupdate);
+        sysupdate_exe = NULL;
+        sysupdate = NULL;
+        return;
+    }
+    ESP_LOGI(TAG, "System Pack 57: %d files from %s, installing", sysupdate->nfiles, CLASSIC_UPDATE_PATH);
+}
+
 /* The Classic: boot ROM and DataFlash from /Cybiko/Classic, the radio over
  * ESP-NOW as the Xtreme's (cybiko.cfg's rf keys); no RAM disk, cartridge,
  * WAP gate or browser, which CyOS 1.2 does not have. */
@@ -863,6 +1107,8 @@ static void start_classic(void)
     cy_host_t host = { .serial_tx = on_serial_tx, .wall_time = wall_time, .speaker = on_speaker,
                        .rf_send = cybiko_link_send };
     cybiko_init_classic(machine, &host, rom, flash, ram);
+    start_card(have_cfg ? cfg : NULL);
+    start_sysupdate();
     clock_hz = cybiko_clock_hz(machine);
     cybiko_link_init(machine, have_cfg ? cfg : NULL);
     start_tasks();

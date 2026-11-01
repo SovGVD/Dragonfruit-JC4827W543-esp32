@@ -18,7 +18,7 @@ bool cybiko_app_find_dump(char *flash_path, size_t cap);
 /* The Cybiko Classic (the first model, CyOS 1.2) keeps its files in
  * CYBIKO_CLASSIC_DIR (/Cybiko/Classic), first match wins:
  *   boot ROM (32 KB):            cyrom112.bin, boot.bin, bootrom.bin
- *   flash (512 KB or 1 MB):      flash_saved.bin, flash_v1246.bin, flash.bin
+ *   flash (512 KB or 1 MB):      flash_saved.bin, flash_v1257.bin, flash_v1246.bin, flash.bin
  * The emulated flash is a 1 MB AT45DB081, so a 512 KB dump gets 512 KB of
  * free space; once CyOS writes to it, it is saved as flash_saved.bin (1 MB)
  * and the dump is left as it was. Both dumps are in ReBiko's release

@@ -312,11 +312,15 @@ Its files live in `/Cybiko/Classic`:
 | File | Size | Accepted names (first match wins) |
 | --- | --- | --- |
 | Boot ROM | 32 KB | `cyrom112.bin`, `boot.bin`, `bootrom.bin` |
-| CyOS flash | 512 KB or 1 MB | `flash_saved.bin`, `flash_v1246.bin`, `flash.bin` |
+| CyOS flash | 512 KB or 1 MB | `flash_saved.bin`, `flash_v1257.bin`, `flash_v1246.bin`, `flash.bin` |
 
-Both are MAME's `cybikov1` set (CyOS 1.2.46). ReBiko's release zip has them
-as `roms/boot.bin` and `roms/flash.bin`, which can be copied in under those
-names. The real Classic has a 512 KB AT45DB041; the emulator has a 1 MB
+The boot ROM is MAME's `cybikov1` dump. For the flash, take
+`flash_v1257.bin` from [cybiko-roms](https://github.com/SovGVD/cybiko-roms)
+`classic/`: CyOS 1.2.57, the Classic's last CyOS (System Pack 57, installed
+once on the 1.2.46 dump by the PC runner), which knows the memory card.
+`flash_v1246.bin` is MAME's own dump (CyOS 1.2.46). ReBiko's release zip has
+the boot ROM and the 1.2.46 flash as `roms/boot.bin` and `roms/flash.bin`,
+which can be copied in under those names. The real Classic has a 512 KB AT45DB041; the emulator has a 1 MB
 AT45DB081 (as ReBiko does), which CyOS finds by itself ("4091 blocks"), so
 a 512 KB dump gets another 512 KB of free space. Once CyOS changes the flash
 (files, settings, the clock), the 1 MB image is saved as `flash_saved.bin`,
@@ -332,15 +336,45 @@ clock.
   1.2.46 keeps it in RAM, and the emulator puts the board's ID there. Two
   Classics chat with each other in the PC runner; Classic to Xtreme is not
   tested.
-- **Not there (yet).** The Classic's MP3 player and its memory expansion
-  module, a RAM disk, apps from `/Cybiko/apps`, the WAP gate and CyOS
-  updates are Xtreme only for now.
+- **The slot.** `cybiko.cfg` `classic.slot` = `auto` (default), `card`,
+  `mp3` or `empty`. Auto puts the MP3 player in when `/Cybiko/Classic/smc`
+  has files, else the memory card.
+- **Memory card.** The Classic's 1Mb Memory Card (256 KB RAM, 1 MB flash);
+  its flash is `/Cybiko/Classic/card.bin`. CyOS 1.2.57 uses it (Card Flash
+  in the File Manager); CyOS 1.2.46 does not see it.
+- **MP3 player.** The CY65P10: its SmartMedia card is the folder
+  `/Cybiko/Classic/smc` (drop MP3 files there). Copy `MP3.app`, `MP3.dl`
+  and `mp3_control.dl` to `/Cybiko/Classic/install` once: the next start
+  puts them into CyOS's flash. Then MP3 on the desktop lists, plays,
+  pauses, skips and seeks songs, with volume, repeat and shuffle; the
+  player's own six buttons (back, play/pause, forward, stop, volume up and
+  down) are beside the LCD in portrait and on the MORE page in landscape.
+  How it works: [cybiko-classic-modules.md](cybiko-classic-modules.md).
+- **Installing programs.** Any Classic program or library copied to
+  `/Cybiko/Classic/install` goes into CyOS's flash through its console at
+  the next start, and moves to `install/installed`.
+- **CyOS 1.2.57.** `flash_v1257.bin` is taken before `flash_v1246.bin`. To
+  move a `flash_saved.bin` that has 1.2.46 to 1.2.57 and keep its files, copy
+  Cybiko's `Cybiko-AutoUpdate.exe` (System Pack 57, in cybiko-roms
+  `classic/`) to `/Cybiko/Classic`: the next start installs it through CyOS's
+  console, as Cybiko's AutoUpdate did, in about 6 minutes of emulated time,
+  and renames the file `.installed`. Details:
+  [cybiko-classic-modules.md](cybiko-classic-modules.md).
+- **Not there (yet).** A RAM disk, apps from `/Cybiko/apps` and the WAP
+  gate; the MP3 player's FM, voice recording, equalizer and CyOS's file work
+  on its card.
 
 In the [PC runner](#pc-runner), a flash image of 512 KB or 1 MB (or
 `--classic`) runs the Classic: `--save-flash FILE` writes the 1 MB flash at
 the end, `--pair FLASH2` and `--third FLASH3` add Classics with their own
 flash images on the radio, `--unit-id HEX` sets the first one's ID, and the
-key names are the Classic's.
+key names are the Classic's. `--mem-card IMG` plugs in the memory card,
+`--mp3-player DIR` the MP3 player (DIR its card; `--mp3-button play@MS`
+presses its buttons, `--wav FILE` records its music), `--install FILE`
+puts a program into CyOS's flash,
+`--sysupdate Cybiko-AutoUpdate.exe` installs System Pack 57 (give it
+`--seconds 420`), and `--con STEP` (with `--con-at MS`) types console
+commands or sends a file (`put:FILE[=NAME]`) over CyOS's console.
 
 ## Desktop app
 
@@ -459,9 +493,9 @@ CPU loop was.
 
 ## Future improvements
 
-- **Cybiko Classic: MP3 player and memory expansion.** The Classic's own
-  MP3 module and memory module work differently from the Xtreme's; left for
-  the next round.
+- **Cybiko Classic: MP3 player.** It plays songs; what is left (FM, voice,
+  the equalizer, CyOS's file work on the card, folders on the card) is in
+  [cybiko-classic-modules.md](cybiko-classic-modules.md).
 - **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
   tested in the PC runner; the open questions are listed in
   [cybiko-docs](https://github.com/SovGVD/cybiko-docs/blob/main/mp3-cartridge.md#4-open-questions).

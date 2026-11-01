@@ -5,6 +5,7 @@
  * where m->classic is tested. */
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 #define FLASH_BASE 0x600000u
 #define RAM_BASE   0x400000u
@@ -182,6 +183,8 @@ static uint8_t port_input(cybiko_t *m, int p)
             bool onoff = (m->keys[CYC_ONOFF >> 4] >> (CYC_ONOFF & 15)) & 1;
             return onoff ? 0xf7 : 0xff;
         }
+        case 1:                   /* port 2: bit 1 the MP3 player's ready line */
+            return m->mp3c && m->mp3c->present && !(m->mp3c->ready) ? 0xfd : 0xff;
         case 14:                  /* port F: bit 0 RTC SDA, bit 2 high (MAME) */
             return cy_rtc_sda(m) ? 0x05 : 0x04;
         default:
@@ -224,7 +227,9 @@ static void port_output(cybiko_t *m, int p)
     if (m->classic) {
         /* P34 selects the DataFlash (low); PF1 is the RTC clock and PF0 its
          * open-drain data, pulled low by making it an output. */
-        if (p == 2) cy_at45_cs(m, !(data & 0x10));
+        if (p == 2) cy_at45_cs(&m->at45, !(data & 0x10));
+        if (p == 1 && m->card.mem) cy_at45_cs(&m->card, !(data & 0x02));   /* P21: the memory card's */
+        if (p == 0 && m->mp3c) cy_mp3c_select_pin(m->mp3c, data & 0x80);      /* P17: the MP3 player's */
         if (p == 14) cy_rtc_pins(m, data & 0x02, data & 0x01);
         return;
     }
@@ -557,7 +562,7 @@ void cybiko_reset(cybiko_t *m)
     cy_dma_reset(m);
     cy_lcd_reset(&m->lcd);
     cy_rtc_reset(m);
-    if (m->classic) cy_at45_reset(m);
+    if (m->classic) { cy_at45_reset(&m->at45); cy_at45_reset(&m->card); }
     else cy_flash_reset(m);
     cy_rf_reset(m);
     cy_cart_reset(m);

@@ -21,7 +21,10 @@
  * pause/go on, 13 play from a block, 14 stop, 15 play, 16 go to a block, 17
  * status, 18 volume, 19 balance, 1a equalizer, 1c repeat and shuffle, 1d new
  * play list, 1e previous/next, 1f mode, 31 versions, 38 list the card, 39 a
- * file's details, 3b the card's size. Commands not known are answered with nothing and logged
+ * file's details, 3b the card's size; for CyOS's own use of the card (running
+ * an application kept there): 3c open check, 36 read and 0002 its data, 32
+ * find (1032 makes), 37 write, 3a set the size.
+ * Commands not known are answered with nothing and logged
  * (cy_mp3c_t.log), as are all but the status polls. */
 #ifndef CY_MP3C_H
 #define CY_MP3C_H
@@ -64,6 +67,10 @@ struct cy_mp3c {
     bool software;             /* MP3.dl has talked: a command other than 31, which CyOS
                                 * 1.2.57 sends itself at start-up */
     uint16_t follow;           /* the handler: this many bytes of data follow the answer */
+    uint32_t raw;              /* the handler: send this many bytes from raw_fp as they are,
+                                * in 512-byte chunks, with no answer header (command 0002
+                                * after a read, 36) */
+    FILE *raw_fp;
     bool second;               /* the handler is called for those */
 
     /* the player (cy_mp3c_player): its SmartMedia card is a folder */
@@ -82,6 +89,9 @@ struct cy_mp3c {
     uint32_t list[CY_MP3C_LIST];   /* the play list (file ids) */
     uint16_t nlist;
     uint32_t song_size;
+    uint32_t rd_file, rd_pos;  /* the read (36) that command 0002 sends the data of */
+    uint16_t rd_len;
+    uint32_t wr_file, wr_pos;  /* the write (37) whose data follows */
 };
 
 #define CY_MP3C_NONE 0xffffffffu

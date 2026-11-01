@@ -8,6 +8,12 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef _WIN32
+#include <io.h>
+#define ftruncate _chsize
+#else
+#include <unistd.h>
+#endif
 #include "cy_mp3c.h"
 
 void cy_mp3c_logf(cy_mp3c_t *p, const char *fmt, ...)
@@ -42,6 +48,8 @@ static void next_chunk(cy_mp3c_t *p, uint16_t left)
 
 static uint16_t chunk(uint16_t left) { return left < CY_MP3C_CHUNK ? left : CY_MP3C_CHUNK; }
 
+static void raw_done(cy_mp3c_t *p);
+
 void cy_mp3c_select_pin(cy_mp3c_t *p, bool high)
 {
     if (high == !p->selected) return;
@@ -54,6 +62,7 @@ void cy_mp3c_select_pin(cy_mp3c_t *p, bool high)
         return;
     }
     p->state = MP3C_CMD_HDR;                          /* selected: ready for a command */
+    raw_done(p);
     p->pos = 0;
     p->follow = 0;
     p->second = false;
@@ -67,10 +76,40 @@ static void hex(char *out, size_t cap, const uint8_t *b, uint16_t n)
     if (o < cap) out[o] = 0;
 }
 
+/* The next chunk of a raw send (cy_mp3c_t.raw): up to 512 bytes of the
+ * file, zeros past its end */
+static void raw_chunk(cy_mp3c_t *p)
+{
+    uint16_t n = (uint16_t)(p->raw < CY_MP3C_CHUNK ? p->raw : CY_MP3C_CHUNK);
+    size_t got = p->raw_fp ? fread(p->ans, 1, n, p->raw_fp) : 0;
+    memset(p->ans + got, 0, n - got);
+    p->raw -= n;
+    p->ans_len = n;
+    p->pos = 0;
+    p->state = MP3C_ANS_DATA;
+    next_chunk(p, n);
+}
+
+static void raw_done(cy_mp3c_t *p)
+{
+    if (p->raw_fp) fclose(p->raw_fp);
+    p->raw_fp = NULL;
+    p->raw = 0;
+}
+
+static void answered(cy_mp3c_t *p);
+
 static void answer(cy_mp3c_t *p)
 {
     uint16_t out_len = 0;
+    raw_done(p);
     uint8_t err = p->handler ? p->handler(p, p->cmd, p->data, p->len, p->ans, &out_len) : 0;
+    if (p->raw) {                                     /* data as it is, no header */
+        p->commands++;
+        p->software = true;
+        raw_chunk(p);
+        return;
+    }
     if (out_len > CY_MP3C_MAX) out_len = CY_MP3C_MAX;
     p->ans_len = out_len;
     uint16_t status = (uint16_t)(err << 8 | (p->cmd & 0xff));
@@ -160,8 +199,12 @@ uint8_t cy_mp3c_spi(cy_mp3c_t *p, uint8_t in, int mode)
         p->armed = false;
         if (p->pos < p->ans_len) {
             next_chunk(p, chunk((uint16_t)(p->ans_len - p->pos)));
-        } else
+        } else if (p->raw)
+            raw_chunk(p);
+        else {
+            raw_done(p);
             answered(p);
+        }
         break;
     }
     return out;
@@ -199,15 +242,24 @@ static int by_name(const void *a, const void *b)
     return strcasecmp(((const struct cy_mp3c_file *)a)->name, ((const struct cy_mp3c_file *)b)->name);
 }
 
-/* The card's files, read again from the folder */
+/* The card's files, read again from the folder. A file keeps its place
+ * (and so its id) while it is there: CyOS holds ids between commands (the
+ * clip playing, a file it writes), so new files go at the end, in name
+ * order, and only the first listing is sorted. */
 static void scan(cy_mp3c_t *p)
 {
-    if (!p->files) p->files = calloc(MAX_FILES, sizeof *p->files);
+    struct cy_mp3c_file *old = p->files;
+    uint16_t nold = p->nfiles;
+    p->files = calloc(MAX_FILES, sizeof *p->files);
     p->nfiles = 0;
     p->no_card = true;
-    if (!p->files || !p->root[0]) return;
+    if (!p->files || !p->root[0]) { free(old); return; }
     DIR *d = opendir(p->root);
-    if (!d) { cy_mp3c_logf(p, "mp3 player: no card folder %s: no SmartMedia card in the player", p->root); return; }
+    if (!d) {
+        cy_mp3c_logf(p, "mp3 player: no card folder %s: no SmartMedia card in the player", p->root);
+        free(old);
+        return;
+    }
     p->no_card = false;
     struct dirent *e;
     char path[sizeof p->root + 70];
@@ -234,6 +286,24 @@ static void scan(cy_mp3c_t *p)
     }
     closedir(d);
     qsort(p->files, p->nfiles, sizeof *p->files, by_name);
+    if (old) {                                        /* the old order first, then the new files */
+        struct cy_mp3c_file *sorted = p->files;
+        uint16_t n = p->nfiles;
+        p->files = calloc(MAX_FILES, sizeof *p->files);
+        if (!p->files) { p->files = sorted; free(old); return; }
+        p->nfiles = 0;
+        for (uint16_t i = 0; i < nold; i++)
+            for (uint16_t k = 0; k < n; k++)
+                if (sorted[k].name[0] && !strcmp(sorted[k].name, old[i].name)) {
+                    p->files[p->nfiles++] = sorted[k];
+                    sorted[k].name[0] = 0;
+                    break;
+                }
+        for (uint16_t k = 0; k < n; k++)
+            if (sorted[k].name[0]) p->files[p->nfiles++] = sorted[k];
+        free(sorted);
+        free(old);
+    }
 }
 
 /* File ids are 1 + the place in the listing; 0 and CY_MP3C_NONE are none */
@@ -411,6 +481,7 @@ void cy_mp3c_button(cy_mp3c_t *p, int button)
 void cy_mp3c_free(cy_mp3c_t *p)
 {
     stop(p);
+    raw_done(p);
     free(p->files);
     p->files = NULL;
 }
@@ -538,6 +609,94 @@ uint8_t cy_mp3c_player(cy_mp3c_t *p, uint16_t cmd, const uint8_t *data, uint16_t
             put32(out + 4 * n++, i + 1);
         }
         *out_len = (uint16_t)(4 * n);
+        return 0;
+    }
+    case 0x3c:                                        /* {u32 file}: CyOS asks before it opens a file of the */
+        if (!file(p, a)) return 1;                    /* card (MP3.dl): u16, 2 when it is open already (guess; */
+        put16(out, 0);                                /* MP3.dl treats 0 as "not open") */
+        *out_len = 2;
+        return 0;
+    case 0x36: {                                      /* {u32 file, u32 block, u16 length}: a read from that */
+        struct cy_mp3c_file *f = file(p, a);          /* 512-byte block; the data goes when MP3.dl sends 0002 */
+        if (!f || len < 10) return 1;                 /* next, as length / 512 chunks of 512 bytes, no header */
+        p->rd_file = a;
+        p->rd_pos = get32(data + 4) * 512u;
+        p->rd_len = (uint16_t)(data[8] << 8 | data[9]);
+        return 0;
+    }
+    case 0x02: {                                      /* the data of the read before (36) */
+        struct cy_mp3c_file *f = p->rd_len ? file(p, p->rd_file) : NULL;
+        if (!f) {
+            cy_mp3c_logf(p, "mp3 player: data asked for with no read before it");
+            return 1;
+        }
+        p->raw_fp = open_file(p, f);
+        if (p->raw_fp) fseek(p->raw_fp, (long)p->rd_pos, SEEK_SET);
+        p->raw = p->rd_len & ~511u;                   /* MP3.dl takes length >> 9 chunks */
+        if (!p->raw) cy_mp3c_logf(p, "mp3 player: read of %u bytes: less than a 512-byte chunk", p->rd_len);
+        p->rd_len = 0;
+        return 0;
+    }
+    case 0x32: {                                      /* {u32 folder, name}: find a file; 1032 makes it */
+        if (len < 5) return 1;                        /* if it is not there (MP3.dl). Answer: u32 id */
+        char name[64];
+        uint16_t n = (uint16_t)(len - 4 < 63 ? len - 4 : 63);
+        memcpy(name, data + 4, n);
+        name[n] = 0;
+        if (a != 0xfffffffeu && a != 0) cy_mp3c_logf(p, "mp3 player: folder %08x: only the card's top folder is known", (unsigned)a);
+        if (!p->files) scan(p);
+        for (uint16_t i = 0; i < p->nfiles; i++)
+            if (!strcasecmp(p->files[i].name, name)) { put32(out, i + 1u); *out_len = 4; return 0; }
+        if (!(cmd & 0x1000)) return 1;                /* not there (error 1, guess) */
+        if (!strchr(name, '/') && strcmp(name, ".") && strcmp(name, "..")) {
+            char path[sizeof p->root + 70];
+            snprintf(path, sizeof path, "%s/%s", p->root, name);
+            FILE *fp = fopen(path, "ab");
+            if (fp) fclose(fp);
+            cy_mp3c_logf(p, "mp3 player: made %s on the card", name);
+            scan(p);
+            for (uint16_t i = 0; i < p->nfiles; i++)
+                if (!strcmp(p->files[i].name, name)) { put32(out, i + 1u); *out_len = 4; return 0; }
+        }
+        cy_mp3c_logf(p, "mp3 player: cannot make %s on the card", name);
+        return 1;
+    }
+    case 0x3a: {                                      /* {u32 file, u16 what, u32 value}: set a detail; */
+        struct cy_mp3c_file *f = file(p, a);          /* 4 is the size (CyOS cuts a file it rewrites; */
+        if (!f || len < 10) return 1;                 /* guess from statistics.dat) */
+        uint16_t what = (uint16_t)(data[4] << 8 | data[5]);
+        uint32_t v = get32(data + 6);
+        if (what != 4) { cy_mp3c_logf(p, "mp3 player: detail %u of %s: not known, left as it is", what, f->name); return 0; }
+        char path[sizeof p->root + 70];
+        snprintf(path, sizeof path, "%s/%s", p->root, f->name);
+        FILE *fp = fopen(path, "r+b");
+        bool ok = fp && !fflush(fp) && !ftruncate(fileno(fp), (off_t)v);
+        if (fp) fclose(fp);
+        if (!ok) { cy_mp3c_logf(p, "mp3 player: cannot set the size of %s", f->name); return 1; }
+        f->size = v;
+        return 0;
+    }
+    case 0x37: {                                      /* {u32 file, u32 block, u16 length}: a write; the data */
+        if (!p->second) {                             /* follows the answer as length / 512 chunks of 512 */
+            if (!file(p, a) || len < 10) return 1;    /* bytes with no header, then an answer */
+            p->wr_file = a;
+            p->wr_pos = get32(data + 4) * 512u;
+            p->follow = (uint16_t)((data[8] << 8 | data[9]) & ~511u);
+            if (p->follow > CY_MP3C_MAX) cy_mp3c_logf(p, "mp3 player: write of %u bytes, more than %u", p->follow, CY_MP3C_MAX);
+            return 0;
+        }
+        struct cy_mp3c_file *f = file(p, p->wr_file);
+        if (!f) return 1;
+        char path[sizeof p->root + 70];
+        snprintf(path, sizeof path, "%s/%s", p->root, f->name);
+        FILE *fp = fopen(path, "r+b");
+        if (!fp || fseek(fp, (long)p->wr_pos, SEEK_SET) || fwrite(data, 1, len, fp) != len) {
+            cy_mp3c_logf(p, "mp3 player: cannot write %s", f->name);
+            if (fp) fclose(fp);
+            return 1;
+        }
+        fclose(fp);
+        if (p->wr_pos + len > f->size) f->size = p->wr_pos + len;
         return 0;
     }
     case 0x39: {                                      /* a file's details */

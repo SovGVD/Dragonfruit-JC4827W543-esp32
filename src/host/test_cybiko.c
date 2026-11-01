@@ -740,6 +740,7 @@ static void test_mp3_player(void)
     snprintf(path, sizeof path, "%s/song.mp3", dir);
     FILE *f = fopen(path, "wb");
     uint8_t frame[1200] = { 0xff, 0xfb, 0x90, 0x40 };   /* MPEG 1 layer 3, 128 kbps, stereo */
+    frame[700] = 0x5a;                                  /* a mark for the raw read */
     fwrite(frame, 1, sizeof frame, f);
     fclose(f);
 
@@ -774,6 +775,15 @@ static void test_mp3_player(void)
     CHECK(p.play_state == CY_MP3C_PAUSED && cy_mp3c_stream(&p, buf, 100) == 0);
     cy_mp3c_button(&p, CY_MP3C_BTN_PLAY);                       /* the player's own button */
     CHECK(cy_mp3c_stream(&p, buf, 1000) == 200 && p.play_state == CY_MP3C_STOPPED);   /* the end */
+    /* a file's data: read (36) block 1, then 0002 brings 512 raw bytes */
+    uint8_t rd[10] = { 0, 0, 0, 1, 0, 0, 0, 1, 0x02, 0x00 };
+    mp3c_xfer(&p, 0x36, rd, 10, ans, &st);
+    uint8_t h2[4] = { 0, 0, 0x00, 0x02 };
+    for (int i = 0; i < 4; i++) cy_mp3c_spi(&p, h2[i], 3);
+    bool raw_ok = true;
+    for (int i = 0; i < 512; i++) raw_ok &= cy_mp3c_spi(&p, 0xff, 3) == frame[512 + i];
+    CHECK(raw_ok && p.raw == 0);
+    CHECK(mp3c_xfer(&p, 0x31, NULL, 0, ans, &st) == 4 && st == 0x0031);   /* in step after it */
     uint8_t vol = 10;
     mp3c_xfer(&p, 0x18, &vol, 1, ans, &st);
     CHECK(p.volume == 10 && cy_mp3c_gain(&p) == 0x6a - 36);

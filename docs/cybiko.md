@@ -332,8 +332,8 @@ clock.
   1.2.46 keeps it in RAM, and the emulator puts the board's ID there. Two
   Classics chat with each other in the PC runner; Classic to Xtreme is not
   tested.
-- **Not there (yet).** The Classic's MP3 player and its memory expansion
-  module, a RAM disk, apps from `/Cybiko/apps`, the WAP gate and CyOS
+- **Not there (yet).** The Classic's MP3 player and its memory card (what is
+  known about them: [cybiko-classic-modules.md](cybiko-classic-modules.md)), a RAM disk, apps from `/Cybiko/apps`, the WAP gate and CyOS
   updates are Xtreme only for now.
 
 In the [PC runner](#pc-runner), a flash image of 512 KB or 1 MB (or
@@ -459,9 +459,11 @@ CPU loop was.
 
 ## Future improvements
 
-- **Cybiko Classic: MP3 player and memory expansion.** The Classic's own
-  MP3 module and memory module work differently from the Xtreme's; left for
-  the next round.
+- **Cybiko Classic: MP3 player and memory card.** Both sat in the Classic's
+  68-pin slot and work differently from the Xtreme's cartridge. The slot's
+  pinout, the chips, how they worked, a plan for each and the CyOS and MP3
+  software still needed are in
+  [cybiko-classic-modules.md](cybiko-classic-modules.md).
 - **MP3 cartridge.** It is emulated (see [MP3 cartridge](#mp3-cartridge)) and
   tested in the PC runner; the open questions are listed in
   [cybiko-docs](https://github.com/SovGVD/cybiko-docs/blob/main/mp3-cartridge.md#4-open-questions).

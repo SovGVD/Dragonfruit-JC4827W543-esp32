@@ -51,6 +51,7 @@ The boot menu, where you pick the system:
 | [JC4827W543 board guide](docs/jc4827w543.md) | Wiring, building, flashing, the boot menu, the SD card, touch calibration, Palm RAM and storage |
 | [Cybiko Xtreme](docs/cybiko.md) | Files, storage, games, controls, sound, radio, the MP3 cartridge, the desktop app |
 | [How the emulator models the Cybiko](docs/cybiko-internals.md) | Which file models what, emulator choices and additions |
+| [Cybiko Classic: MP3 player and memory card](docs/cybiko-classic-modules.md) | What is known about the Classic's add-ons, for emulating them later |
 | [Cybiko radio over ESP-NOW](docs/cybiko-radio-protocol.md) | Carrying Cybiko packets between boards; a C library for other ESP32 projects |
 | [MP3 cartridge in the emulator](docs/cybiko-mp3-cartridge.md) | Using the cartridge, its card folder, making MXD clips |
 | [cybiko-docs](https://github.com/SovGVD/cybiko-docs) | The Cybiko Xtreme itself: hardware, CyOS, file formats, radio and chat protocol, CyWIG, MP3 cartridge |

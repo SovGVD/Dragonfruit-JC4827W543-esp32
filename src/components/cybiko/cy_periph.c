@@ -748,14 +748,20 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
             if (!s->tx_busy) sci_tx_start(m, n);
         }
         break;
-    case 4:
+    case 4: {
+        bool had_error = sci_error(s);
         if ((s->scr & SCR_TE) && (s->ssr & s->ssr_read & SSR_TDRE) && !(v & SSR_TDRE))
             s->ssr &= (uint8_t)~(SSR_TDRE | SSR_TEND);
         s->ssr = (uint8_t)((s->ssr & (~s->ssr_read | v | SSR_TDRE | SSR_TEND | SSR_MPB) & ~SSR_MPBT) | (v & SSR_MPBT));
         s->ssr_read &= s->ssr;
+        /* RXI is a level (RDRF and RIE): a byte that came in while an error
+         * flag was up raised ERI only, and asks for RXI once that is
+         * cleared. CyOS 1.2's console otherwise leaves it in RDR for good. */
+        if (had_error && !sci_error(s) && (s->ssr & SSR_RDRF) && (s->scr & SCR_RIE)) cy_irq(m, sci_vec(n, 1));
         if (!s->tx_busy && !(s->ssr & SSR_TDRE)) sci_tx_start(m, n);
         sci_rx_start(m, n);
         break;
+    }
     case 6: m->scmr[n] = v & 0x0d; break;
     default: break;
     }

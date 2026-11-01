@@ -60,6 +60,8 @@
 #define CY_AT45_PAGE        264u
 #define CY_AT45_PAGES       4096u
 #define CY_AT45_SIZE        (CY_AT45_PAGE * CY_AT45_PAGES)   /* 1081344 */
+#define CY_CARD_RAM_BASE    0x400000u                       /* Classic memory card, CS2 */
+#define CY_CARD_RAM_SIZE    0x40000u                        /* 256 KB */
 #define CY_AT45_DB041_SIZE  (CY_AT45_PAGE * 2048u)           /* the real chip, 540672 */
 
 /* Keys are (row << 4) | bit in the keyboard matrix, as MAME's A.0-A.8. CyOS
@@ -298,6 +300,8 @@ typedef struct cybiko {
     uint32_t clock_hz;
     uint32_t ram_size;
     cy_at45_t at45;            /* Classic only */
+    cy_at45_t card;            /* Classic: the memory card's DataFlash (mem NULL: no card) */
+    uint8_t *card_ram;         /* ... and its RAM, CY_CARD_RAM_SIZE bytes */
     uint8_t icr[3];            /* Classic: interrupt control registers A-C */
 
     uint8_t *rom, *ram;
@@ -395,6 +399,11 @@ void cybiko_at45_format_free(uint8_t *flash, uint32_t first);
  * such key (Menu, the brackets, "!"). */
 int cybiko_classic_key(int xtreme_key);
 int cybiko_at45_take_dirty(cybiko_t *m, uint32_t *bits);
+/* Plug a memory card into a Classic, after cybiko_init_classic: flash is
+ * CY_AT45_SIZE bytes (cybiko_at45_format_free(flash, 0) makes it empty),
+ * ram CY_CARD_RAM_SIZE. CyOS 1.2.57 or later uses it; 1.2.46 does not. */
+void cybiko_classic_card(cybiko_t *m, uint8_t *flash, uint8_t *ram);
+int cybiko_card_take_dirty(cybiko_t *m, uint32_t *bits);
 
 /* Power-on reset of the CPU and peripherals; memory is kept. */
 void cybiko_reset(cybiko_t *m);

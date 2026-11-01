@@ -61,8 +61,8 @@ void cy_disk_write8(cybiko_t *m, uint32_t off, uint8_t v);
  * the Cybiko ID in CyOS 1.2.46's RAM */
 void cy_classic_poll(cybiko_t *m);
 uint32_t cy_classic_cyos_id(const cybiko_t *m);
-void cy_at45_reset(cybiko_t *m);
-void cy_at45_cs(cybiko_t *m, bool selected);
+void cy_at45_reset(cy_at45_t *f);
+void cy_at45_cs(cy_at45_t *f, bool selected);
 uint8_t cy_at45_spi(cybiko_t *m, uint8_t in);
 
 /* cy_cart.c: the MP3 player cartridge */

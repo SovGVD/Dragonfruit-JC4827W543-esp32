@@ -224,7 +224,8 @@ static void port_output(cybiko_t *m, int p)
     if (m->classic) {
         /* P34 selects the DataFlash (low); PF1 is the RTC clock and PF0 its
          * open-drain data, pulled low by making it an output. */
-        if (p == 2) cy_at45_cs(m, !(data & 0x10));
+        if (p == 2) cy_at45_cs(&m->at45, !(data & 0x10));
+        if (p == 1 && m->card.mem) cy_at45_cs(&m->card, !(data & 0x02));   /* P21: the memory card's */
         if (p == 14) cy_rtc_pins(m, data & 0x02, data & 0x01);
         return;
     }
@@ -557,7 +558,7 @@ void cybiko_reset(cybiko_t *m)
     cy_dma_reset(m);
     cy_lcd_reset(&m->lcd);
     cy_rtc_reset(m);
-    if (m->classic) cy_at45_reset(m);
+    if (m->classic) { cy_at45_reset(&m->at45); cy_at45_reset(&m->card); }
     else cy_flash_reset(m);
     cy_rf_reset(m);
     cy_cart_reset(m);

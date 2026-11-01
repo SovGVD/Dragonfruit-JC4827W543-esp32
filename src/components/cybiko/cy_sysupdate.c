@@ -184,6 +184,26 @@ bool cy_su_start(cy_su_t *u, struct cybiko *m, const uint8_t *exe, size_t len)
     return true;
 }
 
+bool cy_su_start_files(cy_su_t *u, struct cybiko *m, const cy_su_file_t *files, int n)
+{
+    memset(u, 0, sizeof *u);
+    u->m = m;
+    u->plain = true;
+    if (n <= 0 || n > CY_SU_MAX_FILES) {
+        snprintf(u->message, sizeof u->message, "%d files: 1 to %d can go in at once", n, CY_SU_MAX_FILES);
+        u->state = CY_SU_FAILED;
+        return false;
+    }
+    memcpy(u->files, files, (size_t)n * sizeof *files);
+    u->nfiles = n;
+    u->nsteps = n + 1;                     /* ver, then each file */
+    cy_con_init(&u->con, con_put, m);
+    u->con.drop = con_drop;
+    u->state = CY_SU_WAITING;
+    snprintf(u->message, sizeof u->message, "waiting for CyOS");
+    return true;
+}
+
 void cy_su_rx(cy_su_t *u, uint8_t byte)
 {
     if (u->state != CY_SU_WAITING && u->state != CY_SU_RUNNING) return;
@@ -203,6 +223,17 @@ static void fail(cy_su_t *u, const char *what)
  * files but desktop.app, rm desktop.app, desktop.app, boot, reboot, ver */
 static void begin(cy_su_t *u)
 {
+    if (u->plain) {                        /* cy_su_start_files: ver, the files */
+        if (u->step == 0) {
+            snprintf(u->message, sizeof u->message, "asking CyOS its version");
+            cy_con_command(&u->con, "ver");
+        } else {
+            const cy_su_file_t *f = &u->files[u->step - 1];
+            snprintf(u->message, sizeof u->message, "sending %s", f->name);
+            cy_con_send_file(&u->con, f->name, f->data, f->size);
+        }
+        return;
+    }
     int d = desktop(u), nother = u->nfiles - 1, s = u->step - 1;
     if (s < 0) {
         snprintf(u->message, sizeof u->message, "asking CyOS its version");
@@ -252,7 +283,7 @@ cy_su_state_t cy_su_poll(cy_su_t *u, uint32_t elapsed_ms)
     if (u->state != CY_SU_RUNNING) return u->state;
     cy_con_poll(&u->con, elapsed_ms);
     if (u->con.state == CY_CON_BUSY) return u->state;
-    if (u->con.state == CY_CON_FAILED && ++u->tries < TRIES && u->step < u->nsteps - 2) {
+    if (u->con.state == CY_CON_FAILED && ++u->tries < TRIES && (u->plain || u->step < u->nsteps - 2)) {
         /* CyOS gave up on a file (it waits only so long for each block) or
          * missed a command: once it is at its prompt again, the same step */
         u->retries++;
@@ -269,6 +300,18 @@ cy_su_state_t cy_su_poll(cy_su_t *u, uint32_t elapsed_ms)
         return u->state;
     }
     int last = u->nsteps - 1;
+    if (u->plain && u->step == last) {
+        u->state = CY_SU_DONE;
+        snprintf(u->message, sizeof u->message, "%d file%s installed", u->nfiles, u->nfiles == 1 ? "" : "s");
+        return u->state;
+    }
+    if (u->plain) {
+        u->con.state = CY_CON_IDLE;
+        u->step++;
+        u->tries = 0;
+        begin(u);
+        return u->state;
+    }
     if (u->step == 0 && strstr(u->con.result, "1.2.57")) {
         u->state = CY_SU_DONE;
         u->already = true;

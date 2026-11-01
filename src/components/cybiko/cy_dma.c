@@ -401,14 +401,8 @@ static bool dtc_run(cybiko_t *m, uint32_t base)
         n = (cr >> 16) & 0xff;
         if (!n) n = 256;
     }
-    uint32_t src = sra & 0xffffff, dst = dar & 0xffffff;
-    for (int i = 0; i < n; i++) {
-        if (word) h8s_write16(c, dst & 0xfffffe, h8s_read16(c, src & 0xfffffe));
-        else h8s_write8(c, dst, h8s_read8(c, src));
-        src = (src + (uint32_t)incs) & 0xffffff;
-        dst = (dst + (uint32_t)incd) & 0xffffff;
-        c->icount -= word ? 4 : 2;
-    }
+    uint32_t src0 = sra & 0xffffff, dst0 = dar & 0xffffff;
+    uint32_t src = (src0 + (uint32_t)(n * incs)) & 0xffffff, dst = (dst0 + (uint32_t)(n * incd)) & 0xffffff;
     bool done = false;
     switch (mode) {
     case 0x04000000: {                        /* repeat: CRAL counts, CRAH reloads */
@@ -436,9 +430,19 @@ static bool dtc_run(cybiko_t *m, uint32_t base)
         done = !(cr & 0xffff0000);
         break;
     }
+    /* The registers go back before the data moves: a write to an SCI's TDR
+     * can raise its TXI at once, and the next transfer it starts must see
+     * this one done (the first byte was sent twice when it did not). */
     h8s_write32(c, base, (sra & 0xff000000) | src);
     h8s_write32(c, base + 4, (dar & 0xff000000) | dst);
     h8s_write32(c, base + 8, cr);
+    for (int i = 0; i < n; i++) {
+        if (word) h8s_write16(c, dst0 & 0xfffffe, h8s_read16(c, src0 & 0xfffffe));
+        else h8s_write8(c, dst0, h8s_read8(c, src0));
+        src0 = (src0 + (uint32_t)incs) & 0xffffff;
+        dst0 = (dst0 + (uint32_t)incd) & 0xffffff;
+        c->icount -= word ? 4 : 2;
+    }
     return done || (dar & 0x40000000);
 }
 

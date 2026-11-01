@@ -71,6 +71,13 @@
  *   --mem-card IMG     (Classic) plug in the memory card (256 KB RAM, 1 MB
  *                      DataFlash): its flash is IMG (an empty card if IMG does
  *                      not exist), saved back at the end when CyOS changed it
+ *   --install FILE     (Classic) send FILE into CyOS's flash through its
+ *                      console once CyOS is up; repeat for more files
+ *   --mp3-player DIR   (Classic) plug in the MP3 player (CY65P10), its
+ *                      SmartMedia card the folder DIR (cy_mp3c.h); with --wav
+ *                      its music goes into the WAV file
+ *   --mp3-button B@MS  (Classic) press the player's own button B (prev, play,
+ *                      next, stop, vol+, vol-) at MS milliseconds
  *   --sysupdate EXE    (Classic) install System Pack 57 (CyOS 1.2.57) from
  *                      Cybiko-AutoUpdate.exe through CyOS's console, as the
  *                      real updater did (cy_sysupdate.h); --save-flash keeps it
@@ -102,6 +109,7 @@
 #include "cy_radio.h"
 #include "cy_con.h"
 #include "cy_sysupdate.h"
+#include "cy_mp3c.h"
 #ifdef CY_WITH_BROWSER
 #include "cybiko_browser.h"
 #include "cyb_net_curl.h"
@@ -208,6 +216,15 @@ static int ncon, con_next;
 static double con_at_ms = 25000, con_boot_ms = 40000;
 static cy_con_t con;
 static const char *mem_card, *sysupdate_path;
+static const char *mp3_player;
+static const char *classic_wav;  /* --wav with --classic */
+#define MAX_MP3_PRESSES 16
+static struct { int button; uint64_t at; bool done; } mp3_presses[MAX_MP3_PRESSES];   /* --mp3-button */
+static int nmp3_presses;   /* --mp3-player DIR: the Classic's player, its card that folder */
+static cy_mp3c_t mp3c;
+
+static void mp3c_log(void *user, const char *line) { (void)user; fprintf(stderr, "[mp3] %s\n", line); }
+
 static cy_su_t *su;
 static uint8_t *con_data;
 static uint64_t con_wait_until;
@@ -1122,7 +1139,7 @@ static int run_classic(const char *rom_path, const char *flash_path, const char 
     uint8_t *flash = load_classic_flash(flash_path);
     static cybiko_t m, others[MAX_MACHINES - 1];
     cy_host_t host = { .serial_tx = on_tx, .wall_time = wall, .rf_send = on_rf };
-    if (speaker_log) host.speaker = on_speaker;
+    if (speaker_log || classic_wav) host.speaker = on_speaker;
     the_machine = machines[0] = &m;
     cybiko_init_classic(&m, &host, rom, flash, calloc(1, CY_CLASSIC_RAM_SIZE));
     if (trace_hi) m.io_trace = io_trace;
@@ -1150,6 +1167,23 @@ static int run_classic(const char *rom_path, const char *flash_path, const char 
         }
         cybiko_classic_card(&m, card, calloc(1, CY_CARD_RAM_SIZE));
     }
+    if (mp3_player) {
+        cy_mp3c_init(&mp3c, cy_mp3c_player, mp3c_log, NULL);
+        cy_mp3c_set_root(&mp3c, mp3_player);
+        m.mp3c = &mp3c;
+    }
+    cy_mp3_t *dec = NULL;
+    FILE *wav = NULL;
+    if (mp3_player) {
+        dec = malloc(cy_mp3_size());
+        cy_mp3_init(dec);
+    }
+    wav_samples = m.cpu.cycles * WAV_RATE / CLK;
+    if (classic_wav) {
+        wav = fopen(classic_wav, "wb");
+        if (!wav) { perror(classic_wav); return 1; }
+        wav_header(wav, 0);
+    }
     cy_con_init(&con, con_put, &m);
     con.drop = con_drop;
     uint8_t *su_exe = NULL;
@@ -1162,6 +1196,21 @@ static int run_classic(const char *rom_path, const char *flash_path, const char 
             return 1;
         }
         fprintf(stderr, "[update] %d files from %s\n", su->nfiles, sysupdate_path);
+    } else if (ninstalls) {                       /* --install: into CyOS's flash through the console */
+        static cy_su_file_t files[CY_SU_MAX_FILES];
+        int n = 0;
+        for (int i = 0; i < ninstalls && n < CY_SU_MAX_FILES; i++) {
+            size_t len;
+            uint8_t *data = load(installs[i], 1u << 20, &len, false);
+            if (!data) return 1;
+            const char *base = strrchr(installs[i], '/');
+            snprintf(files[n].name, sizeof files[n].name, "%s", base ? base + 1 : installs[i]);
+            files[n].data = data;
+            files[n++].size = (uint32_t)len;
+        }
+        su = calloc(1, sizeof *su);
+        if (!cy_su_start_files(su, &m, files, n)) { fprintf(stderr, "--install: %s\n", su->message); return 1; }
+        fprintf(stderr, "[update] installing %d files\n", n);
     }
     char su_last[160] = "";
     con_wait_until = (uint64_t)con_at_ms;
@@ -1210,8 +1259,14 @@ static int run_classic(const char *rom_path, const char *flash_path, const char 
                 fprintf(stderr, "[con] done at %.1f s\n", (double)ms / 1000);
             }
         }
+        for (int i = 0; i < nmp3_presses; i++)
+            if (!mp3_presses[i].done && m.mp3c && m.cpu.cycles >= mp3_presses[i].at * (CLK / 1000)) {
+                cy_mp3c_button(m.mp3c, mp3_presses[i].button);
+                mp3_presses[i].done = true;
+            }
         cybiko_run(&m, step);
         for (int k = 0; k < nother; k++) cybiko_run(&others[k], step);
+        if (dec || wav) audio_pump(&m, dec, wav);
         led_poll(&m);
         if (frames && m.cpu.cycles / chunk != (m.cpu.cycles - step) / chunk) {
             uint32_t v = cybiko_lcd_render(&m, lum);
@@ -1233,6 +1288,14 @@ static int run_classic(const char *rom_path, const char *flash_path, const char 
         }
     }
     double host_s = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    if (wav) {
+        long bytes = ftell(wav) - 44;
+        wav_header(wav, (uint32_t)(bytes / 2));
+        fclose(wav);
+    }
+    if (mp3_player)
+        fprintf(stderr, "mp3 player: %u commands, %u not known, %u bytes dropped\n",
+                (unsigned)mp3c.commands, (unsigned)mp3c.unknown, (unsigned)mp3c.dropped);
     if (shot) {
         cybiko_lcd_render(&m, lum);
         write_pgm(shot, lum);
@@ -1393,6 +1456,19 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(a, "--sysupdate") && v) { sysupdate_path = v; i++; }
         else if (!strcmp(a, "--mem-card") && v) { mem_card = v; i++; }
+        else if (!strcmp(a, "--mp3-player") && v) { mp3_player = v; i++; }
+        else if (!strcmp(a, "--mp3-button") && v && nmp3_presses < MAX_MP3_PRESSES) {
+            static const char *const names[] = { "prev", "play", "next", "stop", "vol+", "vol-" };
+            char name[16];
+            unsigned ms;
+            int b = -1;
+            if (sscanf(v, "%15[^@]@%u", name, &ms) == 2)
+                for (int k = 0; k < 6; k++) if (!strcmp(name, names[k])) b = k;
+            if (b < 0) { fprintf(stderr, "bad --mp3-button %s (prev, play, next, stop, vol+, vol- @ms)\n", v); return 2; }
+            mp3_presses[nmp3_presses].button = b;
+            mp3_presses[nmp3_presses++].at = ms;
+            i++;
+        }
         else if (!strcmp(a, "--con") && v && ncon < MAX_CON) { con_steps[ncon++] = v; i++; }
         else if (!strcmp(a, "--con-at") && v) { con_at_ms = atof(v); i++; }
         else if (!strcmp(a, "--con-boot-ms") && v) { con_boot_ms = atof(v); i++; }
@@ -1440,6 +1516,7 @@ int main(int argc, char **argv)
         presses[i].at = (uint64_t)presses[i].ms * (CLK / 1000);
         presses[i].until = presses[i].at + (uint64_t)presses[i].dur * (CLK / 1000);
     }
+    classic_wav = wav_path;
     if (classic) return run_classic(rom_path, flash_path, save_flash, shot, frames, dump, seconds, unit_id, extra_path);
 
     uint8_t *rom = calloc(1, CY_ROM_BUF);
@@ -1525,7 +1602,7 @@ int main(int argc, char **argv)
     if (cart_log) m.cart_log = on_cart_log;
     cy_mp3_t *mp3 = NULL;
     FILE *wav = NULL;
-    if (cart) {
+    if (cart || mp3_player) {
         mp3 = malloc(cy_mp3_size());
         cy_mp3_init(mp3);
     }

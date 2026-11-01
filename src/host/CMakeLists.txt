@@ -225,6 +225,7 @@ set(CYBIKO_SOURCES
     ../components/cybiko/cy_usb.c
     ../components/cybiko/cy_con.c
     ../components/cybiko/cy_sysupdate.c
+    ../components/cybiko/cy_mp3c.c
     ../components/h8s/h8s.c
 )
 add_executable(test_cybiko test_cybiko.c ${CYBIKO_SOURCES})

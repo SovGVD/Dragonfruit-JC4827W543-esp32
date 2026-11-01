@@ -8,6 +8,7 @@
  * h8_timer8, h8_watchdog, h8_sci and h8_adc devices. */
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 #define NO_EVENT 0xffffffffu
 
@@ -730,6 +731,7 @@ static bool sci_write(cybiko_t *m, uint32_t a, uint8_t v)
         if (s->tx_busy && n < 2 && (s->smr & 0x80) && (s->scr & ~v & (SCR_TE | SCR_RE))) sci_tx_done(m, n);
         uint8_t delta = s->scr ^ v;
         s->scr = v;
+        if (m->classic && n == 1 && m->mp3c && (delta & v & (SCR_TE | SCR_RE))) cy_mp3c_arm(m->mp3c);
         if ((delta & SCR_RE) && !(v & SCR_RE)) s->rx_busy = false;
         if (s->rx_busy && !s->rx_count && !sci_sync_rx(m, n)) s->rx_busy = false;
         if ((delta & SCR_TIE) && (v & SCR_TIE) && (s->ssr & SSR_TDRE)) cy_irq(m, sci_vec(n, 2));

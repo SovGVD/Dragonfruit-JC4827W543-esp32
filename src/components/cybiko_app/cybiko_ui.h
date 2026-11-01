@@ -7,6 +7,10 @@ void cybiko_ui_start(void);
 
 /* Provided by cybiko_app.c for the UI task. */
 void cybiko_app_key(int key, bool down);
+/* The Classic's MP3 player: in the slot?, and press one of its buttons
+ * (CY_MP3C_BTN_..., cy_mp3c.h). */
+bool cybiko_app_mp3_player(void);
+void cybiko_app_mp3_button(int button);
 cybiko_t *cybiko_app_machine(void);
 /* Emulation speed over the last second, in percent of the real machine's;
  * -1 until the first second has run. */

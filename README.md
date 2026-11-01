@@ -51,7 +51,7 @@ The boot menu, where you pick the system:
 | [JC4827W543 board guide](docs/jc4827w543.md) | Wiring, building, flashing, the boot menu, the SD card, touch calibration, Palm RAM and storage |
 | [Cybiko Xtreme](docs/cybiko.md) | Files, storage, games, controls, sound, radio, the MP3 cartridge, the desktop app |
 | [How the emulator models the Cybiko](docs/cybiko-internals.md) | Which file models what, emulator choices and additions |
-| [Cybiko Classic: memory card, CyOS 1.2.57, MP3 player](docs/cybiko-classic-modules.md) | The Classic's slot, the emulated memory card, installing System Pack 57, and what the MP3 player still needs |
+| [Cybiko Classic: memory card, CyOS 1.2.57, MP3 player](docs/cybiko-classic-modules.md) | The Classic's slot, the emulated memory card, installing System Pack 57, and the emulated MP3 player (its protocol and commands) |
 | [Cybiko radio over ESP-NOW](docs/cybiko-radio-protocol.md) | Carrying Cybiko packets between boards; a C library for other ESP32 projects |
 | [MP3 cartridge in the emulator](docs/cybiko-mp3-cartridge.md) | Using the cartridge, its card folder, making MXD clips |
 | [cybiko-docs](https://github.com/SovGVD/cybiko-docs) | The Cybiko Xtreme itself: hardware, CyOS, file formats, radio and chat protocol, CyWIG, MP3 cartridge |
@@ -133,6 +133,8 @@ choice starts by itself after 5 seconds.
 - The 1Mb Memory Card (256 KB RAM, 1 MB flash), and CyOS 1.2.57 installed
   from Cybiko's own System Pack 57 updater (`Cybiko-AutoUpdate.exe`), which
   uses the card.
+- The MP3 player (CY65P10) with Cybiko's MP3 application: songs from a
+  folder on the SD card, and the player's six buttons on screen.
 - Picked with the model button on the boot menu's Cybiko card; files in
   `/Cybiko/Classic` (see [the Cybiko guide](docs/cybiko.md#cybiko-classic)).
 

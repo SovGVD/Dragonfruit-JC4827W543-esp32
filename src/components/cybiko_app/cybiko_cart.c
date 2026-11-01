@@ -142,6 +142,12 @@ void cybiko_cart_init(cybiko_t *m, const char *cfg)
         ESP_LOGI(TAG, "MP3 cartridge, no card (put files in %s)", CARD_DIR);
     }
 
+    cybiko_cart_start_decoder();
+}
+
+void cybiko_cart_start_decoder(void)
+{
+    if (mpeg) return;
     /* The decoder runs at playback speed on core 0, its stack in PSRAM. */
     static StaticStreamBuffer_t mpeg_struct;
     uint8_t *store = heap_caps_malloc(MPEG_QUEUE + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -185,7 +191,7 @@ void cybiko_cart_poll(cybiko_t *m)
     uint64_t now = h8s_time(&m->cpu);
     unsigned kbps = cy_mp3_kbps(decoder);
     if (!kbps) kbps = 128;
-    uint64_t add = (now - paced_at) * kbps * 125 * PACE_AHEAD / 100 / CY_CLOCK_HZ;
+    uint64_t add = (now - paced_at) * kbps * 125 * PACE_AHEAD / 100 / cybiko_clock_hz(m);
     paced_at = now;
     budget = add >= PACE_MAX - budget ? PACE_MAX : budget + (uint32_t)add;
 

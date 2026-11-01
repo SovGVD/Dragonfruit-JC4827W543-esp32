@@ -21,6 +21,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 static void logf_(cybiko_t *m, const char *fmt, ...)
 {
@@ -441,11 +442,13 @@ static void mp3_put(cybiko_t *m, uint8_t b)
 
 uint8_t cybiko_mp3_volume(const cybiko_t *m)
 {
+    if (m->mp3c) return cy_mp3c_gain(m->mp3c);
     return (uint8_t)(m->cart.codec[0x10] >> 8);
 }
 
 size_t cybiko_mp3_take(cybiko_t *m, uint8_t *buf, size_t max)
 {
+    if (m->mp3c) return cy_mp3c_stream(m->mp3c, buf, max);    /* the Classic's player */
     cy_cart_t *c = &m->cart;
     uint8_t old = cy_irq_pins(m);
     size_t n = 0;

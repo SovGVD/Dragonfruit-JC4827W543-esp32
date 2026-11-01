@@ -44,6 +44,7 @@ typedef struct {
     int nfiles;
     int step, nsteps;          /* ver, files, rm, desktop.app, boot, reboot, ver */
     bool already;              /* done: CyOS was 1.2.57 before */
+    bool plain;                /* cy_su_start_files: just the files */
     int tries;                 /* of this step; a lost block can make CyOS give up a file */
     int retries;               /* steps done again, all told */
     cy_su_state_t state;
@@ -60,6 +61,10 @@ int cy_su_read_exe(const uint8_t *exe, size_t len, cy_su_file_t *out, int max);
 /* Start an update of the running machine m (a Classic) with the files of exe
  * (kept by the caller until done). False if exe is not the updater. */
 bool cy_su_start(cy_su_t *u, struct cybiko *m, const uint8_t *exe, size_t len);
+/* Send files into CyOS's flash through its console (any CyOS; no boot or
+ * restart), e.g. the MP3 player's MP3.app and its libraries. files[i].data
+ * is kept by the caller until done. */
+bool cy_su_start_files(cy_su_t *u, struct cybiko *m, const cy_su_file_t *files, int n);
 /* Every byte CyOS sends on SCI2 (the host's serial_tx for port 2) */
 void cy_su_rx(cy_su_t *u, uint8_t byte);
 /* Every few milliseconds of emulated time */

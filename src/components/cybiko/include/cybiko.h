@@ -302,6 +302,7 @@ typedef struct cybiko {
     cy_at45_t at45;            /* Classic only */
     cy_at45_t card;            /* Classic: the memory card's DataFlash (mem NULL: no card) */
     uint8_t *card_ram;         /* ... and its RAM, CY_CARD_RAM_SIZE bytes */
+    struct cy_mp3c *mp3c;      /* Classic: the MP3 player in the slot (cy_mp3c.h), NULL: none */
     uint8_t icr[3];            /* Classic: interrupt control registers A-C */
 
     uint8_t *rom, *ram;

@@ -11,6 +11,7 @@
  * pages, and so is where CyOS 1.2.46 keeps the Cybiko ID in RAM. */
 #include <string.h>
 #include "cy_internal.h"
+#include "cy_mp3c.h"
 
 #define ST_READY 0x80
 #define ST_MISMATCH 0x40
@@ -82,7 +83,7 @@ static void at45_unknown(cy_at45_t *f, uint8_t op)
 uint8_t cy_at45_spi(cybiko_t *m, uint8_t in)
 {
     cy_at45_t *f = m->at45.selected ? &m->at45 : m->card.mem && m->card.selected ? &m->card : NULL;
-    if (!f) return 0xff;
+    if (!f) return m->mp3c ? cy_mp3c_spi(m->mp3c, in, (m->sci[1].scr >> 4) & 3) : 0xff;
     if (f->output) {
         if (!f->out) return f->status;
         uint8_t v = f->out[f->out_pos];

@@ -51,6 +51,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "cybiko_app.h"
+#include "cy_mp3c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #ifdef ESP_PLATFORM
@@ -77,7 +78,7 @@ static const char *TAG = "cybiko_ui";
 #define COL_EDGE    UI_RGB(0x12, 0x14, 0x18)
 #define COL_LABEL   UI_RGB(0xf0, 0xf0, 0xf0)
 
-enum { K_NORMAL, K_SHIFT, K_FN, K_PAGE, K_NONE };
+enum { K_NORMAL, K_SHIFT, K_FN, K_PAGE, K_NONE, K_MP3 };   /* K_MP3: the Classic MP3 player's buttons */
 
 typedef struct {
     int16_t x, y, w, h;
@@ -123,7 +124,11 @@ static const ui_key_t page_more[] = {
     { 5 * KB_KEY_W, KB_Y + KB_ROW_H, 2 * KB_KEY_W, KB_ROW_H, CYK_HELP, K_NORMAL, false, "HELP" },
     { 7 * KB_KEY_W, KB_Y + KB_ROW_H, 3 * KB_KEY_W, KB_ROW_H, -1, K_NONE, true, "" },
     KB(0, 2, CYK_SHIFT, K_SHIFT, "SHIFT"),
-    { KB_KEY_W, KB_Y + 2 * KB_ROW_H, 7 * KB_KEY_W, KB_ROW_H, -1, K_NONE, true, "" },
+    /* the Classic's MP3 player, when it is in the slot (blank otherwise) */
+#define MP3_KEY(i, b, l) { KB_KEY_W + (i) * 56, KB_Y + 2 * KB_ROW_H, 56, KB_ROW_H, b, K_MP3, true, l }
+    MP3_KEY(0, CY_MP3C_BTN_PREV, "|<<"), MP3_KEY(1, CY_MP3C_BTN_PLAY, ">||"),
+    MP3_KEY(2, CY_MP3C_BTN_NEXT, ">>|"), MP3_KEY(3, CY_MP3C_BTN_STOP, "STOP"),
+    MP3_KEY(4, CY_MP3C_BTN_VOL_DOWN, "VOL-"), MP3_KEY(5, CY_MP3C_BTN_VOL_UP, "VOL+"),
     KB(8, 2, CYK_FN, K_FN, "FN"), KB(9, 2, -1, K_PAGE, "ABC"),
 };
 
@@ -206,6 +211,14 @@ static void build_portrait(void)
     add_key(202, gy + c, 70, c, CYK_DEL, K_NORMAL, true, "DEL");
     add_key(132, gy + 2 * c, 70, c, CYK_HELP, K_NORMAL, true, "HELP");
     add_key(202, gy + 2 * c, 70, c, CYK_ONOFF, K_NORMAL, true, "ON/OFF");
+    /* the Classic's MP3 player's six buttons, beside the LCD (blank when
+     * the player is not in the slot) */
+    add_key(0, 34, 56, 28, CY_MP3C_BTN_PREV, K_MP3, true, "|<<");
+    add_key(0, 62, 56, 28, CY_MP3C_BTN_PLAY, K_MP3, true, ">||");
+    add_key(0, 90, 56, 28, CY_MP3C_BTN_NEXT, K_MP3, true, ">>|");
+    add_key(216, 34, 56, 28, CY_MP3C_BTN_STOP, K_MP3, true, "STOP");
+    add_key(216, 62, 56, 28, CY_MP3C_BTN_VOL_UP, K_MP3, true, "VOL+");
+    add_key(216, 90, 56, 28, CY_MP3C_BTN_VOL_DOWN, K_MP3, true, "VOL-");
     /* keyboard: four 47 px rows down to the bottom edge, laid out like the
      * Cybiko's own, with SHIFT and FN beside the space bar */
     const int ky = 292, kh = 47, by = ky + 3 * kh;
@@ -328,6 +341,10 @@ static void draw_key(const ui_key_t *k, bool lit)
     uint16_t bg = lit ? COL_KEY_ON : k->alt ? COL_KEY_ALT : COL_KEY;
     if (k->kind == K_SHIFT && shift_on) bg = COL_KEY_ON;
     if (k->kind == K_FN && fn_on) bg = COL_KEY_ON;
+    if (k->kind == K_MP3 && !cybiko_app_mp3_player()) {
+        draw_box(k->x, k->y, k->w, k->h, COL_BG, "");
+        return;
+    }
     if (k->kind == K_NONE) bg = COL_BG;
     draw_box(k->x, k->y, k->w, k->h, bg, key_label(k));
 }
@@ -448,14 +465,14 @@ static const ui_key_t *hit(int x, int y)
     for (int i = 0; i < L->n_fixed; i++) {
         const ui_key_t *k = &L->fixed[i];
         if (x >= k->x && x < k->x + k->w && y >= k->y && y < k->y + k->h)
-            return k->kind == K_NONE ? NULL : k;
+            return k->kind == K_NONE || (k->kind == K_MP3 && !cybiko_app_mp3_player()) ? NULL : k;
     }
     int n;
     const ui_key_t *keys = page_keys(&n);
     for (int i = 0; i < n; i++) {
         const ui_key_t *k = &keys[i];
         if (x >= k->x && x < k->x + k->w && y >= k->y && y < k->y + k->h)
-            return k->kind == K_NONE ? NULL : k;
+            return k->kind == K_NONE || (k->kind == K_MP3 && !cybiko_app_mp3_player()) ? NULL : k;
     }
     return NULL;
 }
@@ -478,6 +495,12 @@ static void touch_down(int px, int py)
         if (L->pages[1]) page ^= 1;
         draw_keyboard();
         return;
+    case K_MP3:                                  /* the player's button: not a Cybiko key */
+        cybiko_app_mp3_button(k->key);
+        held = k;
+        held_since = esp_timer_get_time();
+        draw_key(k, true);
+        return;
     default:
         break;
     }
@@ -491,6 +514,11 @@ static void touch_down(int px, int py)
 
 static void release_held(void)
 {
+    if (held->kind == K_MP3) {
+        draw_key(held, false);
+        held = NULL;
+        return;
+    }
     cybiko_app_key(held->key, false);
     bool redraw = shift_on || fn_on;
     if (shift_on) cybiko_app_key(CYK_SHIFT, false);
